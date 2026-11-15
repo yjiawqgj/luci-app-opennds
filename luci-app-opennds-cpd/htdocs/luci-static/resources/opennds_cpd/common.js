@@ -65,7 +65,9 @@ function ensureToasts() {
 	return c;
 }
 
-var CPD = {
+/* LuCI 模块加载器要求 L.require() 的模块返回 L.Class 子类（加载器实例化后缓存），
+ * 因此这里必须是 extend 而非普通对象字面量 */
+var CPD = L.Class.extend({
 	/* ---------- 后端 API ---------- */
 	api: function (page, subcmd, args) {
 		args = args || [];
@@ -206,6 +208,6 @@ var CPD = {
 			E('h3', {}, [title, E('span', { 'class': 'cpd-en' }, en)])
 		]);
 	}
-};
+});
 
 return CPD;
