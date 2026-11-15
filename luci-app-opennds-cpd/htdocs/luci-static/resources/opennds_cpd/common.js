@@ -96,7 +96,7 @@ var CPD = L.Class.extend({
 						'未认证的设备将被重新挡在门户外。确定继续？')), [
 						E('div', { 'class': 'right' }, [
 							E('button', {
-								'class': 'btn',
+								'class': 'cbi-button',
 								'click': ui.hideModal
 							}, _('取消')),
 							' ',
@@ -173,7 +173,7 @@ var CPD = L.Class.extend({
 	confirm: function (title, text, okText, danger, onok) {
 		ui.showModal(title, E('p', {}, text), [
 			E('div', { 'class': 'right' }, [
-				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('取消')),
+				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('取消')),
 				' ',
 				E('button', {
 					'class': 'cbi-button ' + (danger ? 'cbi-button-negative' : 'cbi-button-positive'),

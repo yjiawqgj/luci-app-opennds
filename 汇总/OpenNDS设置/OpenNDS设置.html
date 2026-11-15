@@ -21,9 +21,10 @@
     background:var(--bg);color:var(--text);
     font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
-    padding:22px 16px 70px;
+    min-height:100vh;display:flex;flex-direction:column;
+    padding:22px 16px 16px;
   }
-  .sheet{max-width:980px;margin:0 auto;background:var(--sheet);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .sheet{max-width:980px;margin:0 auto;flex:none;background:var(--sheet);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
 
   .topbar{padding:20px 24px;border-bottom:1px solid var(--line)}
   .topbar h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -65,10 +66,22 @@
   .tab-btn:hover{color:var(--text);background:#f7f9fa}
   .tab-btn:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
   .tab-btn.active{color:var(--primary-d);border-bottom-color:var(--primary);font-weight:600;background:var(--primary-weak)}
-  .tab-panel{padding-top:18px}
+  .tab-panel{padding-top:22px}
 
-  .portal-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  /* 上传/清理按钮与 TAB 标题之间留出明显距离 */
+  .portal-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
   .portal-tools .btn svg{width:14px;height:14px}
+
+  /* 公平使用策略开关 */
+  .fup-switch-row{display:flex;align-items:center;gap:12px;margin-top:18px;flex-wrap:wrap}
+  .switch{position:relative;width:46px;height:26px;flex:none;padding:0;border:1px solid #c9d2da;border-radius:999px;background:#e3e8ec;cursor:pointer;transition:background .15s,border-color .15s}
+  .switch .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}
+  .switch[aria-checked="true"]{background:var(--green);border-color:var(--green)}
+  .switch[aria-checked="true"] .knob{transform:translateX(20px)}
+  .switch:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .sw-label{font-size:13px;font-weight:600;color:var(--muted)}
+  .sw-label.on{color:var(--green)}
+  .fup-off-hint{margin-top:14px;font-size:12.5px;color:var(--faint);line-height:1.7;max-width:620px}
 
   .field{margin-top:18px}
   .field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
@@ -85,10 +98,10 @@
   .sel:focus,.txt:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
   .hint{font-size:12px;color:var(--faint);margin-top:6px;line-height:1.6}
 
-  .quota-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:16px;max-width:620px}
+  .quota-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:18px;max-width:620px}
   .quota-item > label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
-  .quota-item .sel{max-width:240px}
-  .rate-line{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted)}
+  .quota-item .sel{max-width:260px;min-width:170px}
+  .rate-line{display:flex;align-items:center;gap:8px;margin-top:20px;font-size:13px;color:var(--muted)}
   .rate-line label{display:block;font-size:13px;font-weight:500;margin:0;color:var(--muted)}
   .rate-line .txt{width:130px;max-width:130px;height:34px;text-align:right}
   .rate-line .unit{font-size:12.5px;color:var(--muted);white-space:nowrap}
@@ -112,10 +125,12 @@
   .iface-ip .k{font-size:11.5px;color:var(--faint);flex:none}
   .iface-ip .v{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;color:var(--text);min-width:0;word-break:break-all}
 
-  /* 底部操作 */
-  .action-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;padding:16px 24px;border-top:1px solid var(--line);background:#fbfcfd}
-  .action-bar .btn{min-width:88px}
-  .foot-note{max-width:980px;margin:14px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6}
+  /* 底部操作（LuCI 系统按钮） */
+  .cbi-btn{font-family:inherit;font-size:13px;height:34px;padding:0 16px;border-radius:4px;border:1px solid var(--line);
+    background:#fff;color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:6px;min-width:88px;justify-content:center;}
+  .cbi-btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .cbi-btn.positive{background:var(--primary);border-color:var(--primary);color:#fff}
+  .cbi-btn.positive:hover{background:var(--primary-d);border-color:var(--primary-d)}
 
   /* 二次确认 */
   .mask{position:fixed;inset:0;background:rgba(24,34,44,.46);display:flex;align-items:center;justify-content:center;padding:18px;z-index:80}
@@ -144,8 +159,6 @@
     .sel,.txt{max-width:100%;font-size:16px}
     .quota-grid{grid-template-columns:1fr;gap:20px;max-width:none}
     .quota-item .sel{max-width:100%}
-    .action-bar{padding:14px 16px}
-    .action-bar .btn{flex:1 1 0}
     .dialog-foot .btn{flex:1 1 0}
   }
   @media (max-width:520px){
@@ -153,6 +166,14 @@
     .rate-line .txt{width:120px;max-width:120px}
   }
   @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+  /* ===== 门户选择行 ===== */
+  .portal-field{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .portal-path{font-size:11.5px;color:var(--faint);font-family:ui-monospace,Consolas,monospace}
+
+  /* ===== 页面说明文字（底部 复位/保存/保存&应用 由 LuCI 框架提供，演示页不绘制） ===== */
+  .page{flex:0 0 auto}
+  .sheet{width:100%}
+  .foot-note{width:100%;max-width:980px;margin:16px auto 32px;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6;padding:0 2px}
 </style>
 </head>
 <body>
@@ -187,7 +208,15 @@
         <p class="sec-desc warn">下载配额检查优于上传配额检查。</p>
       </div>
 
-      <div class="quota-grid">
+      <div class="fup-switch-row">
+        <button class="switch" type="button" id="fupSwitch" role="switch" aria-checked="false" aria-label="公平使用策略开关">
+          <span class="knob" aria-hidden="true"></span>
+        </button>
+        <span class="sw-label" id="fupLabel">已关闭</span>
+      </div>
+      <p class="fup-off-hint" id="fupOffHint">开启后才能设置上传、下载的配额处理方式与限速；仪表盘页客户端编辑里的流量限制也依赖此开关。</p>
+
+      <div class="quota-grid" id="quotaBox" hidden>
         <div class="quota-item">
           <label for="uploadAction">上传</label>
           <select class="sel" id="uploadAction">
@@ -196,7 +225,7 @@
           </select>
           <div class="rate-line" id="uploadRateLine">
             <label for="uploadRate">速率</label>
-            <input class="txt" type="number" id="uploadRate" min="1" step="1" value="2048" placeholder="例如 2048">
+            <input class="txt" type="number" id="uploadRate" min="1" step="1" value="" placeholder="例如 2048">
             <span class="unit">Kb/s</span>
           </div>
         </div>
@@ -209,7 +238,7 @@
           </select>
           <div class="rate-line" id="downloadRateLine">
             <label for="downloadRate">速率</label>
-            <input class="txt" type="number" id="downloadRate" min="1" step="1" value="4096" placeholder="例如 4096">
+            <input class="txt" type="number" id="downloadRate" min="1" step="1" value="" placeholder="例如 4096">
             <span class="unit">Kb/s</span>
           </div>
         </div>
@@ -223,15 +252,12 @@
       <div class="sec-head">
         <h2>网络接口 <span class="en">Network Interface</span></h2>
         <p class="sec-desc warn">更改网络接口，某些自定义规则和客户端将会失效，请选调整好相关配置再更改。</p>
+        <p class="sec-desc">只列出可作为 LAN 使用的接口；lo、pppoe-wan、docker0 等不参与选择。</p>
       </div>
       <div class="iface-grid" id="ifaceGrid"></div>
     </section>
   </main>
 
-  <footer class="action-bar">
-    <button class="btn" id="saveBtn" type="button">保存</button>
-    <button class="btn primary" id="applyBtn" type="button">应用</button>
-  </footer>
 </div>
 
 <div class="foot-note">前端交互演示：上传脚本与网络接口均为模拟数据，不会写入或下发任何真实配置。</div>
@@ -264,15 +290,16 @@ var TAB_LABEL = { wifi:"无线区域", wired:"有线区域", blacklist:"黑名�
 var state = {
   activeTab:"wifi",
   tabs:{
-    wifi:{ uploaded:true },
-    wired:{ uploaded:false },
-    blacklist:{ uploaded:false }
+    wifi:{ scripts:["hotel-login.sh","cafe-v2.sh"], portal:"hotel-login.sh" },
+    wired:{ scripts:[], portal:"default" },
+    blacklist:{ scripts:[], portal:"default" }
   },
   quota:{
+    enabled:false,
     uploadAction:"limit",
     downloadAction:"limit",
-    uploadRate:"2048",
-    downloadRate:"4096"
+    uploadRate:"",
+    downloadRate:""
   },
   interfaces:[
     {name:"br-lan", ip:"192.168.1.1"},
@@ -306,41 +333,63 @@ function configSnapshot(){
 }
 
 /* ---------- 默认门户设置 ---------- */
+function shortName(name){
+  var n=String(name||"");
+  return n.length>10 ? n.slice(0,10)+"…" : n;
+}
+
+function portalDir(tab){
+  if(tab==="wifi") return "/usr/lib/opennds/cpd/wireless/<区域>/";
+  if(tab==="wired") return "/usr/lib/opennds/cpd/wired/<接口>/";
+  return "/usr/lib/opennds/cpd/blacklist/";
+}
+
 function renderPortalPanel(){
   var tab=state.tabs[state.activeTab];
-  var uploaded=tab.uploaded;
-  var uploadIcon=uploaded
-    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>'
-    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>';
+  var scripts=tab.scripts||[];
+  var sel=tab.portal||"default";
 
-  var h='<div class="portal-tools">'+
-    '<button class="btn'+(uploaded?" uploaded":"")+'" type="button" id="uploadBtn"'+(uploaded?" disabled":"")+'>'+
-      uploadIcon+
-      (uploaded?"已上传":"上传")+
-    '</button>'+
-    '<button class="btn danger-text" type="button" id="cleanBtn"'+(uploaded?"":" disabled")+'>'+
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>'+
-      '清理'+
-    '</button>'+
-  '</div>';
+  var opts='<option value="default"'+(sel==="default"?" selected":"")+' title="default.sh（内置默认门户）">默认门户</option>';
+  scripts.forEach(function(name){
+    opts+='<option value="'+esc(name)+'"'+(sel===name?" selected":"")+' title="'+esc(name)+'">'+esc(shortName(name))+'</option>';
+  });
+
+  var h='<div class="portal-field">'+
+      '<label for="portalSel">门户选择</label>'+
+      '<select class="sel" id="portalSel">'+opts+'</select>'+
+      '<span class="portal-path">门户目录：'+portalDir(state.activeTab)+'</span>'+
+    '</div>'+
+    '<div class="portal-tools">'+
+      '<button class="btn" type="button" id="uploadBtn">'+
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>'+
+        '上传'+
+      '</button>'+
+      '<button class="btn danger-text" type="button" id="cleanBtn"'+(sel==="default"?" disabled":"")+'>'+
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>'+
+        '清理'+
+      '</button>'+
+    '</div>';
 
   $("portalPanel").innerHTML=h;
 
-  var uploadBtn=$("uploadBtn");
-  uploadBtn.disabled=uploaded;
-  uploadBtn.addEventListener("click",function(){
-    if(state.tabs[state.activeTab].uploaded) return;
+  $("portalSel").addEventListener("change",function(){
+    state.tabs[state.activeTab].portal=this.value;
+    renderPortalPanel();
+    toast(this.value==="default"?"当前门户已切换为默认门户":"当前门户已切换为 "+this.value,"ok");
+  });
+
+  $("uploadBtn").addEventListener("click",function(){
     $("scriptFile").click();
   });
 
-  var cleanBtn=$("cleanBtn");
-  cleanBtn.disabled=!uploaded;
-  cleanBtn.addEventListener("click",function(){
-    if(!state.tabs[state.activeTab].uploaded) return;
+  $("cleanBtn").addEventListener("click",function(){
+    if(sel==="default") return;
     openConfirm({
       type:"clean",
-      title:"清理 default.sh？",
-      text:"将删除「"+TAB_LABEL[state.activeTab]+"」指定目录中的 default.sh。删除后上传按钮会恢复为「上传」。",
+      tab:state.activeTab,
+      name:sel,
+      title:"清理 "+shortName(sel)+"？",
+      text:"将删除门户目录中的 "+sel+"，删除后当前区域自动切回默认门户。",
       okText:"清理",
       danger:true
     });
@@ -432,9 +481,11 @@ function confirmAction(){
   if(!p){ closeConfirm(); return; }
   closeConfirm();
   if(p.type==="clean"){
-    state.tabs[state.activeTab].uploaded=false;
+    var tab=state.tabs[p.tab];
+    tab.scripts=(tab.scripts||[]).filter(function(x){ return x!==p.name; });
+    tab.portal="default";
     renderPortalPanel();
-    toast("已清理「"+TAB_LABEL[state.activeTab]+"」的 default.sh，可重新上传","ok");
+    toast("已清理 "+p.name+"，当前区域已切回默认门户","ok");
   }else if(p.type==="iface"){
     applyInterface(p.target);
   }
@@ -445,6 +496,17 @@ function toggleQuotaRates(){
   $("uploadRateLine").hidden = state.quota.uploadAction!=="limit";
   $("downloadRateLine").hidden = state.quota.downloadAction!=="limit";
 }
+function renderFup(){
+  var on=!!state.quota.enabled;
+  var sw=$("fupSwitch");
+  sw.setAttribute("aria-checked",on?"true":"false");
+  var lb=$("fupLabel");
+  lb.textContent=on?"已开启":"已关闭";
+  lb.className="sw-label"+(on?" on":"");
+  $("quotaBox").hidden=!on;
+  $("fupOffHint").hidden=on;
+  if(on) toggleQuotaRates();
+}
 
 /* ---------- 上传脚本 ---------- */
 function handleUpload(file){
@@ -454,40 +516,33 @@ function handleUpload(file){
     toast("只支持上传后缀为 .sh 的脚本","warn");
     return;
   }
-  if(name.toLowerCase()!=="default.sh"){
-    toast("请上传名为 default.sh 的脚本","warn");
-    return;
+  var tab=state.tabs[state.activeTab];
+  tab.scripts=tab.scripts||[];
+  if(tab.scripts.indexOf(name)<0){
+    tab.scripts.push(name);
+  }else{
+    toast("门户目录中已存在同名脚本，将直接选用","warn");
   }
-  if(state.tabs[state.activeTab].uploaded){
-    toast("当前区域已上传 default.sh","ok");
-    return;
-  }
-  state.tabs[state.activeTab].uploaded=true;
+  tab.portal=name;
   renderPortalPanel();
-  toast("已上传 default.sh","ok");
+  toast("已上传 "+name+"，并在门户选择中启用","ok");
 }
 
-/* ---------- 底部保存 / 应用 ---------- */
-$("saveBtn").addEventListener("click",function(){
-  state.savedSnapshot=configSnapshot();
-  toast("设置已保存（尚未生效，请点击应用）","ok");
-});
-
-$("applyBtn").addEventListener("click",function(){
-  if(configSnapshot()!==state.savedSnapshot){
-    toast("当前设置尚未保存，请先保存后再应用。","warn");
-    return;
-  }
-  toast("设置已应用","ok");
-});
+/* ---------- 底部保存 / 应用 / 复位（LuCI 系统按钮） ---------- */
 
 /* ---------- 初始化 ---------- */
 (function init(){
   renderTabs();
   renderPortalPanel();
   renderInterfaces();
-  toggleQuotaRates();
+  renderFup();
   state.savedSnapshot=configSnapshot();
+
+  $("fupSwitch").addEventListener("click",function(){
+    state.quota.enabled=!state.quota.enabled;
+    renderFup();
+    toast(state.quota.enabled?"公平使用策略已开启":"公平使用策略已关闭","ok");
+  });
 
   var tabs=document.querySelectorAll(".tab-btn");
   Array.prototype.forEach.call(tabs,function(btn,i){

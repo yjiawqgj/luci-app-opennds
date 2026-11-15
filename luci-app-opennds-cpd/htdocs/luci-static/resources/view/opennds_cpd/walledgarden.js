@@ -64,10 +64,6 @@ return view.extend({
 			body.appendChild(sec2);
 
 			/* 底部操作 */
-			body.appendChild(E('div', { 'class': 'cpd-actions-right' }, [
-				E('button', { 'class': 'btn', 'click': handleSave }, _('保存')),
-				E('button', { 'class': 'cbi-button cbi-button-positive', 'click': handleApply }, _('应用'))
-			]));
 		}
 
 		/* ---------- 手动区 ---------- */
@@ -75,7 +71,7 @@ return view.extend({
 			manualPanel.innerHTML = '';
 			manualPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
-					'class': 'btn',
+					'class': 'cbi-button',
 					'aria-expanded': state.manualEditing ? 'true' : 'false',
 					'click': function () { startEdit('manual'); }
 				}, _('编辑'))
@@ -90,7 +86,7 @@ return view.extend({
 				manualPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
-						E('button', { 'class': 'btn', 'click': function () { cancelEdit('manual'); } }, _('取消')),
+						E('button', { 'class': 'cbi-button', 'click': function () { cancelEdit('manual'); } }, _('取消')),
 						E('button', {
 							'class': 'cbi-button cbi-button-positive',
 							'click': function () { finishEdit('manual', ta); }
@@ -114,7 +110,7 @@ return view.extend({
 			autoPanel.innerHTML = '';
 			autoPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
-					'class': 'btn',
+					'class': 'cbi-button',
 					'aria-expanded': state.autoEditing ? 'true' : 'false',
 					'click': function () { startEdit('auto'); }
 				}, _('编辑'))
@@ -131,7 +127,7 @@ return view.extend({
 					E('div', { 'class': 'cpd-note', 'style': 'margin-bottom:5px' }, _('一行一个域名')),
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
-						E('button', { 'class': 'btn', 'click': function () { cancelEdit('auto'); } }, _('取消')),
+						E('button', { 'class': 'cbi-button', 'click': function () { cancelEdit('auto'); } }, _('取消')),
 						E('button', {
 							'class': 'cbi-button cbi-button-positive',
 							'click': function () { finishEdit('auto', ta); }
@@ -148,7 +144,7 @@ return view.extend({
 				]));
 			}
 			/* 端口框：编辑态与展示态都显示 */
-			portsInput = E('input', { 'class': 'cpd-input', 'type': 'text', 'placeholder': _('留空表示不限制端口') });
+			portsInput = E('input', { 'class': 'cpd-input', 'type': 'text', 'placeholder': '80,443' });
 			portsInput.value = state.ports;
 			portsInput.addEventListener('input', function () { state.ports = portsInput.value; });
 			autoPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
@@ -275,6 +271,19 @@ return view.extend({
 		}
 
 		refresh();
+		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
+		this.handleSave = function () {
+			handleSave();
+			return Promise.resolve();
+		};
+		this.handleSaveApply = function () {
+			return handleApply();
+		};
+		this.handleReset = function () {
+			refresh();
+			return Promise.resolve();
+		};
+
 		return body;
 	}
 });

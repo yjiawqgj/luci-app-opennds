@@ -238,7 +238,24 @@ wait_ready() {
 	return 1
 }
 
+nds_running() { # openNDS 进程在跑 → 0
+	pidof opennds >/dev/null 2>&1 && return 0
+	local p c
+	for p in /proc/[0-9]*/comm; do
+		[ -r "$p" ] || continue
+		read -r c <"$p" 2>/dev/null || continue
+		[ "$c" = 'opennds' ] && return 0
+	done
+	return 1
+}
+
+# SR_RESTARTED=1 表示本次真的重启了；0 表示 openNDS 未运行、只写配置没拉起。
+# 决策：应用设置时不主动启动 openNDS，启动只由概览页的启停开关负责。
+SR_RESTARTED=0
 service_restart() {
+	SR_RESTARTED=0
+	nds_running || return 0
+	SR_RESTARTED=1
 	/etc/init.d/opennds restart 9>&- >/dev/null 2>&1
 	wait_ready
 }
@@ -776,6 +793,19 @@ ov_status() {
 $in_lines
 EOF2
 		CLIENT_LINES="$in_lines"
+	else
+		# openNDS 未运行：在线数保持 0，但名单里配置的客户端仍要计入统计
+		# （可信任客户端不受服务是否运行影响，界面照常可见）
+		local m2 pe2
+		for m2 in $TR_MACS; do
+			[ -n "$m2" ] && n_tr=$((n_tr + 1))
+		done
+		pe2=$(uci_val 'opennds.@opennds[0].allow_preemptive_authentication' '1')
+		if [ "$pe2" != '0' ]; then
+			for m2 in $PM_MACS; do
+				[ -n "$m2" ] && n_pre=$((n_pre + 1))
+			done
+		fi
 	fi
 
 	# 管理接口与 IP
@@ -810,8 +840,8 @@ EOF2
 		sep=','
 	done
 
-	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"session_scope":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
-		"$running" "$enabled" "$engaged" "$busy" "$(json_escape "$scope")" \
+	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
+		"$running" "$enabled" "$engaged" "$busy" "$(fup_enabled_val)" "$(json_escape "$scope")" \
 		"$n_online" "$n_auth" "$n_pre" "$n_tr" "$n_un" "$n_bl" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
 		"$(json_escape "$mif")" "$(json_escape "$mip")" "$aps"
@@ -956,7 +986,7 @@ ov_client_action() { # $1=action $2=mac
 			# ④ 重启并等就绪（最多 15 秒）再返回
 			local ready=1
 			service_restart || ready=0
-			printf '{"ok":1,"restarted":1,"ready":%s}\n' "$ready"
+			printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"ready":%s}\n' "$ready"
 			;;
 		unblock)
 			ov_load_lists
@@ -1025,7 +1055,7 @@ ov_client_edit() { # $1=mac $2…=k=v（5 项）
 	if ! grep -qw "$lm" /tmp/dhcp.leases 2>/dev/null; then
 		warn_json=',"warnings":["该客户端没有 DHCP 租约，预认证不会生效"]'
 	fi
-	printf '{"ok":1,"restarted":1,"ready":%s%s}\n' "$ready" "$warn_json"
+	printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"ready":%s%s}\n' "$ready" "$warn_json"
 }
 
 # ============================================================
@@ -1085,75 +1115,31 @@ cache_pairs() { # $1=键名（zone_detect.main.wireless）
 }
 
 # ============================================================
-# .portal_map：门户改名映射（原名↔存储名）+ 生效项标记
-# 行格式：<TAB> 分隔——m<TAB>原名<TAB>存储名 / a<TAB>存储名
-# 存储名是唯一键；原名可对应多条
+# 门户条目：保留上传时的原名，不改名、不做文件名映射
+# 「某个区域用哪个门户」只记在 uci（zone_detect.main.wireless / wired），
+# 「用类型默认门户」记在 zone_markers；分发脚本按这两处直接找文件。
 # ============================================================
 
-map_applied_of() { # $1=门户目录 → 生效存储名或空
-	awk -F'\t' '$1 == "a" {print $2; exit}' "$1/.portal_map" 2>/dev/null
-	return 0
-}
-
-map_orig_of() { # $1=目录 $2=存储名 → 原名或空
-	awk -F'\t' -v s="$2" '$1 == "m" && $3 == s {print $2; exit}' \
-		"$1/.portal_map" 2>/dev/null
-	return 0
-}
-
-map_orig_count() { # $1=目录 $2=原名 → 该原名对应几条存储名
-	awk -F'\t' -v o="$2" '$1 == "m" && $2 == o {c++} END {print c + 0}' \
-		"$1/.portal_map" 2>/dev/null
-}
-
-map_add() { # $1=目录 $2=原名 $3=存储名
-	printf 'm\t%s\t%s\n' "$2" "$3" >>"$1/.portal_map" 2>/dev/null
-}
-
-map_del_applied() { # $1=目录
-	local f="$1/.portal_map"
-	[ -f "$f" ] || return 0
-	awk -F'\t' '$1 != "a"' "$f" >"$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
-	return 0
-}
-
-map_set_applied() { # $1=目录 $2=存储名
-	map_del_applied "$1"
-	printf 'a\t%s\n' "$2" >>"$1/.portal_map" 2>/dev/null
-}
-
-map_del_store() { # $1=目录 $2=存储名（连 a 行一起清）
-	local f="$1/.portal_map"
-	[ -f "$f" ] || return 0
-	awk -F'\t' -v s="$2" '!($1 == "m" && $3 == s) && !($1 == "a" && $2 == s)' \
-		"$f" >"$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
-	return 0
-}
-
-# 存储名分配：原名后加数字，撞已存在的顺延，最长 20 字节（§3.3）
-alloc_store() { # $1=目录 $2=原名 $3=kind(file|dir) → 打印存储名；放不下 rc=2
-	local zdir="$1" orig="$2" kind="$3" base ext cand i=1
-	if [ "$kind" = 'file' ]; then
-		case "$orig" in
-			*.sh) base="${orig%.sh}" ext='.sh' ;;
-			*) base="$orig" ext='' ;;
+# 列目录里的门户条目 → "name<TAB>kind" 行
+# 保留用户上传时的原名（*.sh 文件，或含 theme.sh 的文件夹）；default 为兜底项不列
+z_portal_scan() { # $1=目录
+	local d="$1" f b
+	[ -d "$d" ] || return 0
+	for f in "$d"/*; do
+		[ -e "$f" ] || continue
+		b="${f##*/}"
+		case "$b" in
+			.* | default) continue ;;
 		esac
-	else
-		base="$orig" ext=''
-	fi
-	while [ "$i" -le 99 ]; do
-		cand="${base}${i}${ext}"
-		if [ ! -e "$zdir/$cand" ]; then
-			# 超过 20 字节：后缀再涨只会更长，直接判死（§3.3 末条）
-			if [ "$(name_bytes "$cand")" -le 20 ]; then
-				printf '%s' "$cand"
-				return 0
-			fi
-			return 2
+		if [ -f "$f" ]; then
+			case "$b" in
+				*.sh) printf '%s\tfile\n' "$b" ;;
+			esac
+		elif [ -d "$f" ] && [ -f "$f/theme.sh" ]; then
+			printf '%s\tdir\n' "$b"
 		fi
-		i=$((i + 1))
 	done
-	return 2
+	return 0
 }
 
 # ============================================================
@@ -1196,39 +1182,24 @@ marker_diag_if() { # $1=type $2=zone → 第一个匹配 SSID 的 AP 运行时�
 	printf '-'
 }
 
-# 把生效门户（<zone>.sh / <zone>/）还原成存储名；手工部署（map 无记录）的
-# 挪成不冲突的 manualN 并补映射（§3.5 第 1 步）。rc=2 表示失败需跳过该卡片
-zone_restore_effective() { # $1=门户目录 $2=zone
-	local zdir="$1" zn="$2" eff="" applied cand i
-	[ -f "$zdir/$zn.sh" ] && eff="$zdir/$zn.sh"
-	[ -z "$eff" ] && [ -d "$zdir/$zn" ] && eff="$zdir/$zn"
-	[ -z "$eff" ] && return 0
-	applied=$(map_applied_of "$zdir")
-	# 门户正生效时存储名位置必然是空的（它已被改名成 <zone>.sh / <zone>），
-	# 所以不能要求磁盘上已存在 applied；只要求该名字当前没被别的文件占用
-	if [ -n "$applied" ] && [ ! -e "$zdir/$applied" ]; then
-		mv "$eff" "$zdir/$applied" 2>/dev/null || return 2
-		return 0
-	fi
-	local ext=''
-	[ -f "$eff" ] && ext='.sh'
-	i=1
-	while [ "$i" -le 99 ]; do
-		cand="manual$i$ext"
-		[ ! -e "$zdir/$cand" ] && break
-		i=$((i + 1))
-	done
-	[ "$i" -gt 99 ] && return 2
-	mv "$eff" "$zdir/$cand" 2>/dev/null || return 2
-	map_add "$zdir" "$zn$ext" "$cand" || return 2
-	return 0
+# 判断目录里是否已有同名门户（名字含不含 .sh 都算命中）；rc=0 存在
+z_portal_exists() { # $1=目录 $2=名字
+	local d="$1" n="$2" b
+	case "$n" in
+		'' | */* | .*) return 1 ;;
+	esac
+	[ -f "$d/$n" ] && return 0
+	b="${n%.sh}"
+	[ -f "$d/$b.sh" ] && return 0
+	[ -f "$d/$b/theme.sh" ] && return 0
+	return 1
 }
 
 # ============================================================
 # 页面：zone（《区域识别.md》§4）
 # ============================================================
 
-z_saved_of() { # $1=list(wireless|wired) $2=区域名 → 已保存存储名或空
+z_saved_of() { # $1=list(wireless|wired) $2=区域名 → 已保存的门户名或空
 	local pair ss store
 	while IFS= read -r pair; do
 		[ -n "$pair" ] || continue
@@ -1252,7 +1223,7 @@ EOF2
 }
 
 # 同 z_saved_of，但区分「缓存里没有该区域」（输出 null）与「保存为默认」（输出 ""）
-z_saved_json() { # $1=list(wireless|wired) $2=区域名 → "store"（含空串）或 null
+z_saved_json() { # $1=list(wireless|wired) $2=区域名 → 门户名 JSON（含空串）或 null
 	local v
 	v=$(z_saved_of "$1" "$2")
 	if [ $? -eq 0 ]; then
@@ -1297,7 +1268,7 @@ z_unmatched_scan() { # → "type<TAB>name" 行
 }
 
 z_status() {
-	local lo engaged enabled busy scope mif mip wsv wcur wcurorig='' sv cur curorig
+	local lo engaged enabled busy scope mif mip wsv wcur sv cur
 	lo=$(uci_get 'opennds.@opennds[0].login_option_enabled')
 	engaged=$(nds_engaged)
 	enabled=$(nds_enabled)
@@ -1307,8 +1278,8 @@ z_status() {
 	[ -n "$mif" ] && {
 		mip=$(iface_ip "$mif")
 		wsv=$(z_saved_json wired "$mif")
-		wcur=$(map_applied_of "$(zdir_for wired "$mif")")
-		[ -n "$wcur" ] && wcurorig=$(map_orig_of "$(zdir_for wired "$mif")" "$wcur")
+		# 门户保持原名，uci 里记的那个名字就是生效门户
+		wcur=$(z_saved_of wired "$mif" 2>/dev/null || true)
 	}
 	[ -n "$wsv" ] || wsv=null
 
@@ -1335,10 +1306,8 @@ z_status() {
 			[ "$dup" -ge 2 ] 2>/dev/null && dup=1 || dup=0
 		fi
 		sv=$(z_saved_json wireless "$ssid")
-		cur=$(map_applied_of "$(zdir_for wireless "$ssid")")
-		curorig=''
-		[ -n "$cur" ] && curorig=$(map_orig_of "$(zdir_for wireless "$ssid")" "$cur")
-		cards="$cards$sep{\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"device\":\"$(json_escape "$dev")\",\"disabled\":$disf,\"dup\":$dup,\"saved\":$sv,\"current\":\"$(json_escape "$cur")\",\"currentOrig\":\"$(json_escape "$curorig")\"}"
+		cur=$(z_saved_of wireless "$ssid" 2>/dev/null || true)
+		cards="$cards$sep{\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"device\":\"$(json_escape "$dev")\",\"disabled\":$disf,\"dup\":$dup,\"saved\":$sv,\"current\":\"$(json_escape "$cur")\"}"
 		sep=','
 		n=$((n + 1))
 	done
@@ -1348,15 +1317,15 @@ z_status() {
 	un=$(z_unmatched_scan | grep -c .)
 	un="${un:-0}"
 
-	printf '{"ok":1,"enabled":%s,"busy":%s,"engaged":%s,"loginOptionEnabled":"%s","scope":"%s","wired":{"iface":"%s","ip":"%s","saved":%s,"current":"%s","currentOrig":"%s"},"wireless":[%s],"unmatched":%s}\n' \
+	printf '{"ok":1,"enabled":%s,"busy":%s,"engaged":%s,"loginOptionEnabled":"%s","scope":"%s","wired":{"iface":"%s","ip":"%s","saved":%s,"current":"%s"},"wireless":[%s],"unmatched":%s}\n' \
 		"$enabled" "$busy" "$engaged" "$(json_escape "$lo")" \
 		"$(json_escape "$scope")" \
 		"$(json_escape "$mif")" "$(json_escape "$mip")" \
-		"$wsv" "$(json_escape "$wcur")" "$(json_escape "$wcurorig")" \
+		"$wsv" "$(json_escape "$wcur")" \
 		"$cards" "$un"
 }
 
-z_uploaded() { # $1=type $2=zone → 未生效的已上传门户（存储名/原名/显示名/类型）
+z_uploaded() { # $1=type $2=zone → 该区域门户目录里的全部门户（原名就是唯一标识）
 	local type="$1" zone="$2"
 	case "$type" in
 		wireless | wired) ;;
@@ -1370,30 +1339,15 @@ z_uploaded() { # $1=type $2=zone → 未生效的已上传门户（存储名/原
 		printf '{"ok":1,"items":[],"count":0}\n'
 		return 0
 	}
-	local f b kind orig label items='' sep='' n=0
-	for f in "$zdir"/*; do
-		[ -e "$f" ] || continue
-		b="${f##*/}"
-		case "$b" in
-			"$zone.sh" | "$zone" | default) continue ;; # 生效门户/兼容项不列出
-		esac
-		if [ -f "$f" ]; then
-			kind='file'
-		elif [ -d "$f" ] && [ -f "$f/theme.sh" ]; then
-			kind='dir'
-		else
-			continue
-		fi
-		orig=$(map_orig_of "$zdir" "$b")
-		if [ -n "$orig" ] && [ "$(map_orig_count "$zdir" "$orig")" -gt 1 ]; then
-			label="$b" # 重复原名：显示名退化成存储名（§3.3 唯一键）
-		else
-			label="${orig:-$b}"
-		fi
-		items="$items$sep{\"store\":\"$(json_escape "$b")\",\"orig\":\"$(json_escape "$orig")\",\"label\":\"$(json_escape "$label")\",\"kind\":\"$kind\"}"
+	local name kind items='' sep='' n=0
+	while IFS='	' read -r name kind; do
+		[ -n "$name" ] || continue
+		items="$items$sep{\"name\":\"$(json_escape "$name")\",\"kind\":\"$kind\"}"
 		sep=','
 		n=$((n + 1))
-	done
+	done <<EOF2
+$(z_portal_scan "$zdir")
+EOF2
 	printf '{"ok":1,"items":[%s],"count":%s}\n' "$items" "$n"
 }
 
@@ -1418,9 +1372,9 @@ z_upload_mkdir() { # $1=type $2=zone $3=id $4=文件夹原名 [$5=相对子路�
 	case "$id" in
 		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
 	esac
-	[ "$(name_bytes "$name")" -le 19 ] 2>/dev/null ||
-		out_err '文件名过长（最多 19 个字符），超出后无法自动改名'
-	name_ok "$name" 19 || out_err '文件名含非法字符，无法上传'
+	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
+		out_err '文件名过长（最多 31 个字符）'
+	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
 	# 子路径逐段校验（名称规则同 name_ok），拒绝绝对路径 / .. / 空段以外的花招
 	if [ -n "$sub" ]; then
 		case "$sub" in
@@ -1430,7 +1384,7 @@ z_upload_mkdir() { # $1=type $2=zone $3=id $4=文件夹原名 [$5=相对子路�
 		IFS='/'
 		for seg in $sub; do
 			[ -n "$seg" ] || continue
-			name_ok "$seg" 19 || out_err '子路径含非法名称'
+			name_ok "$seg" 31 || out_err '子路径含非法名称'
 		done
 		IFS="$oldifs"
 	fi
@@ -1441,7 +1395,7 @@ z_upload_mkdir() { # $1=type $2=zone $3=id $4=文件夹原名 [$5=相对子路�
 	printf '{"ok":1}\n'
 }
 
-z_upload_store() { # $1=type $2=zone $3=id $4=kind $5=原名
+z_upload_store() { # $1=type $2=zone $3=id $4=kind $5=原名（原名即落盘名，不改名）
 	local type="$1" zone="$2" id="$3" kind="$4" name="$5"
 	case "$type" in
 		wireless | wired) ;;
@@ -1456,9 +1410,9 @@ z_upload_store() { # $1=type $2=zone $3=id $4=kind $5=原名
 		file | dir) ;;
 		*) out_err 'kind 必须是 file 或 dir' ;;
 	esac
-	[ "$(name_bytes "$name")" -le 19 ] 2>/dev/null ||
-		out_err '文件名过长（最多 19 个字符），超出后无法自动改名'
-	name_ok "$name" 19 || out_err '文件名含非法字符，无法上传'
+	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
+		out_err '文件名过长（最多 31 个字符）'
+	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
 	local tmp="$ZONE_UP/$id/$name"
 	if [ "$kind" = 'file' ]; then
 		case "$name" in
@@ -1472,39 +1426,49 @@ z_upload_store() { # $1=type $2=zone $3=id $4=kind $5=原名
 		[ -f "$tmp/theme.sh" ] || out_err '只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'
 	fi
 	acquire_lock
-	local zdir store
+	local zdir
 	zdir=$(zdir_for "$type" "$zone")
 	mkdir -p "$zdir" 2>/dev/null || out_err '无法创建门户目录'
-	store=$(alloc_store "$zdir" "$name" "$kind") || out_err '同名文件过多，请先清理已上传列表'
-	mv "$tmp" "$zdir/$store" 2>/dev/null || out_err '门户文件入库失败'
-	[ "$kind" = 'file' ] && chmod 755 "$zdir/$store" 2>/dev/null
-	map_add "$zdir" "$name" "$store"
-	printf '{"ok":1,"store":"%s","orig":"%s"}\n' \
-		"$(json_escape "$store")" "$(json_escape "$name")"
+	# 同名视为「上传新版本」，直接覆盖：不改名、不建映射
+	if [ "$kind" = 'file' ]; then
+		cp "$tmp" "$zdir/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
+		chmod 755 "$zdir/$name.tmp" 2>/dev/null
+		mv "$zdir/$name.tmp" "$zdir/$name" 2>/dev/null || {
+			rm -f "$zdir/$name.tmp" 2>/dev/null
+			out_err '替换门户文件失败'
+		}
+	else
+		rm -rf "$zdir/$name" 2>/dev/null
+		mv "$tmp" "$zdir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
+	fi
+	case "$ZONE_UP/$id" in
+		"$ZONE_UP"/*) rm -rf "$ZONE_UP/$id" 2>/dev/null ;;
+	esac
+	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
 }
 
-z_upload_delete() { # $1=type $2=zone $3=存储名
+z_upload_delete() { # $1=type $2=zone $3=门户名（原名）
 	local type="$1" zone="$2" store="$3"
 	case "$type" in
 		wireless | wired) ;;
 		*) out_err 'type 必须是 wireless 或 wired' ;;
 	esac
 	zone_name_ok "$zone" || out_err '该区域名含非法路径字符'
-	[ "$(name_bytes "$store")" -le 20 ] 2>/dev/null &&
-		name_ok "$store" 20 || out_err '存储名非法'
-	case "$store" in
-		"$zone" | "$zone.sh") out_err '该门户正在生效，不能删除' ;;
-	esac
+	[ "$(name_bytes "$store")" -le 31 ] 2>/dev/null &&
+		name_ok "$store" 31 || out_err '门户名非法'
 	acquire_lock
-	local zdir
+	local zdir cur
 	zdir=$(zdir_for "$type" "$zone")
+	# 正在使用的门户不许删（先换一个再删）
+	cur=$(z_saved_of "$type" "$zone" 2>/dev/null || true)
+	[ -n "$cur" ] && [ "$cur" = "$store" ] &&
+		out_err '该门户正在使用中，请先在「门户选择」里换一个再清理'
 	# 文件已被别处删掉时按成功处理（§3.4）
 	[ -e "$zdir/$store" ] && rm -rf "$zdir/$store" 2>/dev/null
-	map_del_store "$zdir" "$store"
 	printf '{"ok":1}\n'
 }
 
-z_save_cache() { # $1=global|wireless|wired $2…=对（SSID|存储名）
+z_save_cache() { # $1=global|wireless|wired $2…=对（SSID|门户名）
 	local list="$1"
 	shift
 	case "$list" in
@@ -1575,7 +1539,7 @@ z_apply() { # $1=panel(global|wireless|wired)，confirm_enable 已由分发器�
 		uci commit zone_detect
 		local ready=1
 		service_restart || ready=0
-		printf '{"ok":1,"ready":%s,"enabled_by_apply":%s}\n' "$ready" "$EN_BY_APPLY"
+		printf '{"ok":1,"ready":%s,"restarted":'"$SR_RESTARTED"',"enabled_by_apply":%s}\n' "$ready" "$EN_BY_APPLY"
 		return 0
 	fi
 
@@ -1594,8 +1558,8 @@ z_apply() { # $1=panel(global|wireless|wired)，confirm_enable 已由分发器�
 	mgmt=$(managed_iface)
 	[ -n "$mgmt" ] || mgmt='-'
 
-	# ---- 第一遍：全部预校验通过才动手，避免改到一半失败留下半套状态 ----
-	local pair ss store zdir applied eff ZP_LINES='' ZP_STORES=' ' ZP_SS=''
+	# ---- 第一遍：先整体校验，有问题就一条都不动 ----
+	local pair ss store ZP_LINES='' ZP_SS=''
 	while IFS= read -r pair; do
 		[ -n "$pair" ] || continue
 		case "$pair" in
@@ -1615,26 +1579,13 @@ z_apply() { # $1=panel(global|wireless|wired)，confirm_enable 已由分发器�
 		ZP_SS="$ZP_SS$ss
 "
 		if [ -n "$store" ]; then
-			# 同一门户只能归属一个区域（§1 决策）
-			case "$ZP_STORES" in
-				*" $store "*)
-					out_err '同一门户被多个区域选中，请重新保存后再应用'
-					;;
-			esac
-			ZP_STORES="$ZP_STORES$store "
-			name_ok "$store" 20 || out_err '已保存的配置解析失败，请重新保存'
-			zdir=$(zdir_for "$panel" "$ss")
-			eff=0
-			[ -f "$zdir/$ss.sh" ] && eff=1
-			[ -d "$zdir/$ss" ] && eff=1
-			if [ ! -e "$zdir/$store" ]; then
-				applied=$(map_applied_of "$zdir")
-				if [ "$store" != "$applied" ] || [ "$eff" != '1' ]; then
-					if [ "$panel" = 'wireless' ]; then
-						out_err '已保存的配置引用了已删除的脚本，请重新保存后再应用'
-					else
-						out_err '已保存的有线区域配置引用了已删除的脚本，请重新保存后再应用'
-					fi
+			name_ok "$store" 31 || out_err '已保存的配置解析失败，请重新保存'
+			# 门户文件原地不动，选它只是记进 markers/配置；文件没了就拦下
+			if ! z_portal_exists "$(zdir_for "$panel" "$ss")" "$store"; then
+				if [ "$panel" = 'wireless' ]; then
+					out_err '已保存的配置引用了已删除的门户，请重新保存后再应用'
+				else
+					out_err '已保存的有线区域配置引用了已删除的门户，请重新保存后再应用'
 				fi
 			fi
 		fi
@@ -1644,54 +1595,14 @@ z_apply() { # $1=panel(global|wireless|wired)，confirm_enable 已由分发器�
 $pairs
 EOF2
 
-	# ---- 第二遍：还原旧门户 → 应用新选择 → 校正标记/映射 ----
+	# ---- 第二遍：逐区域落「默认门户」标记（门户文件无需搬动改名）----
 	local W='' wsep=''
 	while IFS='	' read -r ss store; do
 		[ -n "$ss" ] || continue
-		zdir=$(zdir_for "$panel" "$ss")
-		eff=0
-		[ -f "$zdir/$ss.sh" ] && eff=1
-		[ -d "$zdir/$ss" ] && eff=1
-		applied=$(map_applied_of "$zdir")
 		if [ -z "$store" ]; then
-			# 选「默认」：还原旧门户 + 写标记 + 删 applied（改名跳过、标记照做）
-			if [ "$eff" = '1' ]; then
-				if ! zone_restore_effective "$zdir" "$ss"; then
-					W="$W$wsep区域「$ss」门户还原失败，已跳过"
-					wsep='；'
-					continue
-				fi
-			fi
 			marker_add "$panel" "$ss" "$(marker_diag_if "$panel" "$ss")" "$mgmt"
-			map_del_applied "$zdir"
-		elif [ "$store" = "$applied" ] && [ "$eff" = '1' ]; then
-			# 选中项已是生效门户：跳过改名，只校正标记与映射（§3.5 第 1 步）
-			marker_del "$panel" "$ss"
-			map_set_applied "$zdir" "$store"
 		else
-			if [ "$eff" = '1' ]; then
-				if ! zone_restore_effective "$zdir" "$ss"; then
-					W="$W$wsep区域「$ss」门户还原失败，已跳过"
-					wsep='；'
-					continue
-				fi
-			fi
-			if [ ! -e "$zdir/$store" ]; then
-				W="$W$wsep区域「$ss」引用的门户不存在，已跳过"
-				wsep='；'
-				continue
-			fi
-			if [ -f "$zdir/$store" ]; then
-				mv "$zdir/$store" "$zdir/$ss.sh" 2>/dev/null
-			else
-				mv "$zdir/$store" "$zdir/$ss" 2>/dev/null
-			fi || {
-				W="$W$wsep区域「$ss」门户改名失败，已跳过"
-				wsep='；'
-				continue
-			}
 			marker_del "$panel" "$ss"
-			map_set_applied "$zdir" "$store"
 		fi
 	done <<EOF2
 $ZP_LINES
@@ -1709,7 +1620,7 @@ EOF2
 	service_restart || ready=0
 	local wjson='[]'
 	[ -n "$W" ] && wjson="[\"$(json_escape "$W")\"]"
-	printf '{"ok":1,"ready":%s,"warnings":%s,"enabled_by_apply":%s}\n' "$ready" "$wjson" "$EN_BY_APPLY"
+	printf '{"ok":1,"ready":%s,"restarted":'"$SR_RESTARTED"',"warnings":%s,"enabled_by_apply":%s}\n' "$ready" "$wjson" "$EN_BY_APPLY"
 }
 
 z_unmatched_list() {
@@ -1925,7 +1836,7 @@ EOF3
 	uci commit opennds
 	uci commit zone_detect
 	if service_restart; then
-		printf '{"ok":1,"ready":1,"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
+		printf '{"ok":1,"ready":1,"restarted":'"$SR_RESTARTED"',"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
 	else
 		# 不回滚（§4）
 		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
@@ -2230,7 +2141,7 @@ ex_save() { # 槽位：trusted_add trusted_remove preempt_add preempt_remove pre
 	esac
 
 	if [ -n "$pe" ] && [ "$pe" != "$cur_pe" ]; then
-		service_restart && restarted=1
+		service_restart && restarted=$SR_RESTARTED
 	fi
 	printf '{"ok":1,"restarted":%s,"added":%s,"removed":%s,"enabled_by_apply":%s}\n' \
 		"$restarted" "$n_added" "$n_removed" "$EN_BY_APPLY"
@@ -2373,7 +2284,7 @@ bl_save_macs() { # 槽位：add remove clear
 	# ⑤ 新增了 MAC 才重启（纯删除不重启，分发脚本现读配置）
 	if [ "$n_new" -gt 0 ]; then
 		if service_restart; then
-			printf '{"ok":1,"deauthed":0,"untrusted":0,"restarted":1}\n'
+			printf '{"ok":1,"deauthed":0,"untrusted":0,"restarted":'"$SR_RESTARTED"'}\n'
 		else
 			printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
 		fi
@@ -2389,7 +2300,7 @@ bl_save_portal() { # $1=门户名（default/空 = 默认门户，落盘是删除
 			uci -q delete 'zone_blacklist.main.portal' 2>/dev/null
 			;;
 		*)
-			name_ok "$p" 20 || out_err '门户名非法'
+			name_ok "$p" 31 || out_err '门户名非法'
 			local found=0 f
 			for f in $(bl_portals_scan | cut -f1); do
 				[ "$f" = "$p" ] && found=1
@@ -2403,18 +2314,15 @@ bl_save_portal() { # $1=门户名（default/空 = 默认门户，落盘是删除
 	printf '{"ok":1}\n'
 }
 
-bl_upload_store() { # $1=id $2=文件名（落点固定 cpd/blacklist/，无文件夹上传、不做改名）
+bl_upload_store() { # $1=id $2=文件名（落点固定 cpd/blacklist/，保留原名、同名覆盖）
 	local id="$1" name="$2"
 	case "$id" in
 		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
 	esac
-	[ "$(name_bytes "$name")" -le 20 ] 2>/dev/null ||
-		out_err '文件名过长（最多 20 个字符）'
-	name_ok "$name" 20 || out_err '文件名含非法字符，无法上传'
+	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
+		out_err '文件名过长（最多 31 个字符）'
+	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
 	case "$name" in
-		default.sh)
-			out_err '不能上传名为 default.sh 的脚本，兜底门户请到「openNDS 设置」页的「黑名单」tab 上传'
-			;;
 		*.sh) ;;
 		*) out_err '只接受 .sh 门户脚本' ;;
 	esac
@@ -2427,15 +2335,18 @@ bl_upload_store() { # $1=id $2=文件名（落点固定 cpd/blacklist/，无文�
 	acquire_lock
 	local d="$CPD_ROOT/blacklist"
 	mkdir -p "$d" 2>/dev/null || out_err '无法创建门户目录'
-	[ -e "$d/$name" ] && out_err '已存在同名脚本，请改名后再上传'
-	mv "$tmp" "$d/$name" 2>/dev/null || out_err '门户文件入库失败'
-	chmod 755 "$d/$name" 2>/dev/null
-	printf '{"ok":1}\n'
+	cp "$tmp" "$d/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
+	chmod 755 "$d/$name.tmp" 2>/dev/null
+	mv "$d/$name.tmp" "$d/$name" 2>/dev/null || {
+		rm -f "$d/$name.tmp" 2>/dev/null
+		out_err '替换门户文件失败'
+	}
+	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
 }
 
 bl_portal_delete() { # $1=门户名
 	local name="$1"
-	name_ok "$name" 20 || out_err '门户名非法'
+	name_ok "$name" 31 || out_err '门户名非法'
 	acquire_lock
 	local cur
 	cur=$(uci_val 'zone_blacklist.main.portal' '')
@@ -2655,14 +2566,40 @@ rt_add_ip_rule() { # $1=行号 $2=IP
 
 RT_ESSENTIALS='|allow udp port 53|allow udp port 67|allow tcp port 22|allow tcp port 443|'
 
-rt_b64decode() { # $1 → stdout；无工具 rc=2
+rt_b64decode() { # $1 → stdout；无可用解码器 rc=2
 	if command -v base64 >/dev/null 2>&1; then
 		printf '%s' "$1" | base64 -d 2>/dev/null
-	elif command -v openssl >/dev/null 2>&1; then
-		printf '%s' "$1" | openssl base64 -d -A 2>/dev/null
-	else
-		return 2
+		return $?
 	fi
+	if command -v openssl >/dev/null 2>&1; then
+		printf '%s' "$1" | openssl base64 -d -A 2>/dev/null
+		return $?
+	fi
+	# 兜底：纯 awk 按字节解码（busybox 必带 awk），不依赖 base64/openssl
+	command -v awk >/dev/null 2>&1 || return 2
+	printf '%s' "$1" | LC_ALL=C awk '
+		BEGIN {
+			c = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+			for (i = 1; i <= length(c); i++) v[substr(c, i, 1)] = i - 1
+		}
+		{
+			s = $0
+			for (i = 1; i <= length(s); i++) {
+				ch = substr(s, i, 1)
+				if (ch == "=" || ch == "\r") continue
+				if (!(ch in v)) { bad = 1; continue }
+				buf = buf * 64 + v[ch]
+				bits += 6
+				while (bits >= 8) {
+					bits -= 8
+					p = 2 ^ bits
+					printf "%c", int(buf / p)
+					buf = buf % p
+				}
+			}
+		}
+		END { if (bad) exit 1 }
+	'
 }
 
 rt_get_arg() { # $@ 里找 $1=... 的值（k=v 独立参数）
@@ -2803,7 +2740,10 @@ rt_validate() { # $@ 含 text_b64=...
 	[ "$tb_seen" = '1' ] || out_err '缺少 text_b64 参数'
 	[ "${#tb}" -le 131072 ] || out_err '内容过长'
 	local text
-	text=$(rt_b64decode "$tb") || out_err '缺少 base64 工具'
+	local rc
+	text=$(rt_b64decode "$tb"); rc=$?
+	[ "$rc" = '2' ] && out_err '系统缺少解码工具（awk / base64）'
+	[ "$rc" != '0' ] && out_err '内容不是有效的 base64'
 	[ "$(name_bytes "$text")" -le 65536 ] || out_err '内容过长'
 	rt_parse_text "$text"
 	if [ -n "$RT_ERRS" ]; then
@@ -2840,7 +2780,10 @@ rt_apply() { # $@ 含 text_b64=... passthrough=0|1 [confirm_enable=1]
 	esac
 	[ "${#tb}" -le 131072 ] || out_err '内容过长'
 	local text
-	text=$(rt_b64decode "$tb") || out_err '缺少 base64 工具'
+	local rc
+	text=$(rt_b64decode "$tb"); rc=$?
+	[ "$rc" = '2' ] && out_err '系统缺少解码工具（awk / base64）'
+	[ "$rc" != '0' ] && out_err '内容不是有效的 base64'
 	[ "$(name_bytes "$text")" -le 65536 ] || out_err '内容过长'
 	rt_parse_text "$text"
 	if [ -n "$RT_ERRS" ]; then
@@ -2868,6 +2811,7 @@ EOF2
 		EN_BY_APPLY=1
 	fi
 	uci commit opennds || fail=1
+	uci commit zone_detect 2>/dev/null || true
 	if [ "$fail" = '1' ]; then
 		# revert 丢掉 /tmp/.uci 增量 → 文件放回原位 → 不再 commit（§6.2 第 3 步）
 		uci revert opennds 2>/dev/null
@@ -2879,7 +2823,7 @@ EOF2
 		wjson='["已关闭接管，端口规则当前不生效"]'
 	fi
 	if service_restart; then
-		printf '{"ok":1,"restarted":1,"rules":%s,"warnings":%s,"enabled_by_apply":%s}\n' "$RT_N" "$wjson" "$EN_BY_APPLY"
+		printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"rules":%s,"warnings":%s,"enabled_by_apply":%s}\n' "$RT_N" "$wjson" "$EN_BY_APPLY"
 	else
 		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
 	fi
@@ -3297,7 +3241,7 @@ wg_get_b64() { # $1=参数名 $@=k=v
 	[ "$seen" = '1' ] || out_err "缺少 $key 参数"
 	[ "${#v}" -le 131072 ] || out_err '内容过长'
 	text=$(rt_b64decode "$v") || rc=$?
-	[ "$rc" = '2' ] && out_err '缺少 base64 工具'
+	[ "$rc" = '2' ] && out_err '系统缺少解码工具（awk / base64）'
 	[ "$rc" != '0' ] && out_err '内容不是有效的 base64'
 	[ "$(name_bytes "$text")" -le 65536 ] || out_err '内容过长'
 	printf '%s' "$text"
@@ -3422,7 +3366,7 @@ EOF2
 	fi
 	wjson="$wjson]"
 	if service_restart; then
-		printf '{"ok":1,"restarted":1,"warnings":%s,"enabled_by_apply":%s}\n' "$wjson" "$EN_BY_APPLY"
+		printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"warnings":%s,"enabled_by_apply":%s}\n' "$wjson" "$EN_BY_APPLY"
 	else
 		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
 	fi
@@ -3976,7 +3920,7 @@ EOF2
 		out_err '写入配置失败，已回滚'
 	fi
 	if service_restart; then
-		printf '{"ok":1,"restarted":1,"warnings":[],"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
+		printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"warnings":[],"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
 	else
 		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
 	fi
@@ -4001,6 +3945,21 @@ st_iface_exists() { # $1=接口名 → 在 ip -4 -o addr show 里
 	ip -4 -o addr show 2>/dev/null | awk -v n="$1" '$2 == n { f = 1 } END { exit !f }'
 }
 
+# 公平使用策略开关：zone_detect 里存过就以它为准；没存过按 openNDS 现有速率推断
+fup_enabled_val() {
+	local v u d
+	v=$(uci_val 'zone_detect.main.fup_enabled' '')
+	case "$v" in
+		1) printf '1'; return 0 ;;
+		0) printf '0'; return 0 ;;
+	esac
+	u=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
+	d=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
+	int_valid "$u" || u=0
+	int_valid "$d" || d=0
+	if [ "$u" = '0' ] && [ "$d" = '0' ]; then printf '0'; else printf '1'; fi
+}
+
 st_fup_split() { # $1=原始值 → stdout "动作|数值"（0/未设/空/脏值 → reject|0）
 	local v
 	case "$1" in
@@ -4020,6 +3979,27 @@ st_fup_split() { # $1=原始值 → stdout "动作|数值"（0/未设/空/脏值
 	return 0
 }
 
+# 列某类型的可选门户（不含内置 default.sh）→ "name<TAB>kind" 行
+st_portal_items() { # $1=tab
+	local d="$CPD_ROOT/default/$1" f b
+	[ -d "$d" ] || return 0
+	for f in "$d"/*; do
+		[ -e "$f" ] || continue
+		b="${f##*/}"
+		case "$b" in
+			.* | default.sh | default) continue ;;
+		esac
+		if [ -f "$f" ]; then
+			case "$b" in
+				*.sh) printf '%s\tfile\n' "$b" ;;
+			esac
+		elif [ -d "$f" ] && [ -f "$f/theme.sh" ]; then
+			printf '%s\tdir\n' "$b"
+		fi
+	done
+	return 0
+}
+
 st_status() {
 	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
 		out_err '未找到 openNDS 配置'
@@ -4030,14 +4010,24 @@ st_status() {
 	upr="${up#*|}"
 	dwa="${dw%%|*}"
 	dwr="${dw#*|}"
-	# 门户三态：看文件在不在（决策 #4）
+	# 每个类型：当前选中的门户（空=内置 default.sh）+ 可选项（上传时保留的原名）
+	local sel items isep2 pn pk
 	for t in wireless wired blacklist; do
-		if [ -f "$CPD_ROOT/default/$t/default.sh" ]; then
-			b=true
-		else
-			b=false
-		fi
-		pj="$pj$sep\"$t\":$b"
+		sel=$(uci_val "zone_detect.main.portal_$t" '')
+		[ "$sel" = 'default' ] && sel=''
+		[ -n "$sel" ] && ! z_portal_exists "$CPD_ROOT/default/$t" "$sel" && sel=''
+		items=''
+		isep2=''
+		while IFS='	' read -r pn pk; do
+			[ -n "$pn" ] || continue
+			items="$items$isep2\"$(json_escape "$pn")\""
+			isep2=','
+		done <<EOF3
+$(st_portal_items "$t")
+EOF3
+		pj="$pj$sep\"$t\":{\"sel\":\"$(json_escape "$sel")\",\"builtin\":$(
+			[ -f "$CPD_ROOT/default/$t/default.sh" ] && printf 'true' || printf 'false'
+		),\"items\":[$items]}"
 		sep=','
 	done
 	# 接口列表：只列有 IPv4 的（决策 #7），同名只取第一条
@@ -4046,7 +4036,15 @@ st_status() {
 		ij="$ij$isep{\"name\":\"$(json_escape "$n")\",\"ip\":\"$(json_escape "$ipaddr")\"}"
 		isep=','
 	done <<EOF2
-$(ip -4 -o addr show 2>/dev/null | awk '{split($4, a, "/"); if ($2 != "" && !($2 in s)) { s[$2] = 1; print $2 "\t" a[1] } }')
+$(ip -4 -o addr show 2>/dev/null | awk '
+		function skip(n) {
+			return n == "lo" || n ~ /^docker/ || n ~ /^veth/ ||
+			       n ~ /^ppp/ || n ~ /^tun/ || n ~ /^tap/ || n ~ /^wg/
+		}
+		{
+			split($4, a, "/")
+			if ($2 != "" && !($2 in s) && !skip($2)) { s[$2] = 1; print $2 "\t" a[1] }
+		}')
 EOF2
 	ifc=$(uci_val 'opennds.@opennds[0].gatewayinterface' 'br-lan')
 	[ -n "$ifc" ] || ifc='br-lan'
@@ -4059,50 +4057,83 @@ EOF2
 			dev="$rd"
 		fi
 	fi
-	printf '{"ok":1,"enabled":%s,"portals":{%s},"fup":{"upAction":"%s","upRate":%s,"downAction":"%s","downRate":%s},"iface":"%s","device":"%s","ifaces":[%s]}\n' \
-		"$(nds_enabled)" "$pj" "$upa" "$upr" "$dwa" "$dwr" \
+	local fup_en
+	fup_en=$(fup_enabled_val)
+	printf '{"ok":1,"enabled":%s,"portals":{%s},"fupEnabled":%s,"fup":{"upAction":"%s","upRate":%s,"downAction":"%s","downRate":%s},"iface":"%s","device":"%s","ifaces":[%s]}\n' \
+		"$(nds_enabled)" "$pj" "$fup_en" "$upa" "$upr" "$dwa" "$dwr" \
 		"$(json_escape "$ifc")" "$(json_escape "$dev")" "$ij"
 }
 
-st_upload_default() { # $1=tab $2=id（文件由前端写进 /tmp/zone_up/<id>/default.sh）
+st_upload_default() { # $1=tab $2=id $3=文件名（保留上传时的原名落盘）
 	st_tab_ok "$1" || out_err '目标类型非法'
-	local id="$2"
+	local tab="$1" id="$2" name="$3"
 	case "$id" in
 		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
 	esac
-	acquire_lock
-	local tmp="$ZONE_UP/$id/default.sh"
-	local dir="$CPD_ROOT/default/$1"
+	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
+		out_err '文件名过长（最多 31 个字符）'
+	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
+	case "$name" in
+		*.sh) ;;
+		*) out_err '只接受 .sh 门户脚本' ;;
+	esac
+	local tmp="$ZONE_UP/$id/$name"
 	[ -f "$tmp" ] || out_err '上传会话不存在或已过期，请重新上传'
 	local sz
 	sz=$(wc -c < "$tmp" 2>/dev/null | tr -d ' ')
 	[ -n "$sz" ] && [ "$sz" -gt 0 ] || out_err '文件内容为空'
 	[ "$sz" -le 524288 ] || out_err '文件过大（上限 512KB）'
+	acquire_lock
+	local dir="$CPD_ROOT/default/$tab"
 	mkdir -p "$dir" 2>/dev/null || out_err '无法创建目标目录'
 	# 原子覆盖：先落同盘 .tmp 再 mv（决策 #14，避免 source 时读到半截文件）
-	cp "$tmp" "$dir/default.sh.tmp" 2>/dev/null || out_err '写入门户文件失败'
-	chmod 755 "$dir/default.sh.tmp" 2>/dev/null || {
-		rm -f "$dir/default.sh.tmp" 2>/dev/null
+	cp "$tmp" "$dir/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
+	chmod 755 "$dir/$name.tmp" 2>/dev/null || {
+		rm -f "$dir/$name.tmp" 2>/dev/null
 		out_err '无法设置执行权限'
 	}
-	mv "$dir/default.sh.tmp" "$dir/default.sh" 2>/dev/null || {
-		rm -f "$dir/default.sh.tmp" 2>/dev/null
+	mv "$dir/$name.tmp" "$dir/$name" 2>/dev/null || {
+		rm -f "$dir/$name.tmp" 2>/dev/null
 		out_err '替换门户文件失败'
 	}
 	# 清临时目录（id 已白名单校验，路径限定在 ZONE_UP 下）
 	case "$ZONE_UP/$id" in
 		"$ZONE_UP"/*) rm -rf "$ZONE_UP/$id" 2>/dev/null ;;
 	esac
+	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
+}
+
+st_portal_save() { # $1=tab $2=门户名（default/空 = 内置 default.sh）
+	st_tab_ok "$1" || out_err '目标类型非法'
+	acquire_lock
+	case "$2" in
+		'' | default)
+			uci -q delete "zone_detect.main.portal_$1" 2>/dev/null
+			;;
+		*)
+			name_ok "$2" 31 || out_err '门户名非法'
+			z_portal_exists "$CPD_ROOT/default/$1" "$2" || out_err '门户不存在'
+			uci set "zone_detect.main.portal_$1"="$2"
+			;;
+	esac
+	uci commit zone_detect || out_err '写入配置失败'
 	printf '{"ok":1}\n'
 }
 
-st_clean_default() { # $1=tab（只删 default.sh 一个文件，§4.2）
+st_clean_default() { # $1=tab $2=门户名（保留原名的那个文件）
 	st_tab_ok "$1" || out_err '目标类型非法'
+	local tab="$1" name="$2"
+	name_ok "$name" 31 || out_err '门户名非法'
+	case "$name" in
+		default.sh) out_err '内置默认门户不能清理' ;;
+	esac
 	acquire_lock
-	local dir="$CPD_ROOT/default/$1"
-	[ -f "$dir/default.sh" ] || out_err 'default.sh 不存在'
-	rm -f "$dir/default.sh" 2>/dev/null || out_err '删除失败'
-	rmdir "$dir" 2>/dev/null
+	local dir="$CPD_ROOT/default/$tab" sel
+	sel=$(uci_val "zone_detect.main.portal_$tab" '')
+	[ "$sel" = "$name" ] &&
+		out_err '该门户正在使用中，请先在「门户选择」里换一个再清理'
+	# 文件已被别处删掉时按成功处理
+	[ -e "$dir/$name" ] && rm -rf "$dir/$name" 2>/dev/null
 	printf '{"ok":1}\n'
 }
 
@@ -4120,8 +4151,8 @@ st_rate_val() { # $1=动作 $2=速率 $3=结果变量名（直接调用，out_er
 	return 0
 }
 
-st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [confirm_enable=1]
-	local a upa='' upr='' dwa='' dwr='' ifc='' uv=0 dv=0
+st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [fup_enabled=0|1] [confirm_enable=1]
+	local a upa='' upr='' dwa='' dwr='' ifc='' uv=0 dv=0 fen=1
 	for a in "$@"; do
 		case "$a" in
 			up_action=*) upa="${a#*=}" ;;
@@ -4129,9 +4160,14 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [confirm_e
 			down_action=*) dwa="${a#*=}" ;;
 			down_rate=*) dwr="${a#*=}" ;;
 			iface=*) ifc="${a#*=}" ;;
+			fup_enabled=*) fen="${a#*=}" ;;
 			confirm_enable=1) CONFIRM_ENABLE=1 ;;
 		esac
 	done
+	case "$fen" in
+		0 | 1) ;;
+		*) out_err '公平使用策略开关值非法' ;;
+	esac
 	case "$upa" in
 		limit | reject) ;;
 		*) out_err '上传动作非法' ;;
@@ -4145,8 +4181,14 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [confirm_e
 		*[!A-Za-z0-9._-]* | .* | *..*) out_err '网络接口名非法' ;;
 	esac
 	st_iface_exists "$ifc" || out_err '网络接口不存在或没有 IPv4 地址'
-	st_rate_val "$upa" "$upr" uv
-	st_rate_val "$dwa" "$dwr" dv
+	if [ "$fen" = '1' ]; then
+		st_rate_val "$upa" "$upr" uv
+		st_rate_val "$dwa" "$dwr" dv
+	else
+		# 开关关闭：清空速率，openNDS 侧即不启用配额限速
+		uv=0
+		dv=0
+	fi
 	guard_enable || return 0
 	acquire_lock
 	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
@@ -4158,6 +4200,7 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [confirm_e
 	uci set 'opennds.@opennds[0].fup_upload_throttle_rate'="$uv" || fail=1
 	uci set 'opennds.@opennds[0].fup_download_throttle_rate'="$dv" || fail=1
 	uci set 'opennds.@opennds[0].gatewayinterface'="$ifc" || fail=1
+	uci set 'zone_detect.main.fup_enabled'="$fen" || fail=1
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
 		EN_BY_APPLY=1
@@ -4169,7 +4212,7 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [confirm_e
 		out_err '写入配置失败，已回滚'
 	fi
 	if service_restart; then
-		printf '{"ok":1,"restarted":1,"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
+		printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
 	else
 		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
 	fi
@@ -4302,8 +4345,9 @@ case "$PAGE" in
 		case "$SUB" in
 			status) st_status ;;
 			upload_begin) z_upload_begin "$1" ;;
-			upload_default) st_upload_default "$1" "$2" ;;
-			clean_default) st_clean_default "$1" ;;
+			upload_default) st_upload_default "$1" "$2" "$3" ;;
+			portal_save) st_portal_save "$1" "$2" ;;
+			clean_default) st_clean_default "$1" "$2" ;;
 			apply) st_apply "$@" ;;
 			*) out_err "settings：未知子命令 $SUB" ;;
 		esac

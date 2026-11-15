@@ -55,10 +55,10 @@ return view.extend({
 				E('input', { 'type': 'file', 'accept': '.sh', 'id': 'cpd-bl-file', 'style': 'display:none' }),
 				E('div', { 'style': 'margin-top:10px;display:flex;gap:10px' }, [
 					E('button', {
-						'class': 'btn',
+						'class': 'cbi-button',
 						'click': function () { fileInput = document.getElementById('cpd-bl-file'); pickFile(); }
 					}, _('上传')),
-					E('button', { 'class': 'btn', 'click': showUploaded }, _('已上传'))
+					E('button', { 'class': 'cbi-button', 'click': showUploaded }, _('已上传'))
 				])
 			]));
 			body.appendChild(sec2);
@@ -82,7 +82,7 @@ return view.extend({
 		function renderMacs() {
 			macPanel.innerHTML = '';
 			macPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
-				E('button', { 'class': 'btn', 'click': startAdd }, _('添加'))
+				E('button', { 'class': 'cbi-button', 'click': startAdd }, _('编辑'))
 			]));
 			if (state.editing) {
 				var ta = E('textarea', {
@@ -93,7 +93,7 @@ return view.extend({
 				macPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
-						E('button', { 'class': 'btn', 'click': cancelEdit }, _('取消')),
+						E('button', { 'class': 'cbi-button', 'click': cancelEdit }, _('取消')),
 						E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function () { applyMacs(ta); } }, _('应用'))
 					])
 				]));
@@ -164,34 +164,45 @@ return view.extend({
 		}
 
 		/* ---------- 门户 ---------- */
+		/* 下拉最长 10 个字符，全名放 title 悬停可见 */
+		function shortName(n) {
+			n = String(n || '');
+			return n.length > 10 ? n.slice(0, 10) + '…' : n;
+		}
+
 		function renderPortal() {
 			portalBox.innerHTML = '';
-			var sel = E('select', { 'class': 'cpd-input', 'style': 'max-width:320px' }, [
-				E('option', { value: 'default' }, _('默认门户'))
+			var sel = E('select', {
+				'class': 'cpd-input',
+				'style': 'max-width:320px;min-width:190px;height:34px'
+			}, [
+				E('option', { value: 'default', 'title': _('默认门户') }, _('默认门户'))
 			].concat(state.portals.map(function (p) {
-				return E('option', { value: p.name }, p.name);
+				return E('option', { value: p.name, 'title': p.name }, shortName(p.name));
 			})));
 			sel.value = state.portal || 'default';
 			if (sel.value !== (state.portal || 'default')) sel.value = 'default';
+			/* 选完即刻生效（黑名单页是即时动作页，没有单独的「应用」） */
+			sel.addEventListener('change', function () {
+				var v = this.value;
+				CPD.api('blacklist', 'save_portal', ['portal=' + v]).then(function (j) {
+					if (j.error === 'busy') { toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+					if (!j.ok) { toast(j.error || _('应用失败'), 'err'); renderPortal(); return; }
+					state.portal = (v === 'default') ? '' : v;
+					toast(v === 'default' ? _('门户已切换为默认门户')
+						: _('当前门户已切换为 %s').format(v), 'ok');
+				}).catch(function (e) {
+					toast((e && e.error) || _('应用失败'), 'err');
+					renderPortal();
+				});
+			});
 			portalBox.appendChild(E('div', { 'class': 'cpd-field' }, [
 				E('label', {}, _('门户选择')),
 				sel,
-				E('div', { 'class': 'cpd-actions', 'style': 'margin-top:8px' }, [
-					E('button', {
-						'class': 'cbi-button cbi-button-positive',
-						'click': function () {
-							CPD.api('blacklist', 'save_portal', ['portal=' + sel.value])
-								.then(function (j) {
-									if (j.error === 'busy') { toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-									if (!j.ok) { toast(j.error || _('应用失败'), 'err'); return; }
-									toast(_('门户已应用：%s').format(sel.value === 'default' ? _('默认门户') : sel.value), 'ok');
-									state.portal = (sel.value === 'default') ? '' : sel.value;
-								}).catch(function (e) {
-									toast((e && e.error) || _('应用失败'), 'err');
-								});
-						}
-					}, _('应用'))
-				])
+				E('span', {
+					'style': 'font-size:11.5px;color:#7a8794;' +
+						'font-family:ui-monospace,Consolas,monospace'
+				}, _('门户目录：/usr/lib/opennds/cpd/blacklist/'))
 			]));
 		}
 
@@ -202,12 +213,8 @@ return view.extend({
 				var f = input.files && input.files[0];
 				if (!f) return;
 				var name = f.name;
-				if (!/\.sh$/i.test(name) || name.toLowerCase() === 'default.sh') {
-					toast(_('只支持上传后缀为 .sh 的脚本，且不能命名为 default.sh'), 'warn');
-					return;
-				}
-				if (state.portals.some(function (p) { return p.name === name; })) {
-					toast(_('已存在同名脚本，请改名后再上传'), 'warn');
+				if (!/\.sh$/i.test(name)) {
+					toast(_('只支持上传后缀为 .sh 的脚本'), 'warn');
 					return;
 				}
 				var reader = new FileReader();
@@ -220,8 +227,12 @@ return view.extend({
 						return CPD.api('blacklist', 'upload_store', [id, name]);
 					}).then(function (j) {
 						if (!j.ok) throw { error: j.error || '上传失败' };
-						toast(_('已上传脚本：%s').format(name), 'ok');
-						refreshSilently();
+						toast(_('已上传 %s，并在门户选择中启用').format(name), 'ok');
+						/* 上传即选中 */
+						state.portal = name;
+						CPD.api('blacklist', 'save_portal', ['portal=' + name]).then(function () {
+							refreshSilently();
+						});
 					}).catch(function (e) {
 						toast((e && e.error) || _('上传失败'), 'err');
 					});
@@ -240,7 +251,6 @@ return view.extend({
 						}, p.name + (p.kind === 'dir' ? '/' : '')),
 						E('button', {
 							'class': 'cbi-button cbi-button-negative',
-							'style': 'padding:2px 10px',
 							'click': function () { askDelete(p); }
 						}, _('删除'))
 					]);
@@ -268,7 +278,20 @@ return view.extend({
 			);
 		}
 
+		renderAll();
 		refreshSilently();
+
+		/* ---------- LuCI 框架底部按钮：本页为即时生效，保存/应用仅提示 ---------- */
+		this.handleSave = function () {
+			CPD.toast(_('本页改动即时生效，无需单独保存'), 'ok');
+			return Promise.resolve();
+		};
+		this.handleSaveApply = this.handleSave;
+		this.handleReset = function () {
+			refreshSilently();
+			return Promise.resolve();
+		};
+
 		return body;
 	}
 });

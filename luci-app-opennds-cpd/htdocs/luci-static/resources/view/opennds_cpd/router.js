@@ -65,31 +65,22 @@ return view.extend({
 			renderPanel();
 			body.appendChild(sec2);
 
-			var actions = E('div', { 'class': 'cpd-actions-right' }, [
-				E('button', {
-					'class': 'cbi-button cbi-button-positive',
-					'id': 'cpd-apply',
-					'click': handleApply
-				}, _('应用'))
-			]);
-			body.appendChild(actions);
 		}
 
 		function renderPanel() {
 			panel.innerHTML = '';
 			panel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
-					'class': 'btn',
+					'class': 'cbi-button',
 					'aria-expanded': state.editing ? 'true' : 'false',
 					'click': startAdd
-				}, _('添加'))
+				}, _('编辑'))
 			]));
 
 			if (state.editing) {
 				var ta = E('textarea', {
 					'class': 'cpd-ta',
-					'spellcheck': 'false',
-					'placeholder': '4433\ntcp/udp 4267\n192.168.1.1\ntcp/udp 3654 192.168.1.1'
+					'spellcheck': 'false'
 				});
 				ta.value = state.draft;
 				ta.addEventListener('input', function () { state.draft = ta.value; });
@@ -97,9 +88,9 @@ return view.extend({
 					E('label', {}, _('支持IP、协议、端口号。')),
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
-						E('button', { 'class': 'btn', 'click': cancelEdit }, _('取消')),
-						E('button', { 'class': 'btn', 'click': clearDraft }, _('清空')),
-						E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function () { saveEdit(ta); } }, _('保存'))
+						E('button', { 'class': 'cbi-button', 'click': cancelEdit }, _('取消')),
+						E('button', { 'class': 'cbi-button', 'click': clearDraft }, _('清空')),
+						E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function () { saveEdit(ta); } }, _('确定'))
 					])
 				]));
 				window.setTimeout(function () {
@@ -203,9 +194,20 @@ return view.extend({
 		}
 
 		refresh();
+		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
+		this.handleSave = function () {
+			CPD.toast(_('本页改动即时生效，无需单独保存'), 'ok');
+			return Promise.resolve();
+		};
+		this.handleSaveApply = function () {
+			return handleApply();
+		};
+		this.handleReset = function () {
+			refresh();
+			return Promise.resolve();
+		};
+
 		return body;
 	},
 
-	handleSave: null,
-	handleApply: null
 });

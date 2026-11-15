@@ -21,13 +21,20 @@
 #          /usr/lib/opennds/cpd/wireless/<SSID>/
 #   3. Otherwise the zone is wired: the portal is searched in
 #          /usr/lib/opennds/cpd/wired/<interface, e.g. br-lan>/
-#   4. Portal resolution order inside the zone directory:
-#        a) If LuCI has marked this zone as "default"
+#   4. Portal resolution inside the zone directory (files keep the name they
+#      were uploaded with - LuCI never renames them):
+#        a) If LuCI marked this zone as "use the type default"
 #           (/usr/lib/opennds/zone_markers contains "type|zone|"):
-#              /usr/lib/opennds/cpd/default/<type>/default.sh
-#        b) <zone>/<zone>.sh            (applied portal script)
-#        c) <zone>/<zone>/theme.sh      (applied portal folder)
-#        d) /usr/lib/opennds/cpd/default/<type>/default.sh   (type default)
+#              the type default portal (see 4b)
+#        b) Otherwise the portal LuCI recorded for this zone in
+#           /etc/config/zone_detect:
+#              zone_detect.main.wireless = 'SSID|portal.sh'
+#              zone_detect.main.wired    = 'br-lan|portal.sh'
+#           resolved as <zone>/<portal.sh> or <zone>/<portal>/theme.sh
+#        c) <zone>/default/default.sh  (per-zone fallback)
+#        d) type default portal: cpd/default/<type>/<selected>.sh
+#           (zone_detect.main.portal_<type>), else
+#           cpd/default/<type>/default.sh
 #   5. If nothing is found, falls back to the stock
 #      theme_click-to-continue-basic.sh so clients always get a portal.
 #
@@ -40,6 +47,7 @@ ZONE_ROOT_BLACKLIST="$CPD_ROOT/blacklist"
 DEFAULT_ROOT="$CPD_ROOT/default"
 MARKERS="/usr/lib/opennds/zone_markers"
 BLACKLIST_CONFIG="/etc/config/zone_blacklist"
+ZONE_DETECT_CONFIG="/etc/config/zone_detect"
 FALLBACK_THEME="/usr/lib/opennds/theme_click-to-continue-basic.sh"
 
 zone_debug() {
@@ -128,6 +136,48 @@ portal_from_name() {
 	fi
 }
 
+# Portal chosen for one zone by LuCI, stored as a uci list entry
+#   zone_detect.main.wireless = 'SSID|portalname'
+#   zone_detect.main.wired    = 'br-lan|portalname'
+# The portal file keeps the name it was uploaded with (no renaming), so the
+# value is used directly as the portal name. Empty output = no choice yet.
+portal_for_zone() {
+	pz_type="$1"
+	pz_zone="$2"
+	[ -f "$ZONE_DETECT_CONFIG" ] || return
+	uci -q show "zone_detect.main.$pz_type" 2>/dev/null |
+		sed -n 's/^[^=]*=//p' |
+		awk -F"'" -v z="$pz_zone" '{
+			for (i = 2; i <= NF; i += 2) {
+				v = $i
+				if (v == "") continue
+				if (substr(v, 1, length(z) + 1) == z "|") {
+					print substr(v, length(z) + 2)
+					exit
+				}
+			}
+		}'
+}
+
+# Type default portal: the portal selected on the Settings page for this type
+# (zone_detect.main.portal_<type>), else the built-in default.sh.
+type_default_portal() {
+	td_type="$1"
+	td_dir="$DEFAULT_ROOT/$td_type"
+	[ -d "$td_dir" ] || return
+	td_name=""
+	[ -f "$ZONE_DETECT_CONFIG" ] &&
+		td_name=$(uci -q get "zone_detect.main.portal_$td_type" 2>/dev/null)
+	if [ ! -z "$td_name" ] && [ "$td_name" != "default" ]; then
+		td_sel=$(portal_from_name "$td_dir" "$td_name")
+		if [ ! -z "$td_sel" ]; then
+			echo "$td_sel"
+			return
+		fi
+	fi
+	[ -f "$td_dir/default.sh" ] && echo "$td_dir/default.sh"
+}
+
 # ---- Blacklist check (highest priority) -----------------------------------
 
 zone_type=""
@@ -142,8 +192,8 @@ if [ ! -z "$clientmac" ] && [ -f "$BLACKLIST_CONFIG" ]; then
 			# Blacklisted: ignore zones entirely, serve the blacklist portal.
 			bportal=$(uci -q get zone_blacklist.main.portal)
 			portal=$(portal_from_name "$ZONE_ROOT_BLACKLIST" "$bportal")
-			if [ -z "$portal" ] && [ -f "$DEFAULT_ROOT/blacklist/default.sh" ]; then
-				portal="$DEFAULT_ROOT/blacklist/default.sh"
+			if [ -z "$portal" ]; then
+				portal=$(type_default_portal blacklist)
 			fi
 			if [ -z "$portal" ]; then
 				portal="$FALLBACK_THEME"
@@ -226,23 +276,25 @@ elif [ ! -z "$zone_name" ]; then
 	if [ -f "$MARKERS" ] && awk -F'|' -v t="$zone_type" -v z="$zone_name" \
 		'NF >= 2 && $1 == t && $2 == z { found = 1; exit } END { exit !found }' "$MARKERS" 2>/dev/null; then
 		# LuCI marked this zone as "use the type default portal"
-		portal="$DEFAULT_ROOT/$zone_type/default.sh"
-	elif [ -f "$zonedir/$zone_name.sh" ]; then
-		portal="$zonedir/$zone_name.sh"
-	elif [ -f "$zonedir/$zone_name/theme.sh" ]; then
-		portal="$zonedir/$zone_name/theme.sh"
-	elif [ -f "$zonedir/default/default.sh" ]; then
-		portal="$zonedir/default/default.sh"
+		portal=$(type_default_portal "$zone_type")
+	else
+		# Portal picked for this very zone (file keeps its uploaded name)
+		zone_portal=$(portal_for_zone "$zone_type" "$zone_name")
+		if [ ! -z "$zone_portal" ]; then
+			portal=$(portal_from_name "$zonedir" "$zone_portal")
+		fi
+		# Directory level default used when the zone has no explicit choice
+		if [ -z "$portal" ] && [ -f "$zonedir/default/default.sh" ]; then
+			portal="$zonedir/default/default.sh"
+		fi
 	fi
 
-	if [ -z "$portal" ] && [ -f "$DEFAULT_ROOT/$zone_type/default.sh" ]; then
-		portal="$DEFAULT_ROOT/$zone_type/default.sh"
+	if [ -z "$portal" ]; then
+		portal=$(type_default_portal "$zone_type")
 	fi
 else
 	# No zone name (unknown interface): type default only.
-	if [ -f "$DEFAULT_ROOT/$zone_type/default.sh" ]; then
-		portal="$DEFAULT_ROOT/$zone_type/default.sh"
-	fi
+	portal=$(type_default_portal "$zone_type")
 fi
 
 if [ ! -f "$portal" ]; then

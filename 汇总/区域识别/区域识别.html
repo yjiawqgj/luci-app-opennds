@@ -17,11 +17,12 @@
   }
   *{box-sizing:border-box;margin:0;padding:0}
   body{
+    min-height:100vh;display:flex;flex-direction:column;
     background:#fff;color:var(--text);
     font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
   }
-  .page{max-width:960px;margin:0 auto;padding:24px 22px 64px}
+  .page{max-width:960px;width:100%;flex:1 1 auto;margin:0 auto;padding:24px 22px 32px}
 
   .pt-head{padding-bottom:16px;border-bottom:1px solid var(--line)}
   .pt-head h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -57,11 +58,12 @@
   .tool-meta{font-size:11.5px;color:var(--faint)}
 
   /* Wi-Fi 卡片 */
-  .wifi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
-  .wired-grid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px;max-width:360px}
+  .wifi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}
+  .wired-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}
   .wifi-card{
     font-family:inherit;text-align:left;background:#fff;border:1px solid var(--line);
-    border-radius:8px;padding:13px 15px;cursor:pointer;min-width:0;color:var(--text);
+    border-radius:8px;padding:16px 16px 15px;cursor:pointer;min-width:0;color:var(--text);
+    display:flex;flex-direction:column;justify-content:center;gap:7px;min-height:92px;
     transition:border-color .12s,background .12s;
   }
   .wifi-card:hover{border-color:#b9c6d1;background:#fafbfc}
@@ -70,18 +72,19 @@
   .wifi-card.is-off{background:#fafbfc}
   .wifi-card.is-off:hover{background:#f5f7f9}
   .wifi-card.is-off.selected{background:var(--primary-weak)}
-  .wc-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
-  .wc-ssid{font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .wc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .wc-ssid{font-size:17px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;letter-spacing:.2px}
   .wifi-card.is-off .wc-ssid{color:var(--muted)}
-  .wc-sub{display:block;font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .wc-ip{display:block;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wc-sub{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wc-sub.weak{color:var(--faint)}
+  .wc-ip{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
   .status-pill{font-size:11px;font-weight:500;line-height:1.5;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap;flex:none}
   .status-pill.on{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}
   .status-pill.off{color:#7c8894;border-color:#dfe5ea;background:#f4f7f9}
 
-  /* 配置内容（不重复显示 Wi-Fi 名称） */
-  .zone-panel{padding-top:16px}
+  /* 配置内容（与卡片区之间留明显间隔） */
+  .zone-panel{margin-top:28px;padding-top:20px;border-top:1px solid var(--line-soft)}
 
   /* 保存 / 应用 */
   .save-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:24px;padding-top:16px;border-top:1px solid var(--line-soft)}
@@ -145,7 +148,12 @@
   }
   .cfm-text{font-size:12.5px;color:var(--muted);line-height:1.75;padding:6px 0 2px}
 
-  .foot-note{max-width:960px;margin:26px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.7;padding:0 22px}
+  /* LuCI 原生底部按钮条（演示：安装后由 LuCI 页面框架提供，视图实现 handleSave/handleSaveApply/handleReset） */
+  .cbi-btn{font-family:inherit;font-size:13px;height:34px;padding:0 16px;border-radius:4px;border:1px solid var(--line);
+    background:#fff;color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .cbi-btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .cbi-btn.positive{background:var(--primary);border-color:var(--primary);color:#fff}
+  .cbi-btn.positive:hover{background:var(--primary-d);border-color:var(--primary-d)}
 
   @media (max-width:640px){
     .page{padding:18px 14px 56px}
@@ -160,6 +168,10 @@
     .wired-grid{max-width:100%}
   }
   @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+  /* ===== 页面说明文字（底部 复位/保存/保存&应用 由 LuCI 框架提供，演示页不绘制） ===== */
+  .page{flex:0 0 auto}
+  .sheet{width:100%}
+  .foot-note{width:100%;max-width:960px;margin:16px auto 32px;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6;padding:0 2px}
 </style>
 </head>
 <body>
@@ -193,11 +205,7 @@
   <section class="sec" id="defaultPanel" hidden>
     <div class="sec-head"><h2>默认模式 <span class="en">Default</span></h2></div>
     <p class="sec-desc" id="defaultNote"></p>
-    <div class="save-row">
-      <button type="button" class="btn" id="defaultSave">保存</button>
-      <button type="button" class="btn primary" id="defaultApply">应用</button>
-      <span class="save-state" id="defaultHint" role="status"></span>
-    </div>
+    <p class="state-line" id="defaultHint" role="status"></p>
   </section>
 
   <!-- ===== 二、无线区域 ===== -->
@@ -209,16 +217,6 @@
 
     <input type="file" id="fileInput" accept=".sh" multiple>
     <div class="zone-panel" id="zoneConfig"></div>
-
-    <div class="save-row" id="zoneSaveRow" hidden>
-      <button type="button" class="btn" id="zoneSave">保存</button>
-      <span class="save-state" id="zoneHint" role="status"></span>
-    </div>
-
-    <div class="save-row" id="zoneApplyBar">
-      <button type="button" class="btn primary" id="zoneApplyAll">应用</button>
-      <span class="save-state">应用已保存的无线区域配置</span>
-    </div>
   </section>
 
   <!-- ===== 三、有线区域 ===== -->
@@ -227,11 +225,6 @@
     <p class="sec-desc">更改网络接口原网络接口配置并不会自动删除，需要要到下方未匹配里手动删除，如果未删除，切换回来时将会使用上次配置。</p>
     <div class="wired-grid" id="wiredGrid"></div>
     <div class="zone-panel" id="wiredConfig"></div>
-    <div class="save-row" id="wiredSaveRow" hidden>
-      <button type="button" class="btn" id="wiredSave">保存</button>
-      <button type="button" class="btn primary" id="wiredApply">应用</button>
-      <span class="save-state" id="wiredHint" role="status"></span>
-    </div>
   </section>
 
   <!-- ===== 未匹配（独立区域，固定在页面最下方） ===== -->
@@ -310,11 +303,10 @@
 
 var WIFI = [
   {ssid:"Guest",   enabled:true},
-  {ssid:"Staff",   enabled:true},
-  {ssid:"Privacy", enabled:false}
+  {ssid:"Staff",   enabled:true}
 ];
 
-var scripts = ["guest.sh", "staff.sh", "privacy.sh"];
+var scripts = ["guest", "staff", "corporate-portal-2026"];
 
 var UNMATCHED = ["unknown.sh", "guest-old.sh", "placement-info.txt"];
 
@@ -342,10 +334,15 @@ function toast(msg,kind){
   $("toasts").appendChild(t);
   setTimeout(function(){ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(function(){ t.remove(); },320); },3000);
 }
+/* 下拉框最多显示 10 个字符，超出截断并用 title 显示全名 */
+function shortName(s){
+  s=String(s==null?"":s);
+  return s.length>10 ? s.slice(0,10)+"…" : s;
+}
 function optionHTML(chosen){
   var h='<option value="">默认</option>';
   scripts.forEach(function(s){
-    h+='<option value="'+esc(s)+'"'+(chosen===s?" selected":"")+'>'+esc(s)+'</option>';
+    h+='<option value="'+esc(s)+'"'+(chosen===s?" selected":"")+' title="'+esc(s)+'">'+esc(shortName(s))+'</option>';
   });
   return h;
 }
@@ -428,11 +425,7 @@ function applyScope(){
   $("wiredPanel").hidden=!isZone;
   $("defaultPanel").hidden=!(state.touched && state.scope==="default");
   if(isZone) renderZoneAll();
-  else{
-    $("zoneSaveRow").hidden=true;
-    $("wiredSaveRow").hidden=true;
-    renderDefault();
-  }
+  else renderDefault();
   renderModeState();
 }
 
@@ -448,18 +441,18 @@ function renderScripts(){
 /* ---------- Wi-Fi 卡片 ---------- */
 function cardSub(w){
   var chosen=state.zoneAuth[w.ssid];
-  if(chosen) return "已选择："+chosen;
-  return w.enabled?"点击选择认证脚本":"已禁用，仍可预先配置";
+  if(chosen) return {text:"认证脚本："+shortName(chosen), weak:false};
+  return {text:"使用默认门户", weak:true};
 }
 function renderWifiCards(){
   var h="";
   WIFI.forEach(function(w){
     var selected=(state.active===w.ssid)?" selected":"";
     var off=w.enabled?"":" is-off";
+    var sub=cardSub(w);
     h+='<button type="button" class="wifi-card'+selected+off+'" data-ssid="'+esc(w.ssid)+'" aria-pressed="'+(state.active===w.ssid?"true":"false")+'">'+
-      '<span class="wc-top"><span class="wc-ssid">'+esc(w.ssid)+'</span>'+
-      '<span class="status-pill '+(w.enabled?"on":"off")+'">'+(w.enabled?"启用":"禁用")+'</span></span>'+
-      '<span class="wc-sub">'+esc(cardSub(w))+'</span>'+
+      '<span class="wc-top"><span class="wc-ssid">'+esc(w.ssid)+'</span></span>'+
+      '<span class="wc-sub'+(sub.weak?" weak":"")+'">'+esc(sub.text)+'</span>'+
     '</button>';
   });
   $("wifiGrid").innerHTML=h;
@@ -472,9 +465,9 @@ function renderWifiCards(){
 /* ---------- 配置内容（不重复显示 Wi-Fi 名称） ---------- */
 function zoneNoteText(){
   var w=wifiBy(state.active), chosen=state.zoneAuth[state.active], parts=[];
-  if(w && !w.enabled) parts.push("该 Wi-Fi 当前为禁用状态，所选脚本会在启用后生效。");
-  if(chosen) parts.push("已选择 "+chosen+"，仅对当前选中的 Wi-Fi 生效。");
-  else parts.push("尚未选择脚本，选择结果仅对当前选中的 Wi-Fi 生效。");
+  if(w && !w.enabled) parts.push("该 Wi-Fi 当前为禁用状态，所选门户会在启用后生效。");
+  if(chosen) parts.push("已选择 "+shortName(chosen)+"，仅对当前选中的 Wi-Fi 生效。");
+  else parts.push("尚未选择门户，选择结果仅对当前选中的 Wi-Fi 生效。");
   return parts.join(" ");
 }
 function toolsHTML(){
@@ -495,10 +488,8 @@ function renderPanel(){
   var box=$("zoneConfig");
   if(!ssid){
     box.innerHTML='<p class="empty-hint">点击上方任意 Wi-Fi 卡片，为它选择认证脚本。</p>';
-    $("zoneSaveRow").hidden=true;
     return;
   }
-  $("zoneSaveRow").hidden=false;
   box.innerHTML=toolsHTML()+
     '<div class="zp-row"><label class="zp-label" for="authSel">认证</label><div class="zp-ctrl">'+
     '<select class="sel" id="authSel">'+optionHTML(state.zoneAuth[ssid])+'</select>'+
@@ -510,18 +501,20 @@ function renderPanel(){
 
 /* ---------- 有线区域 ---------- */
 function renderWiredCards(){
+  var chosen=state.wiredAuth;
   $("wiredGrid").innerHTML=
     '<button type="button" class="wifi-card'+(state.wiredActive?" selected":"")+'" data-wired="1" aria-pressed="'+(state.wiredActive?"true":"false")+'">'+
       '<span class="wc-top"><span class="wc-ssid mono">br-lan</span></span>'+
-      '<span class="wc-ip mono">10.10.10.1</span>'+
+      '<span class="wc-sub mono">10.10.10.1 · openNDS 管理接口</span>'+
+      '<span class="wc-sub'+(chosen?"":" weak")+'">'+(chosen?"认证脚本："+esc(shortName(chosen)):"使用默认门户")+'</span>'+
     '</button>';
   $("wiredGrid").querySelectorAll("[data-wired]").forEach(function(b){
     b.addEventListener("click",function(){ openWired(); });
   });
 }
 function wiredNoteText(){
-  if(state.wiredAuth) return "已选择 "+state.wiredAuth+"，仅对有线区域生效。";
-  return "尚未选择脚本，选择结果仅对有线区域生效。";
+  if(state.wiredAuth) return "已选择 "+shortName(state.wiredAuth)+"，仅对有线区域生效。";
+  return "尚未选择门户，选择结果仅对有线区域生效。";
 }
 function wiredHintInfo(){
   if(state.savedWired===null){
@@ -545,14 +538,10 @@ function bindWiredControls(){
 }
 function renderWiredPanel(){
   var box=$("wiredConfig");
-  var hint=wiredHintInfo();
-  setSaveState($("wiredHint"), hint.text, hint.kind);
   if(!state.wiredActive){
     box.innerHTML='<p class="empty-hint">点击上方有线区域卡片，为它选择认证脚本。</p>';
-    $("wiredSaveRow").hidden=true;
     return;
   }
-  $("wiredSaveRow").hidden=false;
   box.innerHTML=wiredToolsHTML()+
     '<div class="zp-row"><label class="zp-label" for="wiredAuthSel">认证</label><div class="zp-ctrl">'+
     '<select class="sel" id="wiredAuthSel">'+optionHTML(state.wiredAuth)+'</select>'+
@@ -733,6 +722,7 @@ $("wiredConfig").addEventListener("change",function(e){
   state.wiredAuth=e.target.value;
   var note=$("wiredNote");
   if(note) note.textContent=wiredNoteText();
+  renderWiredCards();
   var hint=wiredHintInfo();
   setSaveState($("wiredHint"), hint.text, hint.kind);
 });
@@ -786,73 +776,14 @@ document.addEventListener("keydown",function(e){
   else if(!$("unmatchedMask").hidden) closeUnmatchedModal();
 });
 
-/* ---------- 保存 / 应用 ---------- */
-$("zoneSave").addEventListener("click",function(){
+/* ---------- 保存 / 应用 / 复位（LuCI 底部系统按钮触发） ---------- */
+function doSave(){
   state.touched=true;
   state.savedZone=zoneSnapshot();
-  state.savedMode="zone";
+  if(state.wiredActive) state.savedWired=state.wiredAuth;
+  state.savedMode=state.scope;
   renderZoneAll();
-  toast("保存成功","ok");
-});
-
-$("zoneApplyAll").addEventListener("click",function(){
-  if(!state.savedZone){
-    toast("请先保存无线区域配置，再点击应用","warn");
-    return;
-  }
-  if(!savedZoneValid()){
-    toast("已保存的配置引用了已删除的脚本，请重新保存后再应用","warn");
-    return;
-  }
-  state.touched=true;
-  state.effectiveMode="zone";
-  state.savedMode="zone";
-  renderZoneAll();
-  toast("应用成功","ok");
-});
-
-/* ---------- 有线区域保存 / 应用 ---------- */
-$("wiredSave").addEventListener("click",function(){
-  if(!state.wiredActive) return;
-  state.touched=true;
-  state.savedWired=state.wiredAuth;
-  renderWiredPanel();
-  renderHints();
-  toast("保存成功","ok");
-});
-
-$("wiredApply").addEventListener("click",function(){
-  if(!state.wiredActive) return;
-  if(state.savedWired===null){
-    toast("请先保存有线区域配置，再点击应用","warn");
-    return;
-  }
-  if(state.savedWired && scripts.indexOf(state.savedWired)<0){
-    toast("已保存的有线区域配置引用了已删除的脚本，请重新保存后再应用","warn");
-    return;
-  }
-  state.touched=true;
-  renderWiredPanel();
-  renderHints();
-  toast("应用成功","ok");
-});
-
-$("defaultSave").addEventListener("click",function(){
-  state.touched=true;
-  state.savedMode="default";
-  renderDefault();
-  renderModeState();
-  toast("保存成功","ok");
-});
-
-$("defaultApply").addEventListener("click",function(){
-  state.touched=true;
-  state.effectiveMode="default";
-  state.savedMode="default";
-  renderDefault();
-  renderModeState();
-  toast("应用成功","ok");
-});
+}
 
 /* ---------- 初始化 ---------- */
 $("scriptsMask").hidden=true;

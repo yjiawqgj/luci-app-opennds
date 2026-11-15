@@ -23,18 +23,20 @@ var CSS = '\
 .zd-ms-dirty{color:#b57d17}\
 .zd-state-line{font-size:11.5px;color:#9aa6b2;margin-top:8px;line-height:1.6;max-width:620px}\
 .zd-empty-hint{font-size:12.5px;color:#9aa6b2;margin-top:16px;line-height:1.6}\
-.zd-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}\
-.zd-grid1{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px;max-width:360px}\
-.zd-card{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:13px 15px;cursor:pointer;min-width:0;color:#222a31}\
+.zd-grid3{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}\
+.zd-grid1{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}\
+.zd-card{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:16px 16px 15px;cursor:pointer;min-width:0;color:#222a31;display:flex;flex-direction:column;justify-content:center;gap:7px;min-height:92px;transition:border-color .12s,background .12s}\
+.zd-panel{margin-top:28px;padding-top:20px;border-top:1px solid #e9edf0}\
 .zd-card:hover{border-color:#b9c6d1;background:#fafbfc}\
 .zd-card.selected{border-color:#2274a5;background:#e7f1f8}\
 .zd-card.is-off{background:#fafbfc}\
 .zd-sec-desc{font-size:12px;color:#657585;margin-top:5px;line-height:1.6;max-width:760px}\
 .zd-sec-desc.mt{margin-top:12px}\
-.zd-wc-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}\
-.zd-wc-ssid{font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}\
-.zd-wc-sub{display:block;font-size:11.5px;color:#9aa6b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
-.zd-wc-ip{display:block;font-size:11.5px;color:#657585;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
+.zd-wc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}\
+.zd-wc-ssid{font-size:17px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}\
+.zd-wc-sub{display:block;font-size:12px;color:#9aa6b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
+.zd-wc-sub.weak{color:#b3bcc5}\
+.zd-wc-ip{display:block;font-size:12px;color:#657585;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
 .zd-pill{font-size:11px;font-weight:500;line-height:1.5;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap;flex:none}\
 .zd-pill.on{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}\
 .zd-pill.off{color:#7c8894;border-color:#dfe5ea;background:#f4f7f9}\
@@ -47,13 +49,6 @@ var CSS = '\
 .zd-save-state{font-size:11.5px;color:#9aa6b2;margin-left:4px}\
 .zd-save-state.dirty{color:#b57d17}\
 .zd-save-state.ok{color:#2e9468}\
-.zd-btn{font-family:inherit;font-size:13px;font-weight:500;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:6px;height:34px;padding:0 16px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}\
-.zd-btn:hover{background:#f4f7f9;border-color:#c4ccd4}\
-.zd-btn.primary{background:#2274a5;border-color:#2274a5;color:#fff}\
-.zd-btn.primary:hover{background:#1b5f8a;border-color:#1b5f8a}\
-.zd-btn.small{height:30px;padding:0 12px;font-size:12px}\
-.zd-btn.danger-ghost{color:#c94848;border-color:#e6bcbc;background:#fff}\
-.zd-btn.danger-ghost:hover{background:#fbf1f1;border-color:#d79a9a}\
 .zd-mask{position:fixed;inset:0;z-index:700;background:rgba(24,34,44,.42);display:none;align-items:center;justify-content:center;padding:20px}\
 .zd-mask.on{display:flex}\
 .zd-modal{background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);width:min(480px,100%);max-height:min(78vh,560px);display:flex;flex-direction:column;overflow:hidden}\
@@ -148,14 +143,11 @@ return view.extend({
 
 		var body = E('div', { 'class': 'cpd-page' });
 
-		/* ---------- 提示条 ---------- */
+		/* ---------- 提示条（仅 busy；「尚未接管门户」横幅已按用户要求移除） ---------- */
 		var warnbar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' }, '');
 		function renderWarnbar() {
 			if (state.busy) {
 				warnbar.textContent = _('等待上一步完成，请稍候重试');
-				warnbar.style.display = '';
-			} else if (!state.engaged) {
-				warnbar.textContent = _('尚未接管门户：选好区域后点「应用」，openNDS 才会使用本插件的门户');
 				warnbar.style.display = '';
 			} else {
 				warnbar.style.display = 'none';
@@ -346,22 +338,11 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 卡片显示名 ---------- */
-		function displayOf(type, zone, store, card) {
-			var items = state.uploaded[upKey(type, zone)] || [];
-			for (var i = 0; i < items.length; i++) {
-				if (items[i].store === store) return items[i].label;
-			}
-			if (card && card.current === store) return card.currentOrig || store;
-			return store;
-		}
-
 		/* ---------- 无线区域 ---------- */
 		var wifiGrid = E('div', { 'class': 'zd-grid3' });
-		var zoneConfig = E('div', {});
+		var zoneConfig = E('div', { 'class': 'zd-panel' });
 		var zoneSaveRow = E('div', { 'class': 'zd-save-row', 'style': 'display:none' });
 		var zoneHint = E('span', { 'class': 'zd-save-state' }, '');
-		var zoneApplyBar = E('div', { 'class': 'zd-save-row' });
 		var fileInput = E('input', { 'type': 'file', 'accept': '.sh', 'multiple': '',
 			'style': 'display:none' });
 		var dirInput = E('input', { 'type': 'file', 'webkitdirectory': '',
@@ -369,45 +350,53 @@ return view.extend({
 
 		function cardSub(c) {
 			var d = state.zoneDraft[c.ssid] || '';
-			if (d) return _('已选择：%s').format(displayOf('wireless', c.ssid, d, c));
-			return c.disabled ? _('已禁用，仍可预先配置') : _('点击选择认证脚本');
+			if (d) return { text: _('认证脚本：%s').format(shortName(d)) };
+			return { text: _('使用默认门户'), weak: true };
 		}
 
+		/* 只显示在用的 Wi-Fi（禁用的不出现，也不带启用/禁用胶囊） */
 		function renderWifiCards() {
-			var h = state.wireless.map(function (c, idx) {
+			var live = state.wireless.filter(function (c) { return !c.disabled; });
+			var h = live.map(function (c) {
 				var sel = (state.active === c.ssid) ? ' selected' : '';
-				var off = c.disabled ? ' is-off' : '';
-				return '<button type="button" class="zd-card' + sel + off +
-					'" data-idx="' + idx + '" aria-pressed="' +
+				var sub = cardSub(c);
+				return '<button type="button" class="zd-card' + sel +
+					'" data-ssid="' + esc(c.ssid) + '" aria-pressed="' +
 					(state.active === c.ssid ? 'true' : 'false') + '">' +
-					'<span class="zd-wc-top"><span class="zd-wc-ssid">' + esc(c.ssid) + '</span>' +
-					'<span class="zd-pill ' + (c.disabled ? 'off' : 'on') + '">' +
-					(c.disabled ? _('禁用') : _('启用')) + '</span></span>' +
-					'<span class="zd-wc-sub">' + esc(cardSub(c)) + '</span>' +
+					'<span class="zd-wc-top"><span class="zd-wc-ssid">' + esc(c.ssid) + '</span></span>' +
+					'<span class="zd-wc-sub' + (sub.weak ? ' weak' : '') + '">' + esc(sub.text) + '</span>' +
 					'</button>';
 			}).join('');
+			if (!h) h = '<p class="cpd-note">' + _('本机没有处于启用状态的 Wi-Fi') + '</p>';
 			wifiGrid.innerHTML = h;
-			wifiGrid.querySelectorAll('[data-idx]').forEach(function (b) {
+			wifiGrid.querySelectorAll('[data-ssid]').forEach(function (b) {
 				b.addEventListener('click', function () {
-					var c = state.wireless[Number(b.getAttribute('data-idx'))];
-					if (!c) return;
-					state.active = c.ssid;
+					var ssid = b.getAttribute('data-ssid');
+					if (!ssid) return;
+					state.active = ssid;
 					renderAll();
 				});
 			});
 		}
 
+		/* 下拉里最长显示 10 个字符，全名放 title（悬停可见） */
+		function shortName(n) {
+			n = String(n || '');
+			return n.length > 10 ? n.slice(0, 10) + '…' : n;
+		}
+
 		function selOptions(type, zone, card) {
 			var items = state.uploaded[upKey(type, zone)] || [];
-			var opts = [E('option', { value: '' }, _('默认'))];
+			var opts = [E('option', { value: '', 'title': _('默认') }, _('默认'))];
 			var hasCur = false;
 			items.forEach(function (it) {
-				if (it.store === (card && card.current)) hasCur = true;
-				opts.push(E('option', { value: it.store }, it.label));
+				if (it.name === (card && card.current)) hasCur = true;
+				opts.push(E('option', { value: it.name, 'title': it.name },
+					shortName(it.name)));
 			});
 			if (card && card.current && !hasCur) {
-				opts.push(E('option', { value: card.current },
-					card.currentOrig || card.current));
+				opts.push(E('option', { value: card.current, 'title': card.current },
+					shortName(card.current)));
 			}
 			return opts;
 		}
@@ -473,18 +462,17 @@ return view.extend({
 			}
 			var d = state.zoneDraft[state.active] || '';
 			parts.push(d ?
-				_('已选择 %s，仅对当前选中的 Wi-Fi 生效。')
-					.format(displayOf('wireless', state.active, d, card)) :
+				_('已选择 %s，仅对当前选中的 Wi-Fi 生效。').format(d) :
 				_('尚未选择脚本，选择结果仅对当前选中的 Wi-Fi 生效。'));
 
 			zoneConfig.appendChild(E('div', { 'class': 'zd-tools' }, [
-				E('button', { 'type': 'button', 'class': 'zd-btn primary',
+				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive',
 					'click': function () { fileInput.value = ''; fileInput.click(); } },
 					_('上传脚本')),
-				E('button', { 'type': 'button', 'class': 'zd-btn',
+				E('button', { 'type': 'button', 'class': 'cbi-button',
 					'click': function () { dirInput.value = ''; dirInput.click(); } },
 					_('上传文件夹')),
-				E('button', { 'type': 'button', 'class': 'zd-btn', 'click': openScriptsModal },
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': openScriptsModal },
 					_('已上传')),
 				E('span', { 'class': 'zd-tool-meta' },
 					_('共 %s 个脚本').format(String(items.length)))
@@ -502,7 +490,7 @@ return view.extend({
 			var pairs = uniqueSsids().map(function (s) {
 				return s + '|' + (state.zoneDraft[s] || '');
 			});
-			CPD.api('zone', 'save_cache', ['wireless'].concat(pairs)).then(function (j) {
+			return CPD.api('zone', 'save_cache', ['wireless'].concat(pairs)).then(function (j) {
 				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (!j || !j.ok) { CPD.toast((j && j.error) || _('保存失败'), 'err'); return; }
 				CPD.showWarnings(j.warnings);
@@ -520,9 +508,9 @@ return view.extend({
 			/* 两道守卫固定顺序：先「保存过没有」，引用检查由后端按缓存做 */
 			if (!wirelessHasSaved()) {
 				CPD.toast(_('请先保存无线区域配置，再点击应用'), 'warn');
-				return;
+				return Promise.resolve();
 			}
-			CPD.apiConfirmable('zone', 'apply', ['wireless']).then(function (j) {
+			return CPD.apiConfirmable('zone', 'apply', ['wireless']).then(function (j) {
 				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
 				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
@@ -538,7 +526,7 @@ return view.extend({
 
 		/* ---------- 有线区域 ---------- */
 		var wiredGrid = E('div', { 'class': 'zd-grid1' });
-		var wiredConfig = E('div', {});
+		var wiredConfig = E('div', { 'class': 'zd-panel' });
 		var wiredSaveRow = E('div', { 'class': 'zd-save-row', 'style': 'display:none' });
 		var wiredHint = E('span', { 'class': 'zd-save-state' }, '');
 
@@ -549,7 +537,11 @@ return view.extend({
 				h = '<button type="button" class="zd-card' + (state.wiredActive ? ' selected' : '') +
 					'" data-wired="1" aria-pressed="' + (state.wiredActive ? 'true' : 'false') + '">' +
 					'<span class="zd-wc-top"><span class="zd-wc-ssid zd-mono">' + esc(w.iface) + '</span></span>' +
-					'<span class="zd-wc-ip zd-mono">' + esc(w.ip || '—') + '</span>' +
+					'<span class="zd-wc-ip zd-mono">' + esc(w.ip || '—') +
+						_(' · openNDS 管理接口') + '</span>' +
+					'<span class="zd-wc-sub' + (state.wiredDraft ? '' : ' weak') + '">' +
+					(state.wiredDraft ? _('认证脚本：%s').format(state.wiredDraft) : _('使用默认门户')) +
+					'</span>' +
 					'</button>';
 			}
 			wiredGrid.innerHTML = h;
@@ -591,13 +583,13 @@ return view.extend({
 				renderHints();
 			});
 			wiredConfig.appendChild(E('div', { 'class': 'zd-tools' }, [
-				E('button', { 'type': 'button', 'class': 'zd-btn primary',
+				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive',
 					'click': function () { fileInput.value = ''; fileInput.click(); } },
 					_('上传脚本')),
-				E('button', { 'type': 'button', 'class': 'zd-btn',
+				E('button', { 'type': 'button', 'class': 'cbi-button',
 					'click': function () { dirInput.value = ''; dirInput.click(); } },
 					_('上传文件夹')),
-				E('button', { 'type': 'button', 'class': 'zd-btn', 'click': openScriptsModal },
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': openScriptsModal },
 					_('已上传')),
 				E('span', { 'class': 'zd-tool-meta' },
 					_('共 %s 个脚本').format(String(items.length)))
@@ -608,17 +600,16 @@ return view.extend({
 					authSel,
 				E('p', { 'class': 'zd-state-line' },
 					state.wiredDraft ?
-						_('已选择 %s，仅对有线区域生效。').format(
-							displayOf('wired', w.iface, state.wiredDraft, w)) :
+						_('已选择 %s，仅对有线区域生效。').format(state.wiredDraft) :
 						_('尚未选择脚本，选择结果仅对有线区域生效。'))
 				])
 			]));
 		}
 
 		function wiredSave() {
-			if (!state.wiredActive || !state.wired || !state.wired.iface) return;
+			if (!state.wiredActive || !state.wired || !state.wired.iface) return Promise.resolve();
 			var pair = state.wired.iface + '|' + (state.wiredDraft || '');
-			CPD.api('zone', 'save_cache', ['wired', pair]).then(function (j) {
+			return CPD.api('zone', 'save_cache', ['wired', pair]).then(function (j) {
 				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (!j || !j.ok) { CPD.toast((j && j.error) || _('保存失败'), 'err'); return; }
 				CPD.showWarnings(j.warnings);
@@ -633,12 +624,12 @@ return view.extend({
 		}
 
 		function wiredApply() {
-			if (!state.wiredActive || !state.wired || !state.wired.iface) return;
+			if (!state.wiredActive || !state.wired || !state.wired.iface) return Promise.resolve();
 			if (state.wiredSaved === null || state.wiredSaved === undefined) {
 				CPD.toast(_('请先保存有线区域配置，再点击应用'), 'warn');
-				return;
+				return Promise.resolve();
 			}
-			CPD.apiConfirmable('zone', 'apply', ['wired']).then(function (j) {
+			return CPD.apiConfirmable('zone', 'apply', ['wired']).then(function (j) {
 				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
 				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
@@ -668,8 +659,8 @@ return view.extend({
 				if (!name) return;
 				if (!/\.sh$/.test(name)) {
 					rejects.push(name + '：' + _('只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'));
-				} else if (nameBytes(name) > 19) {
-					rejects.push(name + '：' + _('文件名过长（最多 19 个字符），超出后无法自动改名'));
+				} else if (nameBytes(name) > 31) {
+					rejects.push(name + '：' + _('文件名过长（最多 31 个字符）'));
 				} else if (!fileNameOk(name)) {
 					rejects.push(name + '：' + _('文件名含非法字符，无法上传'));
 				} else {
@@ -738,8 +729,8 @@ return view.extend({
 				CPD.toast(_('只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'), 'warn');
 				return;
 			}
-			if (nameBytes(folderName) > 19) {
-				CPD.toast(folderName + '：' + _('文件名过长（最多 19 个字符），超出后无法自动改名'), 'warn');
+			if (nameBytes(folderName) > 31) {
+				CPD.toast(folderName + '：' + _('文件名过长（最多 31 个字符）'), 'warn');
 				return;
 			}
 			if (!fileNameOk(folderName)) {
@@ -805,7 +796,7 @@ return view.extend({
 			E('div', { 'class': 'zd-modal-body' }, E('div', { 'id': 'zd-script-rows' })),
 			E('div', { 'class': 'zd-modal-foot' }, [
 				E('span', { 'class': 'zd-tool-meta', 'id': 'zd-script-total' }, ''),
-				E('button', { 'type': 'button', 'class': 'zd-btn', 'click': closeScriptsModal },
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': closeScriptsModal },
 					_('关闭'))
 			])
 		]));
@@ -822,14 +813,14 @@ return view.extend({
 			} else {
 				box.innerHTML = items.map(function (it) {
 					return '<div class="zd-script-row"><span class="zd-script-name">' +
-						esc(it.label) + '</span>' +
-						'<button type="button" class="zd-btn small danger-ghost" data-store="' +
-						esc(it.store) + '" data-label="' + esc(it.label) + '">' +
+						esc(it.name) + '</span>' +
+						'<button type="button" class="cbi-button cbi-button-negative" data-name="' +
+						esc(it.name) + '">' +
 						_('删除') + '</button></div>';
 				}).join('');
-				box.querySelectorAll('[data-store]').forEach(function (b) {
+				box.querySelectorAll('[data-name]').forEach(function (b) {
 					b.addEventListener('click', function () {
-						askDelete(ctx, b.getAttribute('data-store'), b.getAttribute('data-label'));
+						askDelete(ctx, b.getAttribute('data-name'));
 					});
 				});
 			}
@@ -845,18 +836,18 @@ return view.extend({
 			if (ev.target === scriptsMask) closeScriptsModal();
 		});
 
-		function askDelete(ctx, store, label) {
-			CPD.confirm(_('删除脚本'), _('确定删除脚本“%s”吗？删除后，认证下拉框将不再提供该脚本。').format(label),
+		function askDelete(ctx, name) {
+			CPD.confirm(_('删除脚本'), _('确定删除脚本“%s”吗？删除后，认证下拉框将不再提供该脚本。').format(name),
 				_('删除'), true, function () {
-					CPD.api('zone', 'upload_delete', [ctx.type, ctx.zone, store]).then(function (j) {
+					CPD.api('zone', 'upload_delete', [ctx.type, ctx.zone, name]).then(function (j) {
 						if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 						if (!j || !j.ok) { CPD.toast((j && j.error) || _('删除失败'), 'err'); return; }
-						/* 删除的正是某卡片草稿选中的存储名 → 退回「默认」（§3.4） */
+						/* 删除的正是某卡片草稿选中的脚本 → 退回「默认」（§3.4） */
 						uniqueSsids().forEach(function (s) {
-							if (state.zoneDraft[s] === store) state.zoneDraft[s] = '';
+							if (state.zoneDraft[s] === name) state.zoneDraft[s] = '';
 						});
-						if (state.wiredDraft === store) state.wiredDraft = '';
-						CPD.toast(_('已删除脚本 %s').format(label), 'ok');
+						if (state.wiredDraft === name) state.wiredDraft = '';
+						CPD.toast(_('已删除脚本 %s').format(name), 'ok');
 						closeScriptsModal();
 						loadUploaded(ctx.type, ctx.zone).then(function () {
 							loadStatus();
@@ -876,7 +867,7 @@ return view.extend({
 			E('div', { 'class': 'zd-modal-body' }, E('div', { 'id': 'zd-um-rows' })),
 			E('div', { 'class': 'zd-modal-foot' }, [
 				E('span', { 'class': 'zd-tool-meta', 'id': 'zd-um-total' }, ''),
-				E('button', { 'type': 'button', 'class': 'zd-btn', 'click': closeUnmatchedModal },
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': closeUnmatchedModal },
 					_('关闭'))
 			])
 		]));
@@ -894,7 +885,7 @@ return view.extend({
 					box.innerHTML = umItems.map(function (it, i) {
 						return '<div class="zd-script-row"><span class="zd-script-name">' +
 							esc(it.name) + '</span>' +
-							'<button type="button" class="zd-btn small danger-ghost" data-i="' + i + '">' +
+							'<button type="button" class="cbi-button cbi-button-negative" data-i="' + i + '">' +
 							_('删除') + '</button></div>';
 					}).join('');
 					box.querySelectorAll('[data-i]').forEach(function (b) {
@@ -974,22 +965,10 @@ return view.extend({
 		var defaultPanel = E('div', { 'class': 'cpd-sec' }, [
 			E('h3', {}, [_('默认模式'), E('span', { 'class': 'cpd-en' }, 'Default')]),
 			defaultNote,
-			E('div', { 'class': 'zd-save-row' }, [
-				E('button', { 'type': 'button', 'class': 'zd-btn', 'click': handleDefaultSave }, _('保存')),
-				E('button', { 'type': 'button', 'class': 'zd-btn primary', 'click': handleDefaultApply }, _('应用')),
-				defaultHint
-			])
+			E('div', { 'class': 'zd-save-row' }, [defaultHint])
 		]);
 
-		zoneSaveRow.appendChild(E('button', {
-			'type': 'button', 'class': 'zd-btn', 'click': wirelessSave
-		}, _('保存')));
 		zoneSaveRow.appendChild(zoneHint);
-		zoneApplyBar.appendChild(E('button', {
-			'type': 'button', 'class': 'zd-btn primary', 'click': wirelessApply
-		}, _('应用')));
-		zoneApplyBar.appendChild(E('span', { 'class': 'zd-save-state' },
-			_('应用已保存的无线区域配置')));
 
 		var wirelessPanel = E('div', { 'class': 'cpd-sec' }, [
 			E('h3', {}, [_('无线区域'), E('span', { 'class': 'cpd-en' }, 'Wireless Zones')]),
@@ -999,16 +978,9 @@ return view.extend({
 			fileInput,
 			dirInput,
 			zoneConfig,
-			zoneSaveRow,
-			zoneApplyBar
+			zoneSaveRow
 		]);
 
-		wiredSaveRow.appendChild(E('button', {
-			'type': 'button', 'class': 'zd-btn', 'click': wiredSave
-		}, _('保存')));
-		wiredSaveRow.appendChild(E('button', {
-			'type': 'button', 'class': 'zd-btn primary', 'click': wiredApply
-		}, _('应用')));
 		wiredSaveRow.appendChild(wiredHint);
 
 		var wiredPanel = E('div', { 'class': 'cpd-sec' }, [
@@ -1024,7 +996,7 @@ return view.extend({
 			E('h3', {}, [_('未匹配'), E('span', { 'class': 'cpd-en' }, 'Unmatched')]),
 			E('p', { 'class': 'zd-sec-desc mt' }, _('以下文件尚未关联到任何区域。')),
 			E('div', { 'class': 'zd-tools' }, [
-				E('button', { 'type': 'button', 'class': 'zd-btn', 'click': openUnmatchedModal }, _('查看')),
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': openUnmatchedModal }, _('查看')),
 				unmatchedCount
 			])
 		]);
@@ -1055,6 +1027,24 @@ return view.extend({
 		body.appendChild(unmatchedMask);
 
 		loadStatus();
+
+		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
+		this.handleSave = function () {
+			if (state.scopeSel !== 'zone') { handleDefaultSave(); return Promise.resolve(); }
+			return Promise.resolve()
+				.then(function () { return wirelessSave(); })
+				.then(function () { return wiredSave(); });
+		};
+		this.handleSaveApply = function () {
+			if (state.scopeSel !== 'zone') { handleDefaultApply(); return Promise.resolve(); }
+			return Promise.resolve()
+				.then(function () { return wirelessApply(); })
+				.then(function () { return wiredApply(); });
+		};
+		this.handleReset = function () {
+			loadStatus();
+			return Promise.resolve();
+		};
 
 		return body;
 	}

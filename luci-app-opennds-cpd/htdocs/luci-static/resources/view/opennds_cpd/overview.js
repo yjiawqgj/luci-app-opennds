@@ -26,14 +26,6 @@ var CSS = '\
 .ovd-switch .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}\
 .ovd-switch[aria-checked="true"]{background:#2e9468;border-color:#2e9468}\
 .ovd-switch[aria-checked="true"] .knob{transform:translateX(18px)}\
-.ovd-btn{font-family:inherit;font-size:13px;font-weight:500;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:6px;height:34px;padding:0 14px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}\
-.ovd-btn:hover{background:#f4f7f9;border-color:#c4ccd4}\
-.ovd-btn:disabled{opacity:.55;cursor:default;background:#f4f6f8}\
-.ovd-btn.sm{height:30px;font-size:12px;padding:0 10px}\
-.ovd-btn.primary{background:#2274a5;border-color:#2274a5;color:#fff}\
-.ovd-btn.primary:hover{background:#1b5f8a;border-color:#1b5f8a}\
-.ovd-btn.danger{background:#c94848;border-color:#c94848;color:#fff}\
-.ovd-btn.danger:hover{background:#b23c3c;border-color:#b23c3c}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -46,19 +38,19 @@ var CSS = '\
 .ovd-slabel{display:block;font-size:12px;color:#657585;margin-top:5px}\
 .ovd-card{background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:13px 14px;min-width:0}\
 .ovd-iface-grid{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}\
-.ovd-iface-grid .ovd-card{flex:1 1 280px;max-width:360px}\
-.ovd-ap-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px;align-items:start}\
-.ovd-ap{font-family:inherit;font-size:14px;line-height:1.55;text-align:left;color:#222a31;cursor:pointer;display:block;width:100%;padding:7px 11px 8px;background:#fff;border:1px solid #d7dde3;border-radius:8px}\
+.ovd-iface-grid .ovd-card{flex:0 1 300px;max-width:340px}\
+.ovd-ap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,162px));gap:10px;margin-top:14px;align-items:start}\
+.ovd-ap{font-family:inherit;font-size:13px;line-height:1.5;text-align:left;color:#222a31;cursor:pointer;display:flex;flex-direction:column;justify-content:space-between;gap:8px;width:100%;padding:12px 13px;min-height:88px;background:#fff;border:1px solid #d7dde3;border-radius:8px;transition:border-color .12s,background .12s}\
 .ovd-ap:hover{border-color:#b9c6d1;background:#fafbfc}\
 .ovd-ap.selected{border-color:#2274a5;background:#e7f1f8}\
 .ovd-ap.selected .ovd-ap-count-num{color:#1b5f8a}\
-.ovd-iface-name{font-size:24px;font-weight:700;line-height:1.25;margin-bottom:8px;letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
-.ovd-ap-name{font-size:12.5px;font-weight:600;text-align:left;line-height:1.35;margin-bottom:1px;color:#657585;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
+.ovd-iface-name{font-size:22px;font-weight:700;line-height:1.25;margin-bottom:6px;letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
+.ovd-ap-name{font-size:12.5px;font-weight:650;text-align:left;line-height:1.35;margin:0;color:#222a31;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
 .ovd-info-row{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;line-height:1.7;color:#657585}\
 .ovd-info-row b{color:#222a31;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\
-.ovd-ap-count{display:flex;align-items:baseline;justify-content:center;gap:6px;padding:0}\
-.ovd-ap-count-num{display:block;font-size:24px;font-weight:700;line-height:1.2;color:#222a31;font-variant-numeric:tabular-nums}\
-.ovd-ap-count-label{display:block;font-size:10.5px;color:#657585;margin-top:0;line-height:1.3}\
+.ovd-ap-count{display:flex;align-items:baseline;gap:6px;padding:0}\
+.ovd-ap-count-num{display:block;font-size:22px;font-weight:650;line-height:1.2;color:#222a31;font-variant-numeric:tabular-nums}\
+.ovd-ap-count-label{display:block;font-size:11px;color:#657585;margin-top:0;line-height:1.3;white-space:nowrap}\
 .ovd-mono{font-family:ui-monospace,Consolas,"Courier New",monospace}\
 .ovd-listhead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:6px}\
 .ovd-listhead h3{margin:0}\
@@ -172,7 +164,7 @@ return view.extend({
 			running: false, enabled: false, engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
-			filter: 'online', ap: null, query: '',
+			filter: 'online', ap: null, query: '', fupEnabled: true,
 			sortKey: null, sortDir: 1
 		};
 		var locked = false, lockTimer = null, pollTimer = null, modalOpen = 0;
@@ -235,15 +227,12 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 顶部提示条（busy / 未接管） ---------- */
+		/* ---------- 顶部提示条（busy；「未接管」横幅已按用户要求移除） ---------- */
 		var warnbar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' }, '');
 
 		function renderWarnbar() {
 			if (state.busy) {
 				warnbar.textContent = _('等待上一步完成，请稍候重试');
-				warnbar.style.display = '';
-			} else if (!state.engaged) {
-				warnbar.textContent = _('门户尚未由本插件接管，以下配置暂不影响客户端');
 				warnbar.style.display = '';
 			} else {
 				warnbar.style.display = 'none';
@@ -262,6 +251,7 @@ return view.extend({
 					state.enabled = st.enabled === 1;
 					state.engaged = st.engaged;
 					state.busy = st.busy;
+					state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
 					state.scope = st.session_scope || 'default';
 					state.counts = st.counts || {};
 					state.managed = st.managed || { iface: '', ip: '' };
@@ -295,7 +285,7 @@ return view.extend({
 		}, E('span', { 'class': 'knob', 'aria-hidden': 'true' }));
 		var restartLabel = E('span', {}, _('重启'));
 		var restartBtn = E('button', {
-			'class': 'ovd-btn sm', 'type': 'button', 'click': handleRestart
+			'class': 'cbi-button', 'type': 'button', 'click': handleRestart
 		}, [
 			E('img', {
 				'src': 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22currentColor%22 stroke-width=%222%22 stroke-linecap=%22round%22%3E%3Cpath d=%22M21 12a9 9 0 1 1-2.64-6.36%22/%3E%3Cpath d=%22M21 3v6h-6%22/%3E%3C/svg%3E',
@@ -787,8 +777,8 @@ return view.extend({
 			]),
 			E('div', { 'class': 'ovd-dbody', 'id': 'ovd-ed-body' }),
 			E('div', { 'class': 'ovd-dfoot' }, [
-				E('button', { 'type': 'button', 'class': 'ovd-btn', 'click': cancelEdit }, _('取消')),
-				E('button', { 'type': 'button', 'class': 'ovd-btn primary', 'click': saveEdit }, _('应用'))
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': cancelEdit }, _('取消')),
+				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive', 'click': saveEdit }, _('应用'))
 			])
 		]));
 		var editInputs = {};
@@ -837,6 +827,20 @@ return view.extend({
 				limitRowEd(LIMIT_ROWS[4]),
 				E('p', { 'class': 'ovd-note' }, _('上传与下载流量额度分别独立设置；达到额度后，NDS 会对该客户端执行相应的流量控制。'))
 			]);
+
+			/* 公平使用策略未开启 → 流量限制不可编辑：整区盖一层灰蒙层并给出指引 */
+			if (!state.fupEnabled) {
+				[LIMIT_ROWS[3], LIMIT_ROWS[4]].forEach(function (row) {
+					var e = editInputs[row.k];
+					if (e && e.input) e.input.disabled = true;
+				});
+				quotaSec.style.position = 'relative';
+				quotaSec.appendChild(E('div', {
+					'style': 'position:absolute;inset:0;z-index:2;border-radius:8px;' +
+						'background:rgba(238,242,245,.86);display:flex;align-items:center;justify-content:center;' +
+						'text-align:center;padding:16px;font-size:12.5px;line-height:1.7;color:#5a6672'
+				}, _('请在设置页开启「公平使用策略」后再编辑流量限制')));
+			}
 			edBody.appendChild(timeSec);
 			edBody.appendChild(speedSec);
 			edBody.appendChild(quotaSec);
@@ -879,6 +883,8 @@ return view.extend({
 				var ed = editInputs[order[i]];
 				var v = String(ed.input.value == null ? '' : ed.input.value).trim();
 				if (ed.row.k === 'maxSession' && state.scope === 'override') v = '0';
+				/* 公平使用策略未开启：配额区不可编辑，按 0 提交，避免带上被蒙层的旧值 */
+				if (!state.fupEnabled && (ed.row.k === 'uploadQuota' || ed.row.k === 'downloadQuota')) v = '0';
 				if (v === '') v = '0';
 				if (!/^[0-9]+$/.test(v)) {
 					CPD.toast(_('请填写不小于 0 的「%s」数值（%s），0 表示不限制')
@@ -928,7 +934,7 @@ return view.extend({
 			]),
 			E('div', { 'class': 'ovd-dbody', 'id': 'ovd-dtl-body' }),
 			E('div', { 'class': 'ovd-dfoot' }, [
-				E('button', { 'type': 'button', 'class': 'ovd-btn', 'click': closeDetail }, _('关闭'))
+				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': closeDetail }, _('关闭'))
 			])
 		]));
 
@@ -1084,6 +1090,21 @@ return view.extend({
 		body.appendChild(detailMask);
 
 		refresh();
+
+		/* ---------- LuCI 框架底部按钮：本页为即时生效，保存/应用仅提示 ---------- */
+		this.handleSave = function () {
+			CPD.toast(_('本页操作即时生效，无需保存'), 'ok');
+			return Promise.resolve();
+		};
+		this.handleSaveApply = this.handleSave;
+		this.handleReset = function () {
+			state.filter = 'online';
+			state.ap = null;
+			state.query = '';
+			if (searchInput) searchInput.value = '';
+			refresh();
+			return Promise.resolve();
+		};
 
 		return body;
 	}

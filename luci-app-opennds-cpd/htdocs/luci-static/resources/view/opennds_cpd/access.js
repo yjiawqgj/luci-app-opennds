@@ -1,5 +1,5 @@
 /*
- * 访问限制（阻止访问）· openNDS CPD（LuCI view）
+ * 访问限制· openNDS CPD（LuCI view）
  * 照《访问限制.md》：手动阻止（block 规则）+ 自动阻止（域名/端口框）；
  * 编辑器「保存」只做本区格式校验不请求后端；「保存」= 内存快照；
  * 「应用」= 后端校验 + 写三键 + 重启；只填端口不写域名前后端同口径拦截。
@@ -75,11 +75,11 @@ return view.extend({
 		function renderAll() {
 			body.innerHTML = '';
 			body.appendChild(CPD.pageHead(
-				_('阻止访问'), 'openNDS',
+				_('访问限制'), 'openNDS',
 				_('只针对已认证和预授权客户端生效，可信任客户端不受此限制。')));
 
 			/* 手动阻止 */
-			var sec1 = CPD.section(_('手动阻止'), 'Manual');
+			var sec1 = CPD.section(_('手动限制'), 'Manual');
 			sec1.appendChild(E('p', { 'class': 'cpd-note' },
 				_('填写域名需要确保域名只有一个IP地址，否则添加规则后将不会生效。')));
 			sec1.appendChild(E('p', { 'class': 'cpd-note' },
@@ -107,17 +107,13 @@ return view.extend({
 			renderAuto();
 			body.appendChild(sec2);
 
-			body.appendChild(E('div', { 'class': 'cpd-actions-right' }, [
-				E('button', { 'class': 'btn', 'click': handleSave }, _('保存')),
-				E('button', { 'class': 'cbi-button cbi-button-positive', 'click': handleApply }, _('应用'))
-			]));
 		}
 
 		function renderManual() {
 			manualPanel.innerHTML = '';
 			manualPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
-					'class': 'btn',
+					'class': 'cbi-button',
 					'aria-expanded': state.manualEditing ? 'true' : 'false',
 					'click': function () { startEdit('manual'); }
 				}, _('编辑'))
@@ -131,11 +127,11 @@ return view.extend({
 				manualPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
-						E('button', { 'class': 'btn', 'click': function () { cancelEdit('manual'); } }, _('取消')),
+						E('button', { 'class': 'cbi-button', 'click': function () { cancelEdit('manual'); } }, _('取消')),
 						E('button', {
 							'class': 'cbi-button cbi-button-positive',
 							'click': function () { saveManual(ta); }
-						}, _('保存'))
+						}, _('确定'))
 					])
 				]));
 				window.setTimeout(function () { ta.focus(); }, 0);
@@ -152,7 +148,7 @@ return view.extend({
 			autoPanel.innerHTML = '';
 			autoPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
-					'class': 'btn',
+					'class': 'cbi-button',
 					'aria-expanded': state.autoEditing ? 'true' : 'false',
 					'click': function () { startEdit('auto'); }
 				}, _('编辑'))
@@ -167,11 +163,11 @@ return view.extend({
 					E('label', {}, _('域名')),
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
-						E('button', { 'class': 'btn', 'click': function () { cancelEdit('auto'); } }, _('取消')),
+						E('button', { 'class': 'cbi-button', 'click': function () { cancelEdit('auto'); } }, _('取消')),
 						E('button', {
 							'class': 'cbi-button cbi-button-positive',
 							'click': function () { saveAuto(ta); }
-						}, _('保存'))
+						}, _('确定'))
 					])
 				]));
 				window.setTimeout(function () { ta.focus(); }, 0);
@@ -322,6 +318,19 @@ return view.extend({
 		}
 
 		refresh();
+		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
+		this.handleSave = function () {
+			handleSave();
+			return Promise.resolve();
+		};
+		this.handleSaveApply = function () {
+			return handleApply();
+		};
+		this.handleReset = function () {
+			refresh();
+			return Promise.resolve();
+		};
+
 		return body;
 	}
 });

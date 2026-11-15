@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>阻止访问 · openNDS</title>
+<title>访问限制 · openNDS</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232274a5'/%3E%3Cpath d='M12 5.2l6 2.4v4.8c0 3.4-2.4 5.8-6 6.6-3.6-.8-6-3.2-6-6.6V7.6l6-2.4z' fill='none' stroke='%23fff' stroke-width='1.4'/%3E%3Cpath d='M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6' fill='none' stroke='%23fff' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
   :root{
@@ -15,11 +15,12 @@
   *{box-sizing:border-box;margin:0;padding:0}
   [hidden]{display:none!important}
   body{
+    min-height:100vh;display:flex;flex-direction:column;
     background:#fff;color:var(--text);
     font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
     font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
   }
-  .page{max-width:800px;margin:0 auto;padding:26px 22px 64px}
+  .page{max-width:800px;width:100%;flex:1 1 auto;margin:0 auto;padding:26px 22px 32px}
 
   .pt-head{padding-bottom:16px;border-bottom:1px solid var(--line)}
   .pt-head h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -78,6 +79,12 @@
   }
 
   .action-bar{display:flex;justify-content:flex-end;gap:10px;padding-top:58px}
+  /* LuCI 原生底部按钮条（演示） */
+  .cbi-btn{font-family:inherit;font-size:13px;height:34px;padding:0 16px;border-radius:4px;border:1px solid var(--line);
+    background:#fff;color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .cbi-btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .cbi-btn.positive{background:var(--primary);border-color:var(--primary);color:#fff}
+  .cbi-btn.positive:hover{background:var(--primary-d);border-color:var(--primary-d)}
   @media (max-width:520px){
     .page{padding:22px 18px 48px}
     .pt-head h1{font-size:18px}
@@ -94,18 +101,22 @@
   .toast.warn{background:#7d4d16}
   .toast.ok{background:#225c43}
   @media (prefers-reduced-motion:reduce){.toast{transition:none}}
+  /* ===== 页面说明文字（底部 复位/保存/保存&应用 由 LuCI 框架提供，演示页不绘制） ===== */
+  .page{flex:0 0 auto}
+  .sheet{width:100%}
+  .foot-note{width:100%;max-width:800px;margin:16px auto 32px;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6;padding:0 2px}
 </style>
 </head>
 <body>
 <main class="page">
   <header class="pt-head">
-    <h1>阻止访问 <span class="en">openNDS</span></h1>
+    <h1>访问限制 <span class="en">openNDS</span></h1>
     <p class="desc">只针对已认证和预授权客户端生效，可信任客户端不受此限制。</p>
   </header>
 
   <!-- ===== 手动阻止 ===== -->
   <section class="sec" aria-labelledby="manualTitle">
-    <div class="sec-head"><h2 id="manualTitle">手动阻止</h2></div>
+    <div class="sec-head"><h2 id="manualTitle">手动限制</h2></div>
     <p class="note">填写域名需要确保域名只有一个IP地址，否则添加规则后将不会生效。</p>
     <p class="note">每行必须有一个域名或者一个IP地址，域名或者IP地址可以搭配访问协议，即：tcp/udp；也可以搭配端口号，但不支持端口范围。</p>
 
@@ -123,7 +134,7 @@
       </div>
       <div class="actions">
         <button class="btn" type="button" id="manualCancel">取消</button>
-        <button class="btn primary" type="button" id="manualSave">保存</button>
+        <button class="btn primary" type="button" id="manualSave">确定</button>
       </div>
     </div>
 
@@ -139,7 +150,7 @@ udp 53 192.168.1.1</pre>
 
   <!-- ===== 自动阻止 ===== -->
   <section class="sec" aria-labelledby="autoTitle">
-    <div class="sec-head"><h2 id="autoTitle">自动阻止</h2></div>
+    <div class="sec-head"><h2 id="autoTitle">自动限制</h2></div>
     <p class="note">域名和端口为全匹配模式：端口对所有域名生效，不能按域名分别设置。</p>
     <p class="note">只写域名不写端口，会阻止这些域名的所有协议、所有端口；填了端口就只拦这些端口，且只能拦 TCP。只写端口不写域名无法保存——拦截列表靠域名解析填充，没有域名这条规则不会生效。</p>
 
@@ -157,7 +168,7 @@ udp 53 192.168.1.1</pre>
       </div>
       <div class="actions">
         <button class="btn" type="button" id="autoCancel">取消</button>
-        <button class="btn primary" type="button" id="autoSave">保存</button>
+        <button class="btn primary" type="button" id="autoSave">确定</button>
       </div>
     </div>
 
@@ -175,12 +186,11 @@ www.example.com</pre>
       <input class="txt" type="text" id="autoPorts" value="80,443" placeholder="80,443" autocomplete="off" spellcheck="false" aria-describedby="autoPortsHint">
     </div>
   </section>
-
-  <footer class="action-bar">
-    <button class="btn" type="button" id="saveAll">保存</button>
-    <button class="btn primary" type="button" id="applyAll">应用</button>
-  </footer>
 </main>
+
+  
+
+<div class="foot-note">前端交互演示：脚本内容与端口规则均为模拟数据，不会写入真实 openNDS 配置。</div>
 
 <div class="toast-wrap" id="toasts" aria-live="polite"></div>
 
@@ -310,7 +320,7 @@ function saveEditor(name){
   state[name].text=text;
   $(name+"Saved").textContent=text;
   closeEditor(name);
-  toast((name==="manual"?"手动":"自动")+"阻止规则已保存","ok");
+  toast((name==="manual"?"手动":"自动")+"限制规则已保存","ok");
 }
 
 $("manualAdd").addEventListener("click",function(){ openEditor("manual"); });
@@ -332,45 +342,6 @@ function autoDomainGuard(){
   return false;
 }
 
-$("saveAll").addEventListener("click",function(){
-  if(editing()){
-    toast("请先保存或取消正在编辑的规则","warn");
-    return;
-  }
-  if(!autoDomainGuard()) return;
-  var ports=currentPorts();
-  var check=validatePorts(ports);
-  if(!check.ok){
-    toast(check.msg,"warn");
-    $("autoPorts").focus();
-    return;
-  }
-  state.auto.ports=ports;
-  baseline.manual=state.manual.text;
-  baseline.auto=state.auto.text;
-  baseline.autoPorts=ports;
-  toast("配置已保存（演示，尚未应用）","ok");
-});
-
-$("applyAll").addEventListener("click",function(){
-  if(editing()){
-    toast("请先保存或取消正在编辑的规则","warn");
-    return;
-  }
-  if(!autoDomainGuard()) return;
-  var ports=currentPorts();
-  var check=validatePorts(ports);
-  if(!check.ok){
-    toast(check.msg,"warn");
-    $("autoPorts").focus();
-    return;
-  }
-  if(state.manual.text!==baseline.manual || state.auto.text!==baseline.auto || ports!==baseline.autoPorts){
-    toast("当前配置尚未保存，请先保存后再应用","warn");
-    return;
-  }
-  toast("配置已应用（演示）","ok");
-});
 </script>
 </body>
 </html>

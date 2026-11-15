@@ -77,7 +77,7 @@ return view.extend({
 						_('检查客户端超时和配额状态的间隔（秒）')));
 				}
 				if (fd.key === 'st') {
-					scopeSel = E('select', { 'class': 'cpd-input', 'style': 'max-width:200px' }, [
+					scopeSel = E('select', { 'class': 'cpd-input', 'style': 'max-width:320px;min-width:190px' }, [
 						E('option', { value: 'default' }, _('默认')),
 						E('option', { value: 'override' }, _('覆盖'))
 					]);
@@ -93,10 +93,6 @@ return view.extend({
 				body.appendChild(sec);
 			});
 
-			body.appendChild(E('div', { 'class': 'cpd-actions-right' }, [
-				E('button', { 'class': 'btn', 'click': handleSave }, _('保存')),
-				E('button', { 'class': 'cbi-button cbi-button-positive', 'click': handleApply }, _('应用'))
-			]));
 		}
 
 		/* ---------- 保存 / 应用 ---------- */
@@ -172,6 +168,19 @@ return view.extend({
 		}
 
 		refresh();
+		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
+		this.handleSave = function () {
+			handleSave();
+			return Promise.resolve();
+		};
+		this.handleSaveApply = function () {
+			return handleApply();
+		};
+		this.handleReset = function () {
+			refresh();
+			return Promise.resolve();
+		};
+
 		return body;
 	}
 });

@@ -18,11 +18,12 @@
   *{box-sizing:border-box;margin:0;padding:0}
   [hidden]{display:none!important}
   body{
+    min-height:100vh;display:flex;flex-direction:column;
     background:#ffffff;color:var(--text);
     font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
   }
-  .page{max-width:960px;margin:0 auto;padding:26px 22px 80px}
+  .page{max-width:960px;width:100%;flex:1 1 auto;margin:0 auto;padding:26px 22px 32px}
 
   .pt-head{padding-bottom:18px;border-bottom:1px solid var(--line)}
   .pt-head h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -88,8 +89,12 @@
   .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
   .btn.primary:hover{background:var(--primary-d);border-color:var(--primary-d)}
 
-  /* 页面底部应用 */
-  .page-actions{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end}
+  /* LuCI 原生底部按钮条（演示） */
+  .cbi-btn{font-family:inherit;font-size:13px;height:34px;padding:0 16px;border-radius:4px;border:1px solid var(--line);
+    background:#fff;color:var(--text);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .cbi-btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .cbi-btn.positive{background:var(--primary);border-color:var(--primary);color:#fff}
+  .cbi-btn.positive:hover{background:var(--primary-d);border-color:var(--primary-d)}
 
   #toasts{position:fixed;right:18px;bottom:18px;z-index:60;display:flex;flex-direction:column;gap:10px;max-width:min(380px,calc(100vw - 36px))}
   .toast{background:#fff;border:1px solid var(--line);border-left:3px solid var(--primary);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--text);box-shadow:0 6px 20px rgba(30,42,54,.12);animation:tin .2s ease}
@@ -98,8 +103,6 @@
   .toast.err{border-left-color:var(--red)}
   @keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
 
-  .foot-note{max-width:960px;margin:26px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.7;padding:0 22px}
-
   @media (max-width:640px){
     .page{padding:18px 14px 60px}
     .ta{font-size:16px}
@@ -107,6 +110,10 @@
     .page-actions .btn{width:100%}
   }
   @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+  /* ===== 页面说明文字（底部 复位/保存/保存&应用 由 LuCI 框架提供，演示页不绘制） ===== */
+  .page{flex:0 0 auto}
+  .sheet{width:100%}
+  .foot-note{width:100%;max-width:960px;margin:16px auto 32px;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6;padding:0 2px}
 </style>
 </head>
 <body>
@@ -140,10 +147,6 @@
       <div id="portsPanel"></div>
     </div>
   </section>
-
-  <footer class="page-actions">
-    <button class="btn primary" id="applyAll" type="button">应用</button>
-  </footer>
 </div>
 
 <div class="foot-note">前端交互演示：不连接真实路由器，也不会写入或下发任何后端配置；已保存内容仅保留在当前页面会话中。</div>
@@ -186,7 +189,7 @@ function renderPorts(){
   if(!panel) return;
 
   var h='<div class="add-row"><button type="button" class="btn" id="portsAdd"'+
-    ' aria-expanded="'+(state.editing?'true':'false')+'" aria-controls="portsEditor">添加</button></div>';
+    ' aria-expanded="'+(state.editing?'true':'false')+'" aria-controls="portsEditor">编辑</button></div>';
 
   if(state.editing){
     h+='<div class="editor" id="portsEditor">'+
@@ -195,7 +198,7 @@ function renderPorts(){
         '<div class="actions">'+
           '<button type="button" class="btn" id="portsCancel">取消</button>'+
           '<button type="button" class="btn" id="portsClear">清空</button>'+
-          '<button type="button" class="btn primary" id="portsSave">保存</button>'+
+          '<button type="button" class="btn primary" id="portsSave">确定</button>'+
         '</div></div>';
   }else if(state.saved.trim()){
     h+='<div id="savedView">'+
@@ -237,7 +240,7 @@ function startAdd(){
     return;
   }
   state.editing=true;
-  state.draft=state.saved;
+  state.draft="";
   renderPorts();
 }
 
@@ -279,15 +282,12 @@ if(takeoverEl){
   });
 }
 
-var applyAllEl=$("applyAll");
-if(applyAllEl){
-  applyAllEl.addEventListener("click",function(){
-    if(state.editing){
-      toast("请先保存或取消端口编辑", "warn");
-      return;
-    }
-    toast("配置已应用", "ok");
-  });
+function guardEditing(){
+  if(state.editing){
+    toast("请先保存或取消端口编辑", "warn");
+    return false;
+  }
+  return true;
 }
 
 /* ---------- 初始化 ---------- */
