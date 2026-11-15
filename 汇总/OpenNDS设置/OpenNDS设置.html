@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openNDS 设置</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232274a5'/%3E%3Cpath d='M6 8h12v8H6z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3Cpath d='M9 12h6M12 9v6' stroke='%23fff' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#eef1f4; --sheet:#fff;
+    --line:#d7dde3; --line-soft:#e7ebef;
+    --text:#222a31; --muted:#657585; --faint:#9aa6b2;
+    --primary:#2274a5; --primary-d:#1b5f8a; --primary-weak:#e7f1f8;
+    --green:#2e9468; --green-weak:#e4f4ec;
+    --amber:#b57d17; --red:#c94848;
+    --r:8px; --ctrl-h:38px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  [hidden]{display:none!important}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    padding:22px 16px 70px;
+  }
+  .sheet{max-width:980px;margin:0 auto;background:var(--sheet);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+
+  .topbar{padding:20px 24px;border-bottom:1px solid var(--line)}
+  .topbar h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .topbar h1 .en{font-size:11.5px;font-weight:500;color:var(--faint);letter-spacing:.3px}
+  .topbar .desc{font-size:12.5px;color:var(--muted);margin-top:6px;max-width:720px;line-height:1.6}
+
+  .sec{padding:24px}
+  .sec-head h2{font-size:19px;font-weight:680;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .sec-head h2 .en{font-size:11px;font-weight:500;color:var(--faint);letter-spacing:.3px}
+  .sec-head .sec-desc{font-size:12.5px;color:var(--muted);margin-top:6px;max-width:780px;line-height:1.65}
+  .sec-desc.warn{color:var(--red)}
+  .divider{border:0;border-top:1px solid var(--line-soft);margin:0}
+
+  .btn{
+    font-family:inherit;font-size:13.5px;font-weight:500;color:var(--text);
+    background:#fff;border:1px solid var(--line);border-radius:6px;
+    height:var(--ctrl-h);padding:0 15px;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    transition:background .12s,border-color .12s;white-space:nowrap;
+  }
+  .btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .btn svg{width:14px;height:14px;flex:none}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.primary:hover{background:var(--primary-d);border-color:var(--primary-d)}
+  .btn.danger-text{color:var(--red);border-color:#e5c4c4}
+  .btn.danger-text:hover{background:#fdf1f1;border-color:#d9a8a8}
+  .btn:disabled{cursor:default;opacity:.5}
+  .btn.uploaded,.btn.uploaded:hover,.btn.uploaded:disabled{color:var(--green);background:var(--green-weak);border-color:#bfe0cf;opacity:1;cursor:default}
+
+  /* 选项卡 */
+  .tabbar{display:flex;flex-wrap:wrap;border-bottom:1px solid var(--line);margin-top:16px}
+  .tab-btn{
+    font-family:inherit;font-size:13.5px;font-weight:500;color:var(--muted);
+    background:transparent;border:0;border-bottom:2px solid transparent;
+    min-height:42px;padding:0 18px;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;
+  }
+  .tab-btn:hover{color:var(--text);background:#f7f9fa}
+  .tab-btn:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
+  .tab-btn.active{color:var(--primary-d);border-bottom-color:var(--primary);font-weight:600;background:var(--primary-weak)}
+  .tab-panel{padding-top:18px}
+
+  .portal-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .portal-tools .btn svg{width:14px;height:14px}
+
+  .field{margin-top:18px}
+  .field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+  .sel,.txt{
+    font-family:inherit;font-size:13.5px;color:var(--text);
+    width:100%;max-width:360px;height:var(--ctrl-h);
+    padding:0 11px;background:#fff;border:1px solid var(--line);border-radius:6px;
+  }
+  .sel{
+    max-width:420px;padding-right:34px;appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23657585' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;
+  }
+  .sel:focus,.txt:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+  .hint{font-size:12px;color:var(--faint);margin-top:6px;line-height:1.6}
+
+  .quota-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:16px;max-width:620px}
+  .quota-item > label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+  .quota-item .sel{max-width:240px}
+  .rate-line{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted)}
+  .rate-line label{display:block;font-size:13px;font-weight:500;margin:0;color:var(--muted)}
+  .rate-line .txt{width:130px;max-width:130px;height:34px;text-align:right}
+  .rate-line .unit{font-size:12.5px;color:var(--muted);white-space:nowrap}
+
+  /* 网络接口卡片 */
+  .iface-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px}
+  .iface-card{
+    font-family:inherit;text-align:left;width:100%;
+    background:#fff;border:1px solid var(--line);border-radius:7px;
+    padding:13px 14px;cursor:pointer;color:var(--text);
+    transition:background .12s,border-color .12s,box-shadow .12s;
+  }
+  .iface-card:hover{background:#f7fafc;border-color:#c4ccd4}
+  .iface-card:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .iface-card.active{border-color:#bcd5e7;background:#f5fbf8;box-shadow:inset 0 0 0 1px #bcd5e7}
+  .iface-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .iface-name{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:14px;font-weight:600;letter-spacing:.2px;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .iface-badge{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--green);background:var(--green-weak);border:1px solid #bfe0cf;border-radius:999px;padding:1px 8px;white-space:nowrap}
+  .iface-badge .dot{width:5px;height:5px;border-radius:50%;background:var(--green)}
+  .iface-ip{display:flex;align-items:baseline;gap:8px;margin-top:9px}
+  .iface-ip .k{font-size:11.5px;color:var(--faint);flex:none}
+  .iface-ip .v{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;color:var(--text);min-width:0;word-break:break-all}
+
+  /* 底部操作 */
+  .action-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;padding:16px 24px;border-top:1px solid var(--line);background:#fbfcfd}
+  .action-bar .btn{min-width:88px}
+  .foot-note{max-width:980px;margin:14px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6}
+
+  /* 二次确认 */
+  .mask{position:fixed;inset:0;background:rgba(24,34,44,.46);display:flex;align-items:center;justify-content:center;padding:18px;z-index:80}
+  .dialog{background:#fff;border-radius:8px;width:100%;max-width:420px;box-shadow:0 18px 48px rgba(20,30,40,.24);overflow:hidden}
+  .dialog-body{padding:18px 20px 14px}
+  .dialog-body h3{font-size:15px;font-weight:650;margin-bottom:7px}
+  .dialog-body p{font-size:13px;color:var(--muted);line-height:1.65}
+  .dialog-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--line);background:#fbfcfd}
+
+  #toasts{position:fixed;right:18px;bottom:18px;z-index:90;display:flex;flex-direction:column;gap:10px;max-width:min(380px,calc(100vw - 36px))}
+  .toast{background:#fff;border:1px solid var(--line);border-left:3px solid var(--primary);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--text);box-shadow:0 6px 20px rgba(30,42,54,.12);animation:tin .2s ease}
+  .toast.ok{border-left-color:var(--green)}
+  .toast.warn{border-left-color:var(--amber)}
+  .toast.err{border-left-color:var(--red)}
+  @keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+
+  @media (max-width:760px){
+    .page{padding:0}
+    .iface-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  @media (max-width:640px){
+    body{padding:14px 10px 60px}
+    .topbar{padding:16px}
+    .sec{padding:20px 16px}
+    .tab-btn{flex:1 1 0;padding:0 8px}
+    .sel,.txt{max-width:100%;font-size:16px}
+    .quota-grid{grid-template-columns:1fr;gap:20px;max-width:none}
+    .quota-item .sel{max-width:100%}
+    .action-bar{padding:14px 16px}
+    .action-bar .btn{flex:1 1 0}
+    .dialog-foot .btn{flex:1 1 0}
+  }
+  @media (max-width:520px){
+    .iface-grid{grid-template-columns:1fr}
+    .rate-line .txt{width:120px;max-width:120px}
+  }
+  @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+</style>
+</head>
+<body>
+
+<div class="sheet">
+  <header class="topbar">
+    <h1>openNDS 设置 <span class="en">Settings</span></h1>
+    <div class="desc">默认门户、公平使用策略与网络接口的前端布局和交互演示，不连接真实 openNDS 服务。</div>
+  </header>
+
+  <main>
+    <!-- ===== 默认门户设置 ===== -->
+    <section class="sec">
+      <div class="sec-head">
+        <h2>默认门户设置 <span class="en">Default Portal</span></h2>
+      </div>
+
+      <div class="tabbar" role="tablist" aria-label="默认门户配置区域">
+        <button class="tab-btn active" type="button" role="tab" id="tab-wifi" data-tab="wifi" aria-selected="true" aria-controls="portalPanel">无线区域</button>
+        <button class="tab-btn" type="button" role="tab" id="tab-wired" data-tab="wired" aria-selected="false" aria-controls="portalPanel">有线区域</button>
+        <button class="tab-btn" type="button" role="tab" id="tab-blacklist" data-tab="blacklist" aria-selected="false" aria-controls="portalPanel">黑名单</button>
+      </div>
+      <div class="tab-panel" id="portalPanel" role="tabpanel" aria-labelledby="tab-wifi"></div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ===== 公平使用策略 ===== -->
+    <section class="sec">
+      <div class="sec-head">
+        <h2>公平使用策略 <span class="en">Fair Use Policy</span></h2>
+        <p class="sec-desc warn">下载配额检查优于上传配额检查。</p>
+      </div>
+
+      <div class="quota-grid">
+        <div class="quota-item">
+          <label for="uploadAction">上传</label>
+          <select class="sel" id="uploadAction">
+            <option value="limit">限速</option>
+            <option value="reject">取消认证</option>
+          </select>
+          <div class="rate-line" id="uploadRateLine">
+            <label for="uploadRate">速率</label>
+            <input class="txt" type="number" id="uploadRate" min="1" step="1" value="2048" placeholder="例如 2048">
+            <span class="unit">Kb/s</span>
+          </div>
+        </div>
+
+        <div class="quota-item">
+          <label for="downloadAction">下载</label>
+          <select class="sel" id="downloadAction">
+            <option value="limit">限速</option>
+            <option value="reject">取消认证</option>
+          </select>
+          <div class="rate-line" id="downloadRateLine">
+            <label for="downloadRate">速率</label>
+            <input class="txt" type="number" id="downloadRate" min="1" step="1" value="4096" placeholder="例如 4096">
+            <span class="unit">Kb/s</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="divider">
+
+    <!-- ===== 网络接口 ===== -->
+    <section class="sec">
+      <div class="sec-head">
+        <h2>网络接口 <span class="en">Network Interface</span></h2>
+        <p class="sec-desc warn">更改网络接口，某些自定义规则和客户端将会失效，请选调整好相关配置再更改。</p>
+      </div>
+      <div class="iface-grid" id="ifaceGrid"></div>
+    </section>
+  </main>
+
+  <footer class="action-bar">
+    <button class="btn" id="saveBtn" type="button">保存</button>
+    <button class="btn primary" id="applyBtn" type="button">应用</button>
+  </footer>
+</div>
+
+<div class="foot-note">前端交互演示：上传脚本与网络接口均为模拟数据，不会写入或下发任何真实配置。</div>
+
+<div class="mask" id="confirmMask" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmText">
+    <div class="dialog-body">
+      <h3 id="confirmTitle">确认操作</h3>
+      <p id="confirmText"></p>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn" type="button" id="confirmCancel">取消</button>
+      <button class="btn danger-text" type="button" id="confirmOk">确认</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="scriptFile" accept=".sh" hidden>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   openNDS 设置 · 前端布局与交互演示（纯前端，无后端）
+   ============================================================ */
+
+var TAB_LABEL = { wifi:"无线区域", wired:"有线区域", blacklist:"黑名单" };
+
+var state = {
+  activeTab:"wifi",
+  tabs:{
+    wifi:{ uploaded:true },
+    wired:{ uploaded:false },
+    blacklist:{ uploaded:false }
+  },
+  quota:{
+    uploadAction:"limit",
+    downloadAction:"limit",
+    uploadRate:"2048",
+    downloadRate:"4096"
+  },
+  interfaces:[
+    {name:"br-lan", ip:"192.168.1.1"},
+    {name:"eth0", ip:"192.168.1.2"},
+    {name:"eth1", ip:"192.168.2.1"},
+    {name:"wlan0", ip:"192.168.1.254"},
+    {name:"wlan1", ip:"192.168.3.1"},
+    {name:"usb0", ip:"192.168.4.1"}
+  ],
+  activeIface:"br-lan",
+  savedSnapshot:null,
+  pending:null
+};
+
+/* ---------- 工具 ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(m){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]; }); }
+function toast(msg, kind){
+  var t=document.createElement("div");
+  t.className="toast "+(kind||"");
+  t.textContent=msg;
+  $("toasts").appendChild(t);
+  setTimeout(function(){ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(function(){ t.remove(); },320); },3000);
+}
+function configSnapshot(){
+  return JSON.stringify({
+    tabs:state.tabs,
+    quota:state.quota,
+    activeIface:state.activeIface
+  });
+}
+
+/* ---------- 默认门户设置 ---------- */
+function renderPortalPanel(){
+  var tab=state.tabs[state.activeTab];
+  var uploaded=tab.uploaded;
+  var uploadIcon=uploaded
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>';
+
+  var h='<div class="portal-tools">'+
+    '<button class="btn'+(uploaded?" uploaded":"")+'" type="button" id="uploadBtn"'+(uploaded?" disabled":"")+'>'+
+      uploadIcon+
+      (uploaded?"已上传":"上传")+
+    '</button>'+
+    '<button class="btn danger-text" type="button" id="cleanBtn"'+(uploaded?"":" disabled")+'>'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13"/></svg>'+
+      '清理'+
+    '</button>'+
+  '</div>';
+
+  $("portalPanel").innerHTML=h;
+
+  var uploadBtn=$("uploadBtn");
+  uploadBtn.disabled=uploaded;
+  uploadBtn.addEventListener("click",function(){
+    if(state.tabs[state.activeTab].uploaded) return;
+    $("scriptFile").click();
+  });
+
+  var cleanBtn=$("cleanBtn");
+  cleanBtn.disabled=!uploaded;
+  cleanBtn.addEventListener("click",function(){
+    if(!state.tabs[state.activeTab].uploaded) return;
+    openConfirm({
+      type:"clean",
+      title:"清理 default.sh？",
+      text:"将删除「"+TAB_LABEL[state.activeTab]+"」指定目录中的 default.sh。删除后上传按钮会恢复为「上传」。",
+      okText:"清理",
+      danger:true
+    });
+  });
+}
+
+function renderTabs(){
+  var tabs=document.querySelectorAll(".tab-btn");
+  Array.prototype.forEach.call(tabs,function(btn){
+    var on=btn.getAttribute("data-tab")===state.activeTab;
+    btn.classList.toggle("active",on);
+    btn.setAttribute("aria-selected",on?"true":"false");
+  });
+  var panel=$("portalPanel");
+  if(panel) panel.setAttribute("aria-labelledby","tab-"+state.activeTab);
+}
+
+function setTab(key){
+  if(!TAB_LABEL[key]) return;
+  state.activeTab=key;
+  renderTabs();
+  renderPortalPanel();
+}
+
+/* ---------- 网络接口 ---------- */
+function renderInterfaces(){
+  var h="";
+  state.interfaces.forEach(function(it){
+    var on=it.name===state.activeIface;
+    h+='<button class="iface-card'+(on?" active":"")+'" type="button" data-iface="'+esc(it.name)+'" aria-pressed="'+(on?"true":"false")+'">'+
+      '<div class="iface-top">'+
+        '<span class="iface-name">'+esc(it.name)+'</span>'+
+        (on?'<span class="iface-badge"><span class="dot"></span>正在使用中</span>':'')+
+      '</div>'+
+      '<div class="iface-ip"><span class="k">对应 IP</span><span class="v">'+esc(it.ip)+'</span></div>'+
+    '</button>';
+  });
+  $("ifaceGrid").innerHTML=h;
+
+  var cards=document.querySelectorAll(".iface-card");
+  Array.prototype.forEach.call(cards,function(card){
+    card.addEventListener("click",function(){
+      var name=card.getAttribute("data-iface");
+      if(name===state.activeIface){
+        toast("当前正在使用 "+name,"ok");
+        return;
+      }
+      openConfirm({
+        type:"iface",
+        title:"切换网络接口？",
+        text:"将 openNDS 接管接口从「"+state.activeIface+"」切换到「"+name+"」。切换后部分自定义规则和客户端可能失效。",
+        okText:"切换",
+        target:name,
+        danger:false
+      });
+    });
+  });
+}
+
+function applyInterface(name){
+  state.activeIface=name;
+  renderInterfaces();
+  toast("网络接口已切换为 "+name,"ok");
+}
+
+/* ---------- 二次确认 ---------- */
+var lastFocus=null;
+
+function openConfirm(opts){
+  lastFocus=document.activeElement;
+  state.pending=opts;
+  $("confirmTitle").textContent=opts.title;
+  $("confirmText").textContent=opts.text;
+  var ok=$("confirmOk");
+  ok.textContent=opts.okText||"确认";
+  ok.className="btn "+(opts.danger?"danger-text":"primary");
+  $("confirmMask").hidden=false;
+  ok.focus();
+}
+
+function closeConfirm(){
+  $("confirmMask").hidden=true;
+  state.pending=null;
+  if(lastFocus && lastFocus.focus){ try{ lastFocus.focus(); }catch(e){} }
+}
+
+function confirmAction(){
+  var p=state.pending;
+  if(!p){ closeConfirm(); return; }
+  closeConfirm();
+  if(p.type==="clean"){
+    state.tabs[state.activeTab].uploaded=false;
+    renderPortalPanel();
+    toast("已清理「"+TAB_LABEL[state.activeTab]+"」的 default.sh，可重新上传","ok");
+  }else if(p.type==="iface"){
+    applyInterface(p.target);
+  }
+}
+
+/* ---------- 公平使用策略 ---------- */
+function toggleQuotaRates(){
+  $("uploadRateLine").hidden = state.quota.uploadAction!=="limit";
+  $("downloadRateLine").hidden = state.quota.downloadAction!=="limit";
+}
+
+/* ---------- 上传脚本 ---------- */
+function handleUpload(file){
+  if(!file) return;
+  var name=file.name||"";
+  if(!/\.sh$/i.test(name)){
+    toast("只支持上传后缀为 .sh 的脚本","warn");
+    return;
+  }
+  if(name.toLowerCase()!=="default.sh"){
+    toast("请上传名为 default.sh 的脚本","warn");
+    return;
+  }
+  if(state.tabs[state.activeTab].uploaded){
+    toast("当前区域已上传 default.sh","ok");
+    return;
+  }
+  state.tabs[state.activeTab].uploaded=true;
+  renderPortalPanel();
+  toast("已上传 default.sh","ok");
+}
+
+/* ---------- 底部保存 / 应用 ---------- */
+$("saveBtn").addEventListener("click",function(){
+  state.savedSnapshot=configSnapshot();
+  toast("设置已保存（尚未生效，请点击应用）","ok");
+});
+
+$("applyBtn").addEventListener("click",function(){
+  if(configSnapshot()!==state.savedSnapshot){
+    toast("当前设置尚未保存，请先保存后再应用。","warn");
+    return;
+  }
+  toast("设置已应用","ok");
+});
+
+/* ---------- 初始化 ---------- */
+(function init(){
+  renderTabs();
+  renderPortalPanel();
+  renderInterfaces();
+  toggleQuotaRates();
+  state.savedSnapshot=configSnapshot();
+
+  var tabs=document.querySelectorAll(".tab-btn");
+  Array.prototype.forEach.call(tabs,function(btn,i){
+    btn.addEventListener("click",function(){ setTab(btn.getAttribute("data-tab")); });
+    btn.addEventListener("keydown",function(e){
+      if(e.key!=="ArrowLeft" && e.key!=="ArrowRight") return;
+      e.preventDefault();
+      var dir=e.key==="ArrowRight"?1:-1;
+      var next=tabs[(i+dir+tabs.length)%tabs.length];
+      next.focus();
+      setTab(next.getAttribute("data-tab"));
+    });
+  });
+
+  $("uploadAction").addEventListener("change",function(){
+    state.quota.uploadAction=this.value;
+    toggleQuotaRates();
+  });
+
+  $("downloadAction").addEventListener("change",function(){
+    state.quota.downloadAction=this.value;
+    toggleQuotaRates();
+  });
+
+  $("uploadRate").addEventListener("input",function(){ state.quota.uploadRate=this.value; });
+  $("downloadRate").addEventListener("input",function(){ state.quota.downloadRate=this.value; });
+
+  $("scriptFile").addEventListener("change",function(){
+    var file=this.files && this.files[0];
+    this.value="";
+    handleUpload(file);
+  });
+
+  $("confirmCancel").addEventListener("click",closeConfirm);
+  $("confirmOk").addEventListener("click",confirmAction);
+  $("confirmMask").addEventListener("click",function(e){
+    if(e.target===this) closeConfirm();
+  });
+  document.addEventListener("keydown",function(e){
+    if(e.key==="Escape" && !$("confirmMask").hidden) closeConfirm();
+  });
+})();
+</script>
+</body>
+</html>

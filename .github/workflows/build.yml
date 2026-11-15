@@ -1,0 +1,118 @@
+name: build-package
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'luci-app-opennds-cpd/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipk:
+    name: .ipk (OpenWrt 24.10 SDK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Resolve latest 24.10.x SDK
+        id: sdk
+        run: |
+          rel=$(curl -fsSL https://downloads.openwrt.org/releases/ | grep -o '24\.10\.[0-9]*' | sort -V | tail -1)
+          [ -n "$rel" ] || { echo "no 24.10.x release found"; exit 1; }
+          base=https://downloads.openwrt.org/releases/$rel/targets/x86/64
+          file=$(curl -fsSL $base/ | grep -o 'openwrt-sdk-'"$rel"'-x86-64_[^"]*\.tar\.zst' | head -1)
+          [ -n "$file" ] || { echo "no SDK tarball found under $base"; exit 1; }
+          echo "url=$base/$file" >> "$GITHUB_OUTPUT"
+          echo "SDK: $base/$file"
+
+      - name: Download and extract SDK
+        run: |
+          curl -fsSL "${{ steps.sdk.outputs.url }}" -o sdk.tar.zst
+          mkdir sdk && tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+          rm sdk.tar.zst
+
+      - name: Install package into buildroot
+        run: |
+          cp -r luci-app-opennds-cpd sdk/package/
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          echo 'CONFIG_PACKAGE_luci-app-opennds-cpd=m' >> .config
+          make defconfig
+
+      - name: Build
+        run: |
+          cd sdk
+          make package/luci-app-opennds-cpd/compile V=s -j"$(nproc)"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          find sdk/bin/packages -name '*opennds-cpd*' -type f -exec cp {} out/ \;
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-opennds-cpd_ipk-24.10
+          path: out/
+          if-no-files-found: error
+
+  apk:
+    name: .apk (OpenWrt snapshot SDK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      - name: Resolve snapshot SDK
+        id: sdk
+        run: |
+          base=https://downloads.openwrt.org/snapshots/targets/x86/64
+          file=$(curl -fsSL $base/ | grep -o 'openwrt-sdk-x86-64_[^"]*\.tar\.zst' | head -1)
+          [ -n "$file" ] || { echo "no SDK tarball found under $base"; exit 1; }
+          echo "url=$base/$file" >> "$GITHUB_OUTPUT"
+          echo "SDK: $base/$file"
+
+      - name: Download and extract SDK
+        run: |
+          curl -fsSL "${{ steps.sdk.outputs.url }}" -o sdk.tar.zst
+          mkdir sdk && tar --zstd -xf sdk.tar.zst -C sdk --strip-components=1
+          rm sdk.tar.zst
+
+      - name: Install package into buildroot
+        run: |
+          cp -r luci-app-opennds-cpd sdk/package/
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          echo 'CONFIG_PACKAGE_luci-app-opennds-cpd=m' >> .config
+          make defconfig
+
+      - name: Build
+        run: |
+          cd sdk
+          make package/luci-app-opennds-cpd/compile V=s -j"$(nproc)"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          find sdk/bin/packages -name '*opennds-cpd*' -type f -exec cp {} out/ \;
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-opennds-cpd_apk-snapshot
+          path: out/
+          if-no-files-found: error

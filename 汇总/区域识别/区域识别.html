@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网络区域识别</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232274a5'/%3E%3Ccircle cx='12' cy='12' r='8' fill='none' stroke='%23fff' stroke-width='1.4'/%3E%3Ccircle cx='12' cy='12' r='2.2' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --line:#d7dde3; --line-soft:#e9edf0;
+    --text:#222a31; --muted:#657585; --faint:#9aa6b2;
+    --primary:#2274a5; --primary-d:#1b5f8a; --primary-weak:#e7f1f8;
+    --green:#2e9468; --green-weak:#e4f4ec;
+    --amber:#b57d17;
+    --red:#c94848;
+    --ctrl-h:38px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#fff;color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:960px;margin:0 auto;padding:24px 22px 64px}
+
+  .pt-head{padding-bottom:16px;border-bottom:1px solid var(--line)}
+  .pt-head h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .pt-head h1 .en{font-size:11.5px;font-weight:500;color:var(--faint);letter-spacing:.3px}
+  .pt-head .desc{font-size:12.5px;color:var(--muted);margin-top:6px;max-width:720px;line-height:1.6}
+
+  .sec{padding:22px 0 6px}
+  .sec-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .sec-head h2{font-size:16px;font-weight:650;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .sec-head h2 .en{font-size:10.5px;font-weight:500;color:var(--faint);letter-spacing:.3px}
+  .sec-desc{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.6;max-width:760px}
+
+  /* 区域选择 */
+  .scope-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px}
+  .scope-label{font-size:12.5px;color:var(--muted);flex:none;min-width:32px}
+  .mode-state{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;font-size:11.5px;color:var(--faint)}
+  .mode-state[hidden]{display:none}
+  .ms-item{display:inline-flex;align-items:baseline;gap:5px}
+  .ms-v{color:var(--text)}
+  .ms-v.on{color:var(--green)}
+  .ms-v.dirty{color:var(--amber)}
+  .ms-sep{color:#c4ccd4}
+
+  /* 表单行 */
+  .zp-row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-top:14px}
+  .zp-label{width:64px;flex:none;font-size:12.5px;color:var(--muted);padding-top:9px}
+  .zp-ctrl{flex:1;min-width:0}
+  .state-line{font-size:11.5px;color:var(--faint);margin-top:8px;line-height:1.6;max-width:620px}
+  .empty-hint{font-size:12.5px;color:var(--faint);margin-top:16px;line-height:1.6}
+
+  /* 上传脚本 */
+  .zone-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+  .tool-meta{font-size:11.5px;color:var(--faint)}
+
+  /* Wi-Fi 卡片 */
+  .wifi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .wired-grid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px;max-width:360px}
+  .wifi-card{
+    font-family:inherit;text-align:left;background:#fff;border:1px solid var(--line);
+    border-radius:8px;padding:13px 15px;cursor:pointer;min-width:0;color:var(--text);
+    transition:border-color .12s,background .12s;
+  }
+  .wifi-card:hover{border-color:#b9c6d1;background:#fafbfc}
+  .wifi-card:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .wifi-card.selected{border-color:var(--primary);background:var(--primary-weak)}
+  .wifi-card.is-off{background:#fafbfc}
+  .wifi-card.is-off:hover{background:#f5f7f9}
+  .wifi-card.is-off.selected{background:var(--primary-weak)}
+  .wc-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
+  .wc-ssid{font-size:16px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .wifi-card.is-off .wc-ssid{color:var(--muted)}
+  .wc-sub{display:block;font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wc-ip{display:block;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+  .status-pill{font-size:11px;font-weight:500;line-height:1.5;padding:1px 8px;border-radius:999px;border:1px solid;white-space:nowrap;flex:none}
+  .status-pill.on{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}
+  .status-pill.off{color:#7c8894;border-color:#dfe5ea;background:#f4f7f9}
+
+  /* 配置内容（不重复显示 Wi-Fi 名称） */
+  .zone-panel{padding-top:16px}
+
+  /* 保存 / 应用 */
+  .save-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:24px;padding-top:16px;border-top:1px solid var(--line-soft)}
+  .save-row[hidden]{display:none}
+  .save-state{font-size:11.5px;color:var(--faint);margin-left:4px}
+  .save-state.dirty{color:var(--amber)}
+  .save-state.ok{color:var(--green)}
+
+  /* 控件 */
+  .sel{
+    font-family:inherit;font-size:13.5px;color:var(--text);
+    width:100%;max-width:300px;height:var(--ctrl-h);
+    padding:0 34px 0 11px;background:#fff;border:1px solid var(--line);border-radius:6px;
+    appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23657585' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;
+  }
+  .sel:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+  .btn{
+    font-family:inherit;font-size:13px;font-weight:500;color:var(--text);
+    background:#fff;border:1px solid var(--line);border-radius:6px;
+    height:34px;padding:0 16px;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    transition:background .12s,border-color .12s;white-space:nowrap;
+  }
+  .btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.primary:hover{background:var(--primary-d);border-color:var(--primary-d)}
+  .btn.small{height:30px;padding:0 12px;font-size:12px}
+  .btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+  .btn.danger:hover{background:#b23d3d;border-color:#b23d3d}
+  .btn.danger-ghost{color:var(--red);border-color:#e6bcbc;background:#fff}
+  .btn.danger-ghost:hover{background:#fbf1f1;border-color:#d79a9a}
+  #fileInput{display:none}
+
+  #toasts{position:fixed;right:18px;bottom:18px;z-index:90;display:flex;flex-direction:column;gap:10px;max-width:min(380px,calc(100vw - 36px))}
+  .toast{background:#fff;border:1px solid var(--line);border-left:3px solid var(--primary);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--text);box-shadow:0 6px 20px rgba(30,42,54,.12);animation:tin .2s ease}
+  .toast.ok{border-left-color:var(--green)}
+  .toast.warn{border-left-color:var(--amber)}
+  @keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+
+  /* 弹层 */
+  .modal-mask{position:fixed;inset:0;z-index:110;background:rgba(24,34,44,.42);display:flex;align-items:center;justify-content:center;padding:20px}
+  .modal-mask[hidden]{display:none}
+  .modal{
+    background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);
+    width:min(480px,100%);max-height:min(78vh,560px);display:flex;flex-direction:column;overflow:hidden;
+  }
+  .modal.sm{width:min(400px,100%)}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-bottom:1px solid var(--line-soft);flex:none}
+  .modal-head h3{font-size:14.5px;font-weight:650}
+  .modal-body{padding:8px 18px 14px;overflow:auto;flex:1 1 auto}
+  .modal-foot{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid var(--line-soft);background:#fbfcfd;flex:none}
+  .modal-foot .tool-meta{margin-right:auto}
+  .script-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--line-soft)}
+  .script-row:last-child{border-bottom:0}
+  .script-name{
+    font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;color:var(--text);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;
+  }
+  .cfm-text{font-size:12.5px;color:var(--muted);line-height:1.75;padding:6px 0 2px}
+
+  .foot-note{max-width:960px;margin:26px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.7;padding:0 22px}
+
+  @media (max-width:640px){
+    .page{padding:18px 14px 56px}
+    .sel{font-size:16px;max-width:100%}
+    .zp-label{width:100%;padding-top:0}
+    .btn{height:40px}
+    .scope-row{gap:8px}
+    .save-row .btn{flex:1 1 auto}
+  }
+  @media (max-width:560px){
+    .wifi-grid,.wired-grid{grid-template-columns:1fr}
+    .wired-grid{max-width:100%}
+  }
+  @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header class="pt-head">
+    <h1>网络区域识别 <span class="en">Network Zone Detection</span></h1>
+    <div class="desc">选择配置模式，为 Wi-Fi 区域选择认证脚本。演示数据，不连接路由器，也不需要接触无线接口名称。</div>
+  </header>
+
+  <!-- ===== 一、区域选择 ===== -->
+  <section class="sec">
+    <div class="sec-head"><h2>区域选择 <span class="en">Scope</span></h2></div>
+    <div class="scope-row">
+      <label class="scope-label" for="scopeSel">区域</label>
+      <select class="sel" id="scopeSel">
+        <option value="default" selected>全局</option>
+        <option value="zone">区域</option>
+      </select>
+    </div>
+    <div class="mode-state" id="modeState" hidden>
+      <span class="ms-item"><span class="ms-k">当前生效</span><span class="ms-v" id="effMode">尚未配置</span></span>
+      <span class="ms-sep" aria-hidden="true">·</span>
+      <span class="ms-item"><span class="ms-k">已保存</span><span class="ms-v" id="savedMode">无</span></span>
+      <span class="ms-sep" aria-hidden="true">·</span>
+      <span class="ms-item" id="dirtyItem" hidden><span class="ms-v dirty">有未保存的修改</span></span>
+    </div>
+  </section>
+
+  <!-- ===== 默认模式 ===== -->
+  <section class="sec" id="defaultPanel" hidden>
+    <div class="sec-head"><h2>默认模式 <span class="en">Default</span></h2></div>
+    <p class="sec-desc" id="defaultNote"></p>
+    <div class="save-row">
+      <button type="button" class="btn" id="defaultSave">保存</button>
+      <button type="button" class="btn primary" id="defaultApply">应用</button>
+      <span class="save-state" id="defaultHint" role="status"></span>
+    </div>
+  </section>
+
+  <!-- ===== 二、无线区域 ===== -->
+  <section class="sec" id="zonePanel" hidden>
+    <div class="sec-head"><h2>无线区域 <span class="en">Wireless Zones</span></h2></div>
+
+    <p class="sec-desc" style="margin-top:12px">以下 Wi-Fi 来自路由器中已创建的无线网络，点击卡片为其配置认证脚本。</p>
+    <div class="wifi-grid" id="wifiGrid"></div>
+
+    <input type="file" id="fileInput" accept=".sh" multiple>
+    <div class="zone-panel" id="zoneConfig"></div>
+
+    <div class="save-row" id="zoneSaveRow" hidden>
+      <button type="button" class="btn" id="zoneSave">保存</button>
+      <span class="save-state" id="zoneHint" role="status"></span>
+    </div>
+
+    <div class="save-row" id="zoneApplyBar">
+      <button type="button" class="btn primary" id="zoneApplyAll">应用</button>
+      <span class="save-state">应用已保存的无线区域配置</span>
+    </div>
+  </section>
+
+  <!-- ===== 三、有线区域 ===== -->
+  <section class="sec" id="wiredPanel" hidden>
+    <div class="sec-head"><h2>有线区域 <span class="en">Wired Zone</span></h2></div>
+    <p class="sec-desc">更改网络接口原网络接口配置并不会自动删除，需要要到下方未匹配里手动删除，如果未删除，切换回来时将会使用上次配置。</p>
+    <div class="wired-grid" id="wiredGrid"></div>
+    <div class="zone-panel" id="wiredConfig"></div>
+    <div class="save-row" id="wiredSaveRow" hidden>
+      <button type="button" class="btn" id="wiredSave">保存</button>
+      <button type="button" class="btn primary" id="wiredApply">应用</button>
+      <span class="save-state" id="wiredHint" role="status"></span>
+    </div>
+  </section>
+
+  <!-- ===== 未匹配（独立区域，固定在页面最下方） ===== -->
+  <section class="sec" id="unmatchedPanel">
+    <div class="sec-head"><h2>未匹配 <span class="en">Unmatched</span></h2></div>
+    <p class="sec-desc">以下文件尚未关联到任何区域。</p>
+    <div class="zone-tools">
+      <button type="button" class="btn" id="unmatchedBtn">查看</button>
+      <span class="tool-meta" id="unmatchedCount">共 3 个未匹配文件</span>
+    </div>
+  </section>
+</div>
+
+<div class="foot-note">前端交互演示：Wi-Fi 列表、启用状态、脚本与选择结果均为模拟数据，不会写入真实配置。</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<!-- 已上传脚本弹层 -->
+<div class="modal-mask" id="scriptsMask" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scriptsTitle">
+    <div class="modal-head">
+      <h3 id="scriptsTitle">已上传脚本</h3>
+    </div>
+    <div class="modal-body" id="scriptRows"></div>
+    <div class="modal-foot">
+      <span class="tool-meta" id="scriptsTotal"></span>
+      <button type="button" class="btn" id="scriptsDone">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 未匹配文件弹层 -->
+<div class="modal-mask" id="unmatchedMask" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="unmatchedTitle">
+    <div class="modal-head">
+      <h3 id="unmatchedTitle">未匹配文件</h3>
+    </div>
+    <div class="modal-body" id="unmatchedRows"></div>
+    <div class="modal-foot">
+      <span class="tool-meta" id="unmatchedTotal"></span>
+      <button type="button" class="btn" id="unmatchedDone">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 未匹配文件删除二次确认 -->
+<div class="modal-mask" id="umCfmMask" hidden>
+  <div class="modal sm" role="alertdialog" aria-modal="true" aria-labelledby="umCfmTitle">
+    <div class="modal-head"><h3 id="umCfmTitle">删除文件</h3></div>
+    <div class="modal-body"><p class="cfm-text" id="umCfmText"></p></div>
+    <div class="modal-foot">
+      <button type="button" class="btn" id="umCfmCancel">取消</button>
+      <button type="button" class="btn danger" id="umCfmOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 删除二次确认 -->
+<div class="modal-mask" id="cfmMask" hidden>
+  <div class="modal sm" role="alertdialog" aria-modal="true" aria-labelledby="cfmTitle">
+    <div class="modal-head"><h3 id="cfmTitle">删除脚本</h3></div>
+    <div class="modal-body"><p class="cfm-text" id="cfmText"></p></div>
+    <div class="modal-foot">
+      <button type="button" class="btn" id="cfmCancel">取消</button>
+      <button type="button" class="btn danger" id="cfmOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   网络区域识别 · 前端交互演示（模拟数据）
+   三种状态：当前选择的模式 / 已保存的模式 / 实际生效的模式
+   ============================================================ */
+
+var WIFI = [
+  {ssid:"Guest",   enabled:true},
+  {ssid:"Staff",   enabled:true},
+  {ssid:"Privacy", enabled:false}
+];
+
+var scripts = ["guest.sh", "staff.sh", "privacy.sh"];
+
+var UNMATCHED = ["unknown.sh", "guest-old.sh", "placement-info.txt"];
+
+var state = {
+  scope:"default",       // 下拉框当前选择
+  touched:false,         // 是否已经进入过区域模式或做过保存/应用
+  active:null,           // 当前选中的无线区域
+  wiredActive:false,     // 是否选中有线区域卡片
+  zoneAuth:{},           // 无线区域草稿
+  wiredAuth:"",          // 有线区域草稿（空字符串表示默认）
+  savedZone:null,        // 已保存的无线区域配置
+  savedWired:null,       // 已保存的有线区域配置；null 表示尚未保存
+  savedMode:null,        // 已保存的模式：null | "default" | "zone"
+  effectiveMode:null     // 当前生效的模式：null | "default" | "zone"
+};
+
+/* ---------- 工具 ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(m){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]; }); }
+function wifiBy(ssid){ for(var i=0;i<WIFI.length;i++){ if(WIFI[i].ssid===ssid) return WIFI[i]; } return null; }
+function toast(msg,kind){
+  var t=document.createElement("div");
+  t.className="toast "+(kind||"");
+  t.textContent=msg;
+  $("toasts").appendChild(t);
+  setTimeout(function(){ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(function(){ t.remove(); },320); },3000);
+}
+function optionHTML(chosen){
+  var h='<option value="">默认</option>';
+  scripts.forEach(function(s){
+    h+='<option value="'+esc(s)+'"'+(chosen===s?" selected":"")+'>'+esc(s)+'</option>';
+  });
+  return h;
+}
+function fillSelect(el, chosen){
+  if(!el) return;
+  el.innerHTML=optionHTML(chosen);
+}
+function setSaveState(el, text, kind){
+  if(!el) return;
+  el.textContent=text;
+  el.className="save-state"+(kind?" "+kind:"");
+}
+
+/* ---------- 状态判断 ---------- */
+function zoneSnapshot(){
+  var o={};
+  WIFI.forEach(function(w){
+    var v=state.zoneAuth[w.ssid];
+    if(v) o[w.ssid]=v;
+  });
+  return o;
+}
+function hasZoneSelection(){
+  var any=false;
+  WIFI.forEach(function(w){ if(state.zoneAuth[w.ssid]) any=true; });
+  return any;
+}
+function zoneDirty(){
+  if(state.savedMode!==null && state.savedMode!=="zone") return true;
+  if(state.savedZone) return JSON.stringify(state.savedZone)!==JSON.stringify(zoneSnapshot());
+  return hasZoneSelection();
+}
+function overallDirty(){
+  if(state.savedMode!==null && state.savedMode!==state.scope) return true;
+  return zoneDirty();
+}
+function zoneHintInfo(){
+  if(zoneDirty()) return {text:"有未保存的修改", kind:"dirty"};
+  if(state.savedMode==="zone") return {text:"已保存", kind:"ok"};
+  return {text:"尚未保存", kind:""};
+}
+function defaultHintInfo(){
+  if(state.savedMode==="default") return {text:"已保存", kind:"ok"};
+  if(state.savedMode===null) return {text:"尚未保存", kind:""};
+  return {text:"有未保存的修改", kind:"dirty"};
+}
+function modeLabel(m){
+  if(m==="zone") return "区域模式";
+  if(m==="default") return "默认模式";
+  return "尚未配置";
+}
+function renderModeState(){
+  $("modeState").hidden=!state.touched;
+  var eff=$("effMode");
+  eff.textContent=modeLabel(state.effectiveMode);
+  eff.className="ms-v"+(state.effectiveMode?" on":"");
+  $("savedMode").textContent=(state.savedMode?modeLabel(state.savedMode):"无");
+  $("dirtyItem").hidden=!overallDirty();
+}
+function renderHints(){
+  var z=zoneHintInfo(), d=defaultHintInfo();
+  setSaveState($("zoneHint"), z.text, z.kind);
+  setSaveState($("defaultHint"), d.text, d.kind);
+  renderModeState();
+}
+
+/* ---------- 范围切换 ---------- */
+function defaultNoteText(){
+  if(state.effectiveMode==="zone") return "当前仍在使用区域识别。点击应用后，将停止使用区域配置，统一使用 openNDS 默认认证设置。";
+  if(state.effectiveMode==="default") return "当前使用 openNDS 默认认证设置。再次保存或应用会保留该模式。";
+  return "选择默认模式将不再使用网络区域识别，统一使用 openNDS 默认认证设置。";
+}
+function renderDefault(){
+  $("defaultNote").textContent=defaultNoteText();
+  renderHints();
+}
+function applyScope(){
+  var isZone=(state.scope==="zone");
+  $("zonePanel").hidden=!isZone;
+  $("wiredPanel").hidden=!isZone;
+  $("defaultPanel").hidden=!(state.touched && state.scope==="default");
+  if(isZone) renderZoneAll();
+  else{
+    $("zoneSaveRow").hidden=true;
+    $("wiredSaveRow").hidden=true;
+    renderDefault();
+  }
+  renderModeState();
+}
+
+/* ---------- 脚本 ---------- */
+function renderScripts(){
+  var text="共 "+scripts.length+" 个脚本";
+  ["scriptCount","wireScriptCount"].forEach(function(id){
+    var count=$(id);
+    if(count) count.textContent=text;
+  });
+}
+
+/* ---------- Wi-Fi 卡片 ---------- */
+function cardSub(w){
+  var chosen=state.zoneAuth[w.ssid];
+  if(chosen) return "已选择："+chosen;
+  return w.enabled?"点击选择认证脚本":"已禁用，仍可预先配置";
+}
+function renderWifiCards(){
+  var h="";
+  WIFI.forEach(function(w){
+    var selected=(state.active===w.ssid)?" selected":"";
+    var off=w.enabled?"":" is-off";
+    h+='<button type="button" class="wifi-card'+selected+off+'" data-ssid="'+esc(w.ssid)+'" aria-pressed="'+(state.active===w.ssid?"true":"false")+'">'+
+      '<span class="wc-top"><span class="wc-ssid">'+esc(w.ssid)+'</span>'+
+      '<span class="status-pill '+(w.enabled?"on":"off")+'">'+(w.enabled?"启用":"禁用")+'</span></span>'+
+      '<span class="wc-sub">'+esc(cardSub(w))+'</span>'+
+    '</button>';
+  });
+  $("wifiGrid").innerHTML=h;
+
+  $("wifiGrid").querySelectorAll("[data-ssid]").forEach(function(b){
+    b.addEventListener("click",function(){ openZone(b.getAttribute("data-ssid")); });
+  });
+}
+
+/* ---------- 配置内容（不重复显示 Wi-Fi 名称） ---------- */
+function zoneNoteText(){
+  var w=wifiBy(state.active), chosen=state.zoneAuth[state.active], parts=[];
+  if(w && !w.enabled) parts.push("该 Wi-Fi 当前为禁用状态，所选脚本会在启用后生效。");
+  if(chosen) parts.push("已选择 "+chosen+"，仅对当前选中的 Wi-Fi 生效。");
+  else parts.push("尚未选择脚本，选择结果仅对当前选中的 Wi-Fi 生效。");
+  return parts.join(" ");
+}
+function toolsHTML(){
+  return '<div class="zone-tools">'+
+    '<button type="button" class="btn primary" id="uploadBtn">上传</button>'+
+    '<button type="button" class="btn" id="scriptsBtn">已上传</button>'+
+    '<span class="tool-meta" id="scriptCount">共 '+scripts.length+' 个脚本</span>'+
+  '</div>';
+}
+function bindPanelControls(){
+  var up=$("uploadBtn");
+  if(up) up.addEventListener("click",function(){ $("fileInput").click(); });
+  var sb=$("scriptsBtn");
+  if(sb) sb.addEventListener("click",openScriptsModal);
+}
+function renderPanel(){
+  var ssid=state.active;
+  var box=$("zoneConfig");
+  if(!ssid){
+    box.innerHTML='<p class="empty-hint">点击上方任意 Wi-Fi 卡片，为它选择认证脚本。</p>';
+    $("zoneSaveRow").hidden=true;
+    return;
+  }
+  $("zoneSaveRow").hidden=false;
+  box.innerHTML=toolsHTML()+
+    '<div class="zp-row"><label class="zp-label" for="authSel">认证</label><div class="zp-ctrl">'+
+    '<select class="sel" id="authSel">'+optionHTML(state.zoneAuth[ssid])+'</select>'+
+    '<p class="state-line" id="zoneNote">'+esc(zoneNoteText())+'</p>'+
+  '</div></div>';
+  bindPanelControls();
+  renderScripts();
+}
+
+/* ---------- 有线区域 ---------- */
+function renderWiredCards(){
+  $("wiredGrid").innerHTML=
+    '<button type="button" class="wifi-card'+(state.wiredActive?" selected":"")+'" data-wired="1" aria-pressed="'+(state.wiredActive?"true":"false")+'">'+
+      '<span class="wc-top"><span class="wc-ssid mono">br-lan</span></span>'+
+      '<span class="wc-ip mono">10.10.10.1</span>'+
+    '</button>';
+  $("wiredGrid").querySelectorAll("[data-wired]").forEach(function(b){
+    b.addEventListener("click",function(){ openWired(); });
+  });
+}
+function wiredNoteText(){
+  if(state.wiredAuth) return "已选择 "+state.wiredAuth+"，仅对有线区域生效。";
+  return "尚未选择脚本，选择结果仅对有线区域生效。";
+}
+function wiredHintInfo(){
+  if(state.savedWired===null){
+    return state.wiredAuth ? {text:"有未保存的修改", kind:"dirty"} : {text:"尚未保存", kind:""};
+  }
+  if(state.wiredAuth!==state.savedWired) return {text:"有未保存的修改", kind:"dirty"};
+  return {text:"已保存", kind:"ok"};
+}
+function wiredToolsHTML(){
+  return '<div class="zone-tools">'+
+    '<button type="button" class="btn primary" id="wireUploadBtn">上传</button>'+
+    '<button type="button" class="btn" id="wireScriptsBtn">已上传</button>'+
+    '<span class="tool-meta" id="wireScriptCount">共 '+scripts.length+' 个脚本</span>'+
+  '</div>';
+}
+function bindWiredControls(){
+  var up=$("wireUploadBtn");
+  if(up) up.addEventListener("click",function(){ $("fileInput").click(); });
+  var sb=$("wireScriptsBtn");
+  if(sb) sb.addEventListener("click",openScriptsModal);
+}
+function renderWiredPanel(){
+  var box=$("wiredConfig");
+  var hint=wiredHintInfo();
+  setSaveState($("wiredHint"), hint.text, hint.kind);
+  if(!state.wiredActive){
+    box.innerHTML='<p class="empty-hint">点击上方有线区域卡片，为它选择认证脚本。</p>';
+    $("wiredSaveRow").hidden=true;
+    return;
+  }
+  $("wiredSaveRow").hidden=false;
+  box.innerHTML=wiredToolsHTML()+
+    '<div class="zp-row"><label class="zp-label" for="wiredAuthSel">认证</label><div class="zp-ctrl">'+
+    '<select class="sel" id="wiredAuthSel">'+optionHTML(state.wiredAuth)+'</select>'+
+    '<p class="state-line" id="wiredNote">'+esc(wiredNoteText())+'</p>'+
+  '</div></div>';
+  bindWiredControls();
+  renderScripts();
+}
+function openWired(){
+  state.wiredActive=true;
+  renderWiredCards();
+  renderWiredPanel();
+}
+
+/* ---------- 已上传脚本弹层 ---------- */
+var pendingDelete=null;
+function renderScriptRows(){
+  var box=$("scriptRows");
+  if(!scripts.length){
+    box.innerHTML='<p class="empty-hint" style="margin-top:8px">暂无已上传脚本</p>';
+  }else{
+    box.innerHTML=scripts.map(function(s){
+      return '<div class="script-row"><span class="script-name">'+esc(s)+'</span>'+
+        '<button type="button" class="btn small danger-ghost" data-del="'+esc(s)+'">删除</button></div>';
+    }).join("");
+  }
+  $("scriptsTotal").textContent="共 "+scripts.length+" 个脚本";
+}
+function openScriptsModal(){
+  renderScriptRows();
+  $("scriptsMask").hidden=false;
+  var done=$("scriptsDone");
+  if(done && done.focus) done.focus();
+}
+function closeScriptsModal(){
+  $("scriptsMask").hidden=true;
+}
+function askDelete(name){
+  if(!name) return;
+  pendingDelete=name;
+  $("cfmText").textContent='确定删除脚本“'+name+'”吗？删除后，认证下拉框将不再提供该脚本。';
+  $("cfmMask").hidden=false;
+}
+function closeConfirm(){
+  $("cfmMask").hidden=true;
+  pendingDelete=null;
+}
+function deleteScript(name){
+  for(var i=scripts.length-1;i>=0;i--){
+    if(scripts[i]===name) scripts.splice(i,1);
+  }
+  WIFI.forEach(function(w){
+    if(state.zoneAuth[w.ssid]===name) state.zoneAuth[w.ssid]="";
+  });
+  if(state.wiredAuth===name) state.wiredAuth="";
+  if(state.scope==="zone"){
+    renderWifiCards();
+    if(state.active) renderPanel();
+    if(state.wiredActive) renderWiredPanel();
+  }
+  renderHints();
+  renderScriptRows();
+  toast("已删除脚本 "+name,"ok");
+}
+function savedZoneValid(){
+  if(!state.savedZone) return true;
+  for(var ssid in state.savedZone){
+    if(scripts.indexOf(state.savedZone[ssid])<0) return false;
+  }
+  return true;
+}
+
+/* ---------- 未匹配文件 ---------- */
+var pendingUmDelete=null;
+function renderUnmatched(){
+  var box=$("unmatchedRows");
+  if(!UNMATCHED.length){
+    box.innerHTML='<p class="empty-hint" style="margin-top:8px">暂无未匹配文件</p>';
+  }else{
+    box.innerHTML=UNMATCHED.map(function(name){
+      return '<div class="script-row"><span class="script-name">'+esc(name)+'</span>'+
+        '<button type="button" class="btn small danger-ghost" data-umdel="'+esc(name)+'">删除</button></div>';
+    }).join("");
+  }
+  var text="共 "+UNMATCHED.length+" 个未匹配文件";
+  $("unmatchedTotal").textContent=text;
+  $("unmatchedCount").textContent=text;
+}
+function openUnmatchedModal(){
+  renderUnmatched();
+  $("unmatchedMask").hidden=false;
+  var done=$("unmatchedDone");
+  if(done && done.focus) done.focus();
+}
+function closeUnmatchedModal(){
+  $("unmatchedMask").hidden=true;
+  $("umCfmMask").hidden=true;
+  pendingUmDelete=null;
+}
+function askUmDelete(name){
+  if(!name) return;
+  pendingUmDelete=name;
+  $("umCfmText").textContent='确定删除文件“'+name+'”吗？删除后将不再出现在未匹配列表中。';
+  $("umCfmMask").hidden=false;
+}
+function closeUmConfirm(){
+  $("umCfmMask").hidden=true;
+  pendingUmDelete=null;
+}
+function deleteUnmatched(name){
+  for(var i=UNMATCHED.length-1;i>=0;i--){
+    if(UNMATCHED[i]===name) UNMATCHED.splice(i,1);
+  }
+  renderUnmatched();
+  toast("已删除文件 "+name,"ok");
+}
+
+function renderZoneAll(){
+  renderWifiCards();
+  renderPanel();
+  renderWiredCards();
+  renderWiredPanel();
+  renderHints();
+  renderModeState();
+}
+
+function openZone(ssid){
+  state.active=ssid;
+  renderWifiCards();
+  renderPanel();
+}
+
+/* ---------- 事件 ---------- */
+$("scopeSel").addEventListener("change",function(){
+  state.scope=this.value;
+  if(state.scope==="zone") state.touched=true;
+  state.active=null;
+  state.wiredActive=false;
+  applyScope();
+});
+
+$("fileInput").addEventListener("change",function(){
+  var input=this;
+  var files=Array.prototype.slice.call(input.files||[]);
+  if(!files.length){ input.value=""; return; }
+  var added=[], dup=0;
+  files.forEach(function(f){
+    var name=f && f.name ? f.name : "";
+    if(!name) return;
+    if(scripts.indexOf(name)>=0){ dup++; return; }
+    scripts.push(name);
+    added.push(name);
+  });
+  input.value="";
+  if(state.scope==="zone"){
+    renderPanel();
+    if(state.wiredActive) renderWiredPanel();
+  }
+  if(added.length){
+    toast("已上传 "+added.length+" 个脚本："+added.join("、"),"ok");
+  }else if(dup){
+    toast("所选脚本已在上传列表中，未重复添加","warn");
+  }
+});
+
+$("zoneConfig").addEventListener("change",function(e){
+  if(!e.target || e.target.id!=="authSel") return;
+  var ssid=state.active; if(!ssid) return;
+  state.zoneAuth[ssid]=e.target.value;
+  var note=$("zoneNote");
+  if(note) note.textContent=zoneNoteText();
+  renderWifiCards();
+  renderHints();
+});
+
+$("wiredConfig").addEventListener("change",function(e){
+  if(!e.target || e.target.id!=="wiredAuthSel") return;
+  state.wiredAuth=e.target.value;
+  var note=$("wiredNote");
+  if(note) note.textContent=wiredNoteText();
+  var hint=wiredHintInfo();
+  setSaveState($("wiredHint"), hint.text, hint.kind);
+});
+
+/* ---------- 已上传脚本 / 删除 ---------- */
+$("scriptsDone").addEventListener("click",closeScriptsModal);
+$("scriptsMask").addEventListener("click",function(e){
+  if(e.target===this) closeScriptsModal();
+});
+$("scriptRows").addEventListener("click",function(e){
+  var t=e.target;
+  var name=(t && t.getAttribute)?t.getAttribute("data-del"):null;
+  if(name) askDelete(name);
+});
+$("cfmCancel").addEventListener("click",closeConfirm);
+$("cfmMask").addEventListener("click",function(e){
+  if(e.target===this) closeConfirm();
+});
+$("cfmOk").addEventListener("click",function(){
+  var name=pendingDelete;
+  closeConfirm();
+  if(name) deleteScript(name);
+});
+
+/* ---------- 未匹配弹层 ---------- */
+$("unmatchedBtn").addEventListener("click",openUnmatchedModal);
+$("unmatchedDone").addEventListener("click",closeUnmatchedModal);
+$("unmatchedMask").addEventListener("click",function(e){
+  if(e.target===this) closeUnmatchedModal();
+});
+$("unmatchedRows").addEventListener("click",function(e){
+  var t=e.target;
+  var name=(t && t.getAttribute)?t.getAttribute("data-umdel"):null;
+  if(name) askUmDelete(name);
+});
+$("umCfmCancel").addEventListener("click",closeUmConfirm);
+$("umCfmMask").addEventListener("click",function(e){
+  if(e.target===this) closeUmConfirm();
+});
+$("umCfmOk").addEventListener("click",function(){
+  var name=pendingUmDelete;
+  closeUmConfirm();
+  if(name) deleteUnmatched(name);
+});
+
+document.addEventListener("keydown",function(e){
+  if(!e || e.key!=="Escape") return;
+  if(!$("cfmMask").hidden) closeConfirm();
+  else if(!$("scriptsMask").hidden) closeScriptsModal();
+  else if(!$("umCfmMask").hidden) closeUmConfirm();
+  else if(!$("unmatchedMask").hidden) closeUnmatchedModal();
+});
+
+/* ---------- 保存 / 应用 ---------- */
+$("zoneSave").addEventListener("click",function(){
+  state.touched=true;
+  state.savedZone=zoneSnapshot();
+  state.savedMode="zone";
+  renderZoneAll();
+  toast("保存成功","ok");
+});
+
+$("zoneApplyAll").addEventListener("click",function(){
+  if(!state.savedZone){
+    toast("请先保存无线区域配置，再点击应用","warn");
+    return;
+  }
+  if(!savedZoneValid()){
+    toast("已保存的配置引用了已删除的脚本，请重新保存后再应用","warn");
+    return;
+  }
+  state.touched=true;
+  state.effectiveMode="zone";
+  state.savedMode="zone";
+  renderZoneAll();
+  toast("应用成功","ok");
+});
+
+/* ---------- 有线区域保存 / 应用 ---------- */
+$("wiredSave").addEventListener("click",function(){
+  if(!state.wiredActive) return;
+  state.touched=true;
+  state.savedWired=state.wiredAuth;
+  renderWiredPanel();
+  renderHints();
+  toast("保存成功","ok");
+});
+
+$("wiredApply").addEventListener("click",function(){
+  if(!state.wiredActive) return;
+  if(state.savedWired===null){
+    toast("请先保存有线区域配置，再点击应用","warn");
+    return;
+  }
+  if(state.savedWired && scripts.indexOf(state.savedWired)<0){
+    toast("已保存的有线区域配置引用了已删除的脚本，请重新保存后再应用","warn");
+    return;
+  }
+  state.touched=true;
+  renderWiredPanel();
+  renderHints();
+  toast("应用成功","ok");
+});
+
+$("defaultSave").addEventListener("click",function(){
+  state.touched=true;
+  state.savedMode="default";
+  renderDefault();
+  renderModeState();
+  toast("保存成功","ok");
+});
+
+$("defaultApply").addEventListener("click",function(){
+  state.touched=true;
+  state.effectiveMode="default";
+  state.savedMode="default";
+  renderDefault();
+  renderModeState();
+  toast("应用成功","ok");
+});
+
+/* ---------- 初始化 ---------- */
+$("scriptsMask").hidden=true;
+$("cfmMask").hidden=true;
+$("unmatchedMask").hidden=true;
+$("umCfmMask").hidden=true;
+renderScripts();
+renderUnmatched();
+applyScope();
+</script>
+</body>
+</html>

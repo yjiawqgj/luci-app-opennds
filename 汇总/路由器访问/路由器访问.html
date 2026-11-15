@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>路由器访问 · openNDS</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232274a5'/%3E%3Crect x='5.5' y='9' width='13' height='8.5' rx='1.6' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3Ccircle cx='9' cy='13.2' r='1' fill='%23fff'/%3E%3Ccircle cx='15' cy='13.2' r='1' fill='%23fff'/%3E%3Cpath d='M8 9V6.8M16 9V6.8' stroke='%23fff' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --line:#d7dde3; --line-soft:#e9edf0;
+    --text:#222a31; --muted:#657585; --faint:#9aa6b2;
+    --primary:#2274a5; --primary-d:#1b5f8a; --primary-weak:#e7f1f8;
+    --green:#2e9468; --green-weak:#e4f4ec;
+    --amber:#b57d17; --amber-weak:#faf1dc;
+    --red:#c94848; --red-weak:#fbe8e8;
+    --ctrl-h:38px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  [hidden]{display:none!important}
+  body{
+    background:#ffffff;color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:960px;margin:0 auto;padding:26px 22px 80px}
+
+  .pt-head{padding-bottom:18px;border-bottom:1px solid var(--line)}
+  .pt-head h1{font-size:19px;font-weight:650;letter-spacing:.2px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .pt-head h1 .en{font-size:11.5px;font-weight:500;color:var(--faint);letter-spacing:.3px}
+  .pt-head .desc{font-size:12.5px;color:var(--muted);margin-top:6px;max-width:720px;line-height:1.6}
+
+  .func{padding:26px 0 8px}
+  .func-head h2{font-size:16px;font-weight:650;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .func-head h2 .en{font-size:10.5px;font-weight:500;color:var(--faint);letter-spacing:.3px}
+  .divider{border:0;border-top:1px solid var(--line);margin:12px 0 0}
+
+  .sub{padding-top:16px}
+  .note{font-size:12.5px;color:var(--muted);line-height:1.65;max-width:700px}
+  .state-line{font-size:11.5px;color:var(--faint);margin-top:8px}
+
+  /* 复选框 */
+  .chk{display:inline-flex;align-items:center;gap:9px;padding:10px 0;cursor:pointer;font-size:13.5px;font-weight:500;min-height:44px;-webkit-tap-highlight-color:transparent}
+  .chk input{width:17px;height:17px;margin:0;flex:none;accent-color:var(--primary);cursor:pointer}
+  .chk input:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .chk span{user-select:none}
+
+  /* 表单 */
+  .field{margin-top:16px}
+  .field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+
+  /* 添加按钮 */
+  .add-row{margin-top:14px}
+
+  /* 编辑区 */
+  .editor{margin-top:14px;max-width:560px}
+  .ta{
+    font-family:ui-monospace,Consolas,"Courier New",monospace;
+    font-size:13.5px;line-height:1.65;color:var(--text);
+    width:100%;min-height:140px;padding:10px 12px;background:#fff;
+    border:1px solid var(--line);border-radius:6px;resize:vertical;
+  }
+  .ta:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+  .actions{display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap}
+
+  /* 已保存内容：单层隔离展示区，标签在展示区之外 */
+  .viewer-label{margin-top:16px;font-size:12.5px;font-weight:600;color:var(--muted)}
+  .viewer{
+    margin-top:7px;max-width:560px;padding:14px 15px;
+    border:1px solid #ccd5dd;border-radius:5px;
+    background:#f5f7f9;box-shadow:inset 0 1px 3px rgba(28,44,58,.07);
+  }
+  .viewer pre{
+    margin:0;padding:0;background:transparent;border:0;
+    font-family:ui-monospace,Consolas,"Courier New",monospace;
+    font-size:13.5px;line-height:1.7;letter-spacing:.2px;color:#26323c;
+    white-space:pre-wrap;word-break:break-all;
+  }
+
+  .btn{
+    font-family:inherit;font-size:13px;font-weight:500;color:var(--text);
+    background:#fff;border:1px solid var(--line);border-radius:6px;
+    height:34px;padding:0 14px;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    transition:background .12s,border-color .12s;white-space:nowrap;
+  }
+  .btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.primary:hover{background:var(--primary-d);border-color:var(--primary-d)}
+
+  /* 页面底部应用 */
+  .page-actions{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:flex-end}
+
+  #toasts{position:fixed;right:18px;bottom:18px;z-index:60;display:flex;flex-direction:column;gap:10px;max-width:min(380px,calc(100vw - 36px))}
+  .toast{background:#fff;border:1px solid var(--line);border-left:3px solid var(--primary);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--text);box-shadow:0 6px 20px rgba(30,42,54,.12);animation:tin .2s ease}
+  .toast.ok{border-left-color:var(--green)}
+  .toast.warn{border-left-color:var(--amber)}
+  .toast.err{border-left-color:var(--red)}
+  @keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+
+  .foot-note{max-width:960px;margin:26px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.7;padding:0 22px}
+
+  @media (max-width:640px){
+    .page{padding:18px 14px 60px}
+    .ta{font-size:16px}
+    .actions .btn{flex:1 1 30%}
+    .page-actions .btn{width:100%}
+  }
+  @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header class="pt-head">
+    <h1>路由器访问 <span class="en">openNDS · Router Access</span></h1>
+    <div class="desc">配置 openNDS 对路由器的接管行为，以及对所有客户端开放的端口。以下为前端布局与交互演示。</div>
+  </header>
+
+  <!-- ===== 功能区域：接管 ===== -->
+  <section class="func">
+    <div class="func-head"><h2>接管 <span class="en">Takeover</span></h2></div>
+    <div class="sub">
+      <label class="chk" for="takeoverOff">
+        <input type="checkbox" id="takeoverOff">
+        <span>关闭接管</span>
+      </label>
+      <p class="note">如果你不知道该功能作用，请保持默认。</p>
+      <p class="state-line" id="takeoverState">当前状态：接管未关闭</p>
+    </div>
+  </section>
+
+  <hr class="divider">
+
+  <!-- ===== 功能区域：开放端口 ===== -->
+  <section class="func">
+    <div class="func-head"><h2>开放端口 <span class="en">Open Ports</span></h2></div>
+    <div class="sub">
+      <p class="note">对所有客户端生效。</p>
+      <div id="portsPanel"></div>
+    </div>
+  </section>
+
+  <footer class="page-actions">
+    <button class="btn primary" id="applyAll" type="button">应用</button>
+  </footer>
+</div>
+
+<div class="foot-note">前端交互演示：不连接真实路由器，也不会写入或下发任何后端配置；已保存内容仅保留在当前页面会话中。</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   路由器访问 · openNDS 前端布局与交互演示（纯前端）
+   ============================================================ */
+
+var state = {
+  takeoverOff: false,     // 关闭接管
+  editing: false,
+  saved: "",              // 已保存的开放端口内容
+  draft: ""               // 编辑中的草稿
+};
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(m){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]; }); }
+function toast(msg, kind){
+  var t=document.createElement("div");
+  t.className="toast "+(kind||"");
+  t.textContent=msg;
+  $("toasts").appendChild(t);
+  setTimeout(function(){ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(function(){ t.remove(); },320); },3000);
+}
+
+/* ---------- 接管 ---------- */
+function updateTakeover(){
+  var el=$("takeoverState");
+  if(!el) return;
+  el.textContent = state.takeoverOff ? "当前状态：已关闭接管" : "当前状态：接管未关闭";
+}
+
+/* ---------- 开放端口 ---------- */
+function renderPorts(){
+  var panel=$("portsPanel");
+  if(!panel) return;
+
+  var h='<div class="add-row"><button type="button" class="btn" id="portsAdd"'+
+    ' aria-expanded="'+(state.editing?'true':'false')+'" aria-controls="portsEditor">添加</button></div>';
+
+  if(state.editing){
+    h+='<div class="editor" id="portsEditor">'+
+        '<div class="field"><label for="portsInput">支持IP、协议、端口号。</label>'+
+        '<textarea class="ta" id="portsInput" spellcheck="false" placeholder="4433&#10;tcp/udp 4267&#10;192.168.1.1&#10;tcp/udp 3654 192.168.1.1">'+esc(state.draft)+'</textarea></div>'+
+        '<div class="actions">'+
+          '<button type="button" class="btn" id="portsCancel">取消</button>'+
+          '<button type="button" class="btn" id="portsClear">清空</button>'+
+          '<button type="button" class="btn primary" id="portsSave">保存</button>'+
+        '</div></div>';
+  }else if(state.saved.trim()){
+    h+='<div id="savedView">'+
+        '<div class="viewer-label">开放端口列表</div>'+
+        '<div class="viewer" role="region" aria-label="已保存的开放端口内容">'+
+          '<pre id="portsSaved" aria-live="polite">'+esc(state.saved)+'</pre>'+
+        '</div></div>';
+  }
+
+  panel.innerHTML=h;
+  bindPortsPanel();
+}
+
+function bindPortsPanel(){
+  var addBtn=$("portsAdd");
+  if(addBtn) addBtn.addEventListener("click",startAdd);
+
+  if(!state.editing) return;
+
+  var ta=$("portsInput");
+  if(ta){
+    ta.value=state.draft;
+    ta.addEventListener("input",function(){ state.draft=ta.value; });
+    ta.focus();
+    try{ ta.setSelectionRange(ta.value.length, ta.value.length); }catch(e){}
+  }
+  var saveBtn=$("portsSave");
+  if(saveBtn) saveBtn.addEventListener("click",savePorts);
+  var cancelBtn=$("portsCancel");
+  if(cancelBtn) cancelBtn.addEventListener("click",cancelPorts);
+  var clearBtn=$("portsClear");
+  if(clearBtn) clearBtn.addEventListener("click",clearPorts);
+}
+
+function startAdd(){
+  if(state.editing){
+    var ta=$("portsInput");
+    if(ta){ ta.focus(); try{ ta.select(); }catch(e){} }
+    return;
+  }
+  state.editing=true;
+  state.draft=state.saved;
+  renderPorts();
+}
+
+function savePorts(){
+  var ta=$("portsInput");
+  var raw=ta ? ta.value : state.draft;
+  var lines=raw.replace(/\r\n/g,"\n").split("\n").map(function(line){ return line.trim(); }).filter(function(line){ return line; });
+  var value=lines.join("\n");
+  state.saved=value;
+  state.draft=value;
+  state.editing=false;
+  renderPorts();
+  var addBtn=$("portsAdd");
+  if(addBtn && addBtn.focus) addBtn.focus();
+  toast(value ? "开放端口配置已保存" : "开放端口配置已清空", value ? "ok" : "");
+}
+
+function clearPorts(){
+  state.draft="";
+  renderPorts();
+  toast("已清空编辑内容，点击保存后生效", "warn");
+}
+
+function cancelPorts(){
+  state.editing=false;
+  state.draft=state.saved;
+  renderPorts();
+  var addBtn=$("portsAdd");
+  if(addBtn && addBtn.focus) addBtn.focus();
+  toast("已取消编辑，未保存本次修改");
+}
+
+/* ---------- 绑定 ---------- */
+var takeoverEl=$("takeoverOff");
+if(takeoverEl){
+  takeoverEl.addEventListener("change",function(){
+    state.takeoverOff=takeoverEl.checked;
+    updateTakeover();
+  });
+}
+
+var applyAllEl=$("applyAll");
+if(applyAllEl){
+  applyAllEl.addEventListener("click",function(){
+    if(state.editing){
+      toast("请先保存或取消端口编辑", "warn");
+      return;
+    }
+    toast("配置已应用", "ok");
+  });
+}
+
+/* ---------- 初始化 ---------- */
+(function init(){
+  state.takeoverOff = takeoverEl ? takeoverEl.checked : false;
+  updateTakeover();
+  renderPorts();
+})();
+</script>
+</body>
+</html>

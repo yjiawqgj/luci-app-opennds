@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>客户端会话管理 · openNDS</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232274a5'/%3E%3Ccircle cx='12' cy='12' r='7.5' fill='none' stroke='%23fff' stroke-width='1.4'/%3E%3Cpath d='M12 7.5V12l3 2' fill='none' stroke='%23fff' stroke-width='1.4'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --line:#d7dde3; --line-soft:#e9edf0;
+    --text:#222a31; --muted:#657585; --faint:#9aa6b2;
+    --primary:#2274a5; --primary-d:#1b5f8a; --primary-weak:#e7f1f8;
+    --green:#2e9468; --green-weak:#e4f4ec;
+    --amber:#b57d17; --amber-weak:#faf1dc;
+    --red:#c94848; --red-weak:#fbe8e8;
+    --ctrl-h:38px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:#ffffff;color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:960px;margin:0 auto;padding:26px 22px 80px}
+
+  /* 页头 */
+  .pt-head{padding-bottom:18px;border-bottom:1px solid var(--line)}
+  .pt-head h1{font-size:20px;font-weight:650;letter-spacing:.2px}
+  .pt-head .desc{font-size:12.5px;color:var(--muted);margin-top:6px;max-width:720px;line-height:1.6}
+
+  /* 功能区域 */
+  .func{margin-top:48px}
+  .func-head h2{font-size:18px;font-weight:650;letter-spacing:.2px}
+  .func-head .func-desc{font-size:12.5px;color:var(--muted);margin-top:6px;max-width:760px;line-height:1.6}
+
+  /* 子区域 */
+  .sub{padding-top:14px}
+
+  /* 表单 */
+  .field{margin-top:16px}
+  .field label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+  .field .fhint{font-size:11.5px;color:var(--faint);margin-bottom:8px;line-height:1.5}
+  .fhint.after{margin-top:7px;margin-bottom:0}
+  .txt{
+    font-family:inherit;font-size:13.5px;color:var(--text);
+    width:100%;max-width:420px;height:var(--ctrl-h);
+    padding:0 11px;background:#fff;border:1px solid var(--line);border-radius:6px;
+  }
+  .txt:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+  .txt.narrow{max-width:180px}
+  .sel{
+    font-family:inherit;font-size:13.5px;color:var(--text);
+    width:100%;max-width:280px;height:var(--ctrl-h);
+    padding:0 34px 0 11px;background:#fff;border:1px solid var(--line);border-radius:6px;
+    appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23657585' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;
+  }
+  .sel:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+
+  /* 页面底部操作 */
+  .page-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:48px}
+
+  /* 按钮 */
+  .btn{
+    font-family:inherit;font-size:13px;font-weight:500;color:var(--text);
+    background:#fff;border:1px solid var(--line);border-radius:6px;
+    height:34px;padding:0 14px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;transition:background .12s,border-color .12s;white-space:nowrap;
+  }
+  .btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.primary:hover{background:var(--primary-d);border-color:var(--primary-d)}
+
+  /* 提示 */
+  #toasts{position:fixed;right:18px;bottom:18px;z-index:60;display:flex;flex-direction:column;gap:10px;max-width:min(380px,calc(100vw - 36px))}
+  .toast{background:#fff;border:1px solid var(--line);border-left:3px solid var(--primary);border-radius:8px;padding:11px 14px;font-size:13px;color:var(--text);box-shadow:0 6px 20px rgba(30,42,54,.12);animation:tin .2s ease}
+  .toast.ok{border-left-color:var(--green)}
+  .toast.warn{border-left-color:var(--amber)}
+  .toast.err{border-left-color:var(--red)}
+  @keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+
+  .foot-note{max-width:960px;margin:18px auto 0;font-size:11.5px;color:var(--faint);text-align:center;line-height:1.6;padding:0 22px}
+
+  @media (max-width:640px){
+    .page{padding:18px 14px 70px}
+    .txt,.sel{font-size:16px}
+    .txt,.sel,.txt.narrow{max-width:100%}
+    .page-actions{margin-top:44px}
+    .page-actions .btn{flex:1 1 0}
+  }
+  @media (prefers-reduced-motion:reduce){.toast{animation:none}}
+</style>
+</head>
+<body>
+
+<div class="page">
+  <header class="pt-head">
+    <h1>客户端会话管理</h1>
+    <div class="desc">配置会话超时、空闲超时、未认证超时及检查间隔。以下为前端布局与交互演示。</div>
+  </header>
+
+  <!-- ===== 功能区域：会话超时 ===== -->
+  <section class="func">
+    <div class="func-head"><h2>会话超时</h2></div>
+    <div id="sub_auth_idle" class="sub"></div>
+  </section>
+
+  <!-- ===== 功能区域：空闲超时 ===== -->
+  <section class="func">
+    <div class="func-head"><h2>空闲超时</h2></div>
+    <div id="sub_auth_max" class="sub"></div>
+  </section>
+
+  <!-- ===== 功能区域：未认证超时 ===== -->
+  <section class="func">
+    <div class="func-head"><h2>未认证超时</h2></div>
+    <div id="sub_unauth_idle" class="sub"></div>
+  </section>
+
+  <!-- ===== 功能区域：检查间隔 ===== -->
+  <section class="func">
+    <div class="func-head">
+      <h2>检查间隔</h2>
+      <p class="func-desc">检查客户端超时和配额状态的间隔（秒）。</p>
+    </div>
+    <div id="sub_interval" class="sub"></div>
+  </section>
+
+  <div class="page-actions">
+    <button type="button" class="btn" id="saveAllBtn">保存</button>
+    <button type="button" class="btn primary" id="applyAllBtn">应用</button>
+  </div>
+</div>
+
+<div class="foot-note">前端交互演示：超时时间与检查间隔均为模拟数据；不连接真实 openNDS 后端，也不会实际修改系统配置。</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   客户端会话管理 · openNDS 前端布局与交互演示（纯前端）
+   ============================================================ */
+
+var BLOCK_META = {
+  auth_idle:  {label:"默认时间1140（分钟）", showScope:true,  scopeHint:"覆盖会覆盖单独客户端的配置", def:"1140", ph:"1140（分钟）"},
+  auth_max:   {label:"默认时间120分钟",     showScope:false, def:"120",  ph:"120（分钟）"},
+  unauth_idle:{label:"超时时间（分钟）",     showScope:false, def:"10",   ph:"请输入分钟数"}
+};
+
+var state = { blocks:{}, interval:{value:"15"}, saved:null, applied:null };
+Object.keys(BLOCK_META).forEach(function(id){
+  var m=BLOCK_META[id];
+  state.blocks[id]={globalVal:m.def};
+  if(m.showScope) state.blocks[id].scope="default";
+});
+
+/* ---------- 工具 ---------- */
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(m){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]; }); }
+function toast(msg, kind){
+  var t=document.createElement("div");
+  t.className="toast "+(kind||"");
+  t.textContent=msg;
+  $("toasts").appendChild(t);
+  setTimeout(function(){ t.style.opacity="0"; t.style.transition="opacity .3s"; setTimeout(function(){ t.remove(); },320); },3000);
+}
+
+/* ---------- 配置快照与全局操作 ---------- */
+function configSnapshot(){
+  var blocks={};
+  Object.keys(BLOCK_META).forEach(function(id){
+    var item={globalVal:String(state.blocks[id].globalVal)};
+    if(BLOCK_META[id].showScope) item.scope=state.blocks[id].scope;
+    blocks[id]=item;
+  });
+  return JSON.stringify({blocks:blocks, interval:String(state.interval.value)});
+}
+function saveAll(){
+  state.saved=configSnapshot();
+  toast("配置已保存","ok");
+}
+function applyAll(){
+  var cur=configSnapshot();
+  if(state.saved===null || cur!==state.saved){
+    toast("存在未保存的修改，请先保存后再应用。","warn");
+    return;
+  }
+  state.applied=state.saved;
+  toast("配置应用完成","ok");
+}
+
+/* ---------- 超时子区域 ---------- */
+function timeoutBlockHTML(id){
+  var m=BLOCK_META[id], cfg=state.blocks[id], h="";
+  if(m.showScope){
+    h+='<div class="field"><label>配置范围</label>'+
+        '<select class="sel" data-scope>'+
+          '<option value="default"'+(cfg.scope==="default"?" selected":"")+'>默认</option>'+
+          '<option value="cover"'+(cfg.scope==="cover"?" selected":"")+'>覆盖</option>'+
+        '</select>'+
+        (m.scopeHint?'<div class="fhint after">'+esc(m.scopeHint)+'</div>':'')+
+        '</div>';
+  }
+  h+='<div class="field"><label>'+esc(m.label)+'</label>'+
+      '<input class="txt narrow" type="number" min="0" step="1" data-global value="'+esc(cfg.globalVal)+'" placeholder="'+esc(m.ph)+'"></div>';
+  return h;
+}
+function renderBlock(id){
+  var el=$("sub_"+id);
+  el.innerHTML=timeoutBlockHTML(id);
+  bindTimeoutBlock(id);
+}
+function bindTimeoutBlock(id){
+  var root=$("sub_"+id), cfg=state.blocks[id];
+  var sc=root.querySelector("[data-scope]");
+  if(sc) sc.addEventListener("change",function(){ cfg.scope=sc.value; });
+
+  var gl=root.querySelector("[data-global]");
+  if(gl) gl.addEventListener("input",function(){ cfg.globalVal=gl.value; });
+}
+
+/* ---------- 检查间隔 ---------- */
+function intervalHTML(){
+  var c=state.interval;
+  return '<div class="field"><label>默认时间为15（秒）</label>'+
+    '<input class="txt narrow" type="number" min="1" step="1" data-interval value="'+esc(c.value)+'" placeholder="15（秒）">'+
+    '</div>';
+}
+function renderInterval(){
+  var el=$("sub_interval");
+  el.innerHTML=intervalHTML();
+  bindInterval();
+}
+function bindInterval(){
+  var root=$("sub_interval"), c=state.interval;
+  var inp=root.querySelector("[data-interval]");
+  if(inp) inp.addEventListener("input",function(){ c.value=inp.value; });
+}
+
+/* ---------- 统一渲染 ---------- */
+function renderAll(){
+  Object.keys(BLOCK_META).forEach(renderBlock);
+  renderInterval();
+}
+function bindPageActions(){
+  var sv=$("saveAllBtn");
+  if(sv) sv.addEventListener("click",saveAll);
+  var ap=$("applyAllBtn");
+  if(ap) ap.addEventListener("click",applyAll);
+}
+
+/* ---------- 初始化 ---------- */
+(function init(){
+  state.saved=configSnapshot();
+  state.applied=state.saved;
+  renderAll();
+  bindPageActions();
+})();
+</script>
+</body>
+</html>

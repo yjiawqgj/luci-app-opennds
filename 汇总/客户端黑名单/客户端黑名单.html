@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openNDS 客户端黑名单</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232274a5'/%3E%3Cpath d='M12 5.2l6 2.4v4.8c0 3.4-2.4 5.8-6 6.6-3.6-.8-6-3.2-6-6.6V7.6l6-2.4z' fill='none' stroke='%23fff' stroke-width='1.4'/%3E%3Cpath d='M9.2 9.2l5.6 5.6M14.8 9.2l-5.6 5.6' fill='none' stroke='%23fff' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --line:#d7dde3; --line-soft:#e9edf0;
+    --text:#222a31; --muted:#657585; --faint:#9aa6b2;
+    --primary:#2274a5; --primary-d:#1b5f8a; --primary-weak:#e7f1f8;
+    --red:#c94848; --amber:#8a5a10;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  [hidden]{display:none!important}
+  body{
+    background:#fff;color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
+  }
+  .page{max-width:760px;margin:0 auto;padding:24px 22px 64px}
+
+  .top{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .brand{font-size:15px;font-weight:700;letter-spacing:.2px}
+  .crumb{font-size:12px;color:var(--faint)}
+
+  .sec{padding-top:24px}
+  .sec + .sec{margin-top:56px;padding-top:0}
+  .sec-head h2{font-size:17px;font-weight:650;letter-spacing:.2px}
+
+  .btn{
+    font-family:inherit;font-size:13px;font-weight:500;color:var(--text);
+    background:#fff;border:1px solid var(--line);border-radius:6px;
+    height:34px;padding:0 14px;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    transition:background .12s,border-color .12s;white-space:nowrap;
+  }
+  .btn:hover{background:#f4f7f9;border-color:#c4ccd4}
+  .btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .btn.primary:hover{background:var(--primary-d);border-color:var(--primary-d)}
+  .btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+  .btn.danger:hover{background:#b23c3c;border-color:#b23c3c}
+  .btn.danger-text{color:var(--red);border-color:#e5c4c4}
+  .btn.danger-text:hover{background:#fdf1f1;border-color:#d9a8a8}
+  .btn.sm{height:30px;font-size:12px;padding:0 10px}
+  .btn svg{width:13px;height:13px;flex:none}
+
+  .add-row{margin-top:12px}
+
+  /* 只读内容展示区：单层容器，上方标签在展示区之外 */
+  .viewer-label{margin-top:16px;font-size:12.5px;font-weight:600;color:var(--muted)}
+  .viewer{
+    margin-top:7px;padding:14px 15px;border:1px solid #ccd5dd;border-radius:5px;
+    background:#f5f7f9;box-shadow:inset 0 1px 3px rgba(28,44,58,.07);
+  }
+  .viewer pre{
+    margin:0;padding:0;background:transparent;border:0;
+    font-family:ui-monospace,Consolas,"Courier New",monospace;
+    font-size:14px;line-height:1.6;letter-spacing:.25px;color:#26323c;
+    white-space:pre-wrap;word-break:break-all;
+  }
+
+  /* 编辑区 */
+  .editor{margin-top:14px}
+  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:6px}
+  .area{
+    font-family:ui-monospace,Consolas,"Courier New",monospace;
+    font-size:13.5px;line-height:1.6;letter-spacing:.2px;color:var(--text);
+    width:100%;min-height:88px;padding:9px 11px;background:#fff;
+    border:1px solid var(--line);border-radius:6px;resize:vertical;
+  }
+  .area:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+  .actions{display:flex;align-items:center;gap:8px;margin-top:12px}
+
+  /* 门户 */
+  .portal-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .portal-tools .btn svg{width:14px;height:14px}
+  .portal-field{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:48px}
+  .portal-field label{font-size:12.5px;color:var(--muted);flex:none}
+  .sel{
+    font-family:inherit;font-size:13.5px;color:var(--text);
+    flex:1 1 220px;max-width:320px;min-width:0;height:36px;
+    padding:0 34px 0 11px;background:#fff;border:1px solid var(--line);border-radius:6px;
+    appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23657585' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 12px center;
+  }
+  .sel:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-weak)}
+  .portal-area{min-height:340px;display:flex;flex-direction:column;justify-content:space-between}
+  .portal-actions{margin-top:0}
+
+  /* 浮层与脚本列表 */
+  .mask{
+    position:fixed;inset:0;background:rgba(24,34,44,.46);
+    display:flex;align-items:center;justify-content:center;padding:18px;z-index:80;
+  }
+  .panel{
+    background:#fff;border-radius:8px;width:100%;max-width:460px;max-height:80vh;
+    display:flex;flex-direction:column;box-shadow:0 18px 48px rgba(20,30,40,.24);
+  }
+  .panel-head{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 18px;border-bottom:1px solid var(--line);
+  }
+  .panel-head h3{font-size:15px;font-weight:650}
+  .icon-btn{
+    width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;
+    border:0;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;
+  }
+  .icon-btn:hover{background:#f1f4f6;color:var(--text)}
+  .icon-btn:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+  .icon-btn svg{width:16px;height:16px}
+  .panel-body{padding:8px 18px 14px;overflow:auto}
+  .script-list{list-style:none}
+  .script-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+  .script-row:last-child{border-bottom:0}
+  .script-name{
+    font-family:ui-monospace,Consolas,"Courier New",monospace;
+    font-size:12.5px;color:var(--text);min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .script-empty{padding:26px 0;text-align:center;color:var(--faint);font-size:12.5px}
+
+  .confirm-mask{z-index:95}
+  .confirm{
+    background:#fff;border-radius:8px;width:100%;max-width:380px;
+    box-shadow:0 18px 48px rgba(20,30,40,.24);
+  }
+  .confirm-body{padding:18px 18px 14px}
+  .confirm-body h3{font-size:15px;font-weight:650;margin-bottom:7px}
+  .confirm-body p{font-size:13px;color:var(--muted);line-height:1.6}
+  .confirm-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line)}
+
+  #toasts{
+    position:fixed;left:50%;bottom:22px;transform:translateX(-50%);
+    display:flex;flex-direction:column;align-items:center;gap:8px;
+    z-index:100;pointer-events:none;width:calc(100% - 32px);max-width:420px;
+  }
+  .toast{
+    background:#26323c;color:#fff;font-size:12.5px;line-height:1.4;
+    padding:9px 14px;border-radius:6px;box-shadow:0 8px 22px rgba(20,30,40,.18);
+    max-width:100%;
+  }
+  .toast.warn{background:var(--amber)}
+
+  @media (max-width:560px){
+    .page{padding:18px 16px 54px}
+    .sec-head h2{font-size:16px}
+    .btn{height:40px}
+    .btn.sm{height:34px}
+    .sel{height:42px;font-size:16px;max-width:none}
+    .area{font-size:16px}
+    .portal-tools .btn{flex:1 1 0}
+    .portal-actions .btn{width:100%}
+    .actions .btn{flex:1 1 0}
+    .confirm-foot .btn{flex:1 1 0}
+  }
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="top">
+    <span class="brand">openNDS</span>
+    <span class="crumb">客户端黑名单</span>
+  </header>
+
+  <!-- ===== 客户端黑名单 ===== -->
+  <section class="sec" aria-labelledby="blacklistTitle">
+    <div class="sec-head">
+      <h2 id="blacklistTitle">客户端黑名单</h2>
+    </div>
+
+    <div class="add-row">
+      <button class="btn" type="button" id="addBtn" aria-expanded="false" aria-controls="editor">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        添加
+      </button>
+    </div>
+
+    <div id="savedView">
+      <div class="viewer-label">黑名单</div>
+      <div class="viewer" role="region" aria-label="已保存的黑名单内容">
+        <pre id="savedMac" aria-live="polite">D8:3A:DD:41:6F:22</pre>
+      </div>
+    </div>
+
+    <div class="editor" id="editor" hidden>
+      <div class="field">
+        <label for="macInput">客户端 MAC 地址</label>
+        <textarea class="area" id="macInput" rows="3" autocomplete="off" spellcheck="false" placeholder="例如 D8:3A:DD:41:6F:22"></textarea>
+      </div>
+      <div class="actions">
+        <button class="btn" type="button" id="cancelBtn">取消</button>
+        <button class="btn primary" type="button" id="applyBtn">应用</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== 门户 ===== -->
+  <section class="sec" aria-labelledby="portalTitle">
+    <div class="sec-head">
+      <h2 id="portalTitle">门户</h2>
+    </div>
+
+    <div class="portal-tools">
+      <button class="btn" type="button" id="uploadBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg>
+        上传
+      </button>
+      <input type="file" id="fileInput" hidden>
+      <button class="btn" type="button" id="uploadedBtn">已上传</button>
+    </div>
+
+    <div class="portal-area">
+      <div class="portal-field">
+        <label for="portalSel">门户选择</label>
+        <select class="sel" id="portalSel">
+          <option value="default">默认门户</option>
+          <option value="guest">访客门户</option>
+          <option value="staff">企业门户</option>
+        </select>
+      </div>
+
+      <div class="portal-actions">
+        <button class="btn primary" type="button" id="portalApply">应用</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ===== 已上传脚本 ===== -->
+<div class="mask" id="scriptsMask" hidden>
+  <div class="panel" role="dialog" aria-modal="true" aria-labelledby="scriptsTitle">
+    <div class="panel-head">
+      <h3 id="scriptsTitle">已上传脚本</h3>
+      <button class="icon-btn" type="button" id="scriptsClose" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="panel-body">
+      <ul class="script-list" id="scriptList"></ul>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 删除确认 ===== -->
+<div class="mask confirm-mask" id="delMask" hidden>
+  <div class="confirm" role="dialog" aria-modal="true" aria-labelledby="delTitle">
+    <div class="confirm-body">
+      <h3 id="delTitle">删除脚本</h3>
+      <p id="delText"></p>
+    </div>
+    <div class="confirm-foot">
+      <button class="btn" type="button" id="delCancel">取消</button>
+      <button class="btn danger" type="button" id="delOk">删除</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script>
+(function(){
+  var savedMac="D8:3A:DD:41:6F:22";
+  var addBtn=document.getElementById("addBtn");
+  var savedView=document.getElementById("savedView");
+  var editor=document.getElementById("editor");
+  var macInput=document.getElementById("macInput");
+  var savedMacEl=document.getElementById("savedMac");
+  var cancelBtn=document.getElementById("cancelBtn");
+  var applyBtn=document.getElementById("applyBtn");
+  var portalSel=document.getElementById("portalSel");
+  var portalApply=document.getElementById("portalApply");
+  var uploadBtn=document.getElementById("uploadBtn");
+  var fileInput=document.getElementById("fileInput");
+  var uploadedBtn=document.getElementById("uploadedBtn");
+  var scriptsMask=document.getElementById("scriptsMask");
+  var scriptsClose=document.getElementById("scriptsClose");
+  var scriptList=document.getElementById("scriptList");
+  var delMask=document.getElementById("delMask");
+  var delText=document.getElementById("delText");
+  var delCancel=document.getElementById("delCancel");
+  var delOk=document.getElementById("delOk");
+  var toasts=document.getElementById("toasts");
+
+  var scripts=[
+    {id:"s1",name:"portal-login.sh"},
+    {id:"s2",name:"guest-theme.sh"},
+    {id:"s3",name:"session-hook.sh"}
+  ];
+  var pendingId=null;
+  var seq=4;
+
+  function toast(text,type){
+    var el=document.createElement("div");
+    el.className="toast"+(type==="warn"?" warn":"");
+    el.textContent=text;
+    toasts.appendChild(el);
+    setTimeout(function(){
+      if(el.parentNode) el.parentNode.removeChild(el);
+    },2400);
+  }
+
+  /* 黑名单编辑 */
+  function openEditor(){
+    if(!editor.hidden){
+      macInput.focus();
+      macInput.select();
+      return;
+    }
+    macInput.value=savedMac;
+    savedView.hidden=true;
+    editor.hidden=false;
+    addBtn.setAttribute("aria-expanded","true");
+    macInput.focus();
+    macInput.select();
+  }
+
+  function closeEditor(){
+    editor.hidden=true;
+    savedView.hidden=false;
+    addBtn.setAttribute("aria-expanded","false");
+  }
+
+  addBtn.addEventListener("click",openEditor);
+
+  cancelBtn.addEventListener("click",function(){
+    closeEditor();
+    addBtn.focus();
+  });
+
+  applyBtn.addEventListener("click",function(){
+    var lines=macInput.value.split(/\r?\n/).map(function(line){ return line.trim(); }).filter(function(line){ return line; });
+    var value=lines.join("\n");
+    if(!value){
+      toast("请先填写客户端 MAC 地址","warn");
+      macInput.focus();
+      return;
+    }
+    savedMac=value;
+    savedMacEl.textContent=value;
+    closeEditor();
+    addBtn.focus();
+    toast("已应用黑名单内容");
+  });
+
+  /* 上传脚本 */
+  uploadBtn.addEventListener("click",function(){
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change",function(){
+    var file=fileInput.files && fileInput.files[0];
+    if(!file) return;
+    scripts.unshift({id:"s"+seq++,name:file.name});
+    fileInput.value="";
+    toast("已上传脚本："+file.name);
+    if(!scriptsMask.hidden) renderScripts();
+  });
+
+  /* 已上传列表 */
+  function renderScripts(){
+    scriptList.innerHTML="";
+    if(!scripts.length){
+      var empty=document.createElement("li");
+      empty.className="script-empty";
+      empty.textContent="暂无已上传脚本";
+      scriptList.appendChild(empty);
+      return;
+    }
+    scripts.forEach(function(item){
+      var row=document.createElement("li");
+      row.className="script-row";
+
+      var name=document.createElement("span");
+      name.className="script-name";
+      name.textContent=item.name;
+
+      var del=document.createElement("button");
+      del.className="btn sm danger-text";
+      del.type="button";
+      del.textContent="删除";
+      del.addEventListener("click",function(){
+        pendingId=item.id;
+        delText.textContent="确定删除脚本「"+item.name+"」？删除后将从已上传列表中移除。";
+        delMask.hidden=false;
+        delOk.focus();
+      });
+
+      row.appendChild(name);
+      row.appendChild(del);
+      scriptList.appendChild(row);
+    });
+  }
+
+  uploadedBtn.addEventListener("click",function(){
+    renderScripts();
+    scriptsMask.hidden=false;
+    scriptsClose.focus();
+  });
+
+  scriptsClose.addEventListener("click",function(){
+    scriptsMask.hidden=true;
+    uploadedBtn.focus();
+  });
+
+  delCancel.addEventListener("click",function(){
+    delMask.hidden=true;
+    pendingId=null;
+  });
+
+  delOk.addEventListener("click",function(){
+    if(pendingId==null) return;
+    var index=-1;
+    for(var i=0;i<scripts.length;i++){
+      if(scripts[i].id===pendingId){index=i;break;}
+    }
+    if(index<0){
+      delMask.hidden=true;
+      pendingId=null;
+      return;
+    }
+    var name=scripts[index].name;
+    scripts.splice(index,1);
+    delMask.hidden=true;
+    pendingId=null;
+    renderScripts();
+    toast("已删除脚本："+name);
+  });
+
+  /* 门户 */
+  portalApply.addEventListener("click",function(){
+    toast("门户已应用："+portalSel.options[portalSel.selectedIndex].text);
+  });
+})();
+</script>
+</body>
+</html>

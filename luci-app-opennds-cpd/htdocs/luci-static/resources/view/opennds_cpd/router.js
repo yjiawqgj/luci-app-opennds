@@ -1,0 +1,211 @@
+/*
+ * 路由器访问 · openNDS CPD（LuCI view）
+ * 照《路由器访问.md》与演示：接管开关 + 开放端口列表；编辑器「保存」先过
+ * 后端 validate（只读），只有底部「应用」才写 uci 并重启 openNDS。
+ */
+'use strict';
+'require view';
+'require ui';
+'require dom';
+
+var CPD = null;
+
+return view.extend({
+	load: function () {
+		return L.require('opennds_cpd.common').then(function (m) { CPD = m; });
+	},
+
+	render: function () {
+		var state = {
+			takeoverOff: false,
+			fw4: 1,
+			editing: false,
+			saved: '',
+			draft: '',
+			snapshot: null
+		};
+		var body = E('div', { 'class': 'cpd-page' });
+		var panel, stateLine;
+
+		/* ---------- 渲染 ---------- */
+		function renderAll() {
+			body.innerHTML = '';
+			body.appendChild(CPD.pageHead(
+				_('路由器访问'), 'openNDS · Router Access',
+				_('配置 openNDS 对路由器的接管行为，以及对所有客户端开放的端口。')));
+
+			var sec1 = CPD.section(_('接管'), 'Takeover');
+			var chk = E('input', { type: 'checkbox', id: 'cpd-takeover-off' });
+			chk.checked = state.takeoverOff;
+			chk.addEventListener('change', function () {
+				state.takeoverOff = chk.checked;
+				stateLine.textContent = state.takeoverOff
+					? _('当前状态：已关闭接管')
+					: _('当前状态：接管未关闭');
+			});
+			stateLine = E('p', { 'class': 'cpd-state' },
+				state.takeoverOff ? _('当前状态：已关闭接管') : _('当前状态：接管未关闭'));
+			sec1.appendChild(E('div', {}, [
+				E('label', { 'style': 'display:inline-flex;align-items:center;gap:9px;padding:8px 0;cursor:pointer' }, [
+					chk, E('span', {}, _('关闭接管'))
+				]),
+				E('p', { 'class': 'cpd-note' }, _('如果你不知道该功能作用，请保持默认。')),
+				stateLine
+			]));
+			body.appendChild(sec1);
+
+			var sec2 = CPD.section(_('开放端口'), 'Open Ports');
+			sec2.appendChild(E('p', { 'class': 'cpd-note' }, _('对所有客户端生效。')));
+			if (!state.fw4) {
+				sec2.appendChild(E('div', { 'class': 'cpd-warnbar' },
+					_('当前系统未使用 fw4（nftables），openNDS 不支持 users_to_router 规则，本页配置不会生效。')));
+			}
+			panel = E('div', {});
+			sec2.appendChild(panel);
+			renderPanel();
+			body.appendChild(sec2);
+
+			var actions = E('div', { 'class': 'cpd-actions-right' }, [
+				E('button', {
+					'class': 'cbi-button cbi-button-positive',
+					'id': 'cpd-apply',
+					'click': handleApply
+				}, _('应用'))
+			]);
+			body.appendChild(actions);
+		}
+
+		function renderPanel() {
+			panel.innerHTML = '';
+			panel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
+				E('button', {
+					'class': 'btn',
+					'aria-expanded': state.editing ? 'true' : 'false',
+					'click': startAdd
+				}, _('添加'))
+			]));
+
+			if (state.editing) {
+				var ta = E('textarea', {
+					'class': 'cpd-ta',
+					'spellcheck': 'false',
+					'placeholder': '4433\ntcp/udp 4267\n192.168.1.1\ntcp/udp 3654 192.168.1.1'
+				});
+				ta.value = state.draft;
+				ta.addEventListener('input', function () { state.draft = ta.value; });
+				panel.appendChild(E('div', { 'class': 'cpd-field' }, [
+					E('label', {}, _('支持IP、协议、端口号。')),
+					ta,
+					E('div', { 'class': 'cpd-actions' }, [
+						E('button', { 'class': 'btn', 'click': cancelEdit }, _('取消')),
+						E('button', { 'class': 'btn', 'click': clearDraft }, _('清空')),
+						E('button', { 'class': 'cbi-button cbi-button-positive', 'click': function () { saveEdit(ta); } }, _('保存'))
+					])
+				]));
+				window.setTimeout(function () {
+					ta.focus();
+					try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {}
+				}, 0);
+			} else if (state.saved.trim()) {
+				panel.appendChild(E('div', {}, [
+					E('div', { 'class': 'cpd-viewer-label' }, _('开放端口列表')),
+					E('div', { 'class': 'cpd-viewer' },
+						E('pre', { 'aria-live': 'polite' }, state.saved))
+				]));
+			}
+		}
+
+		/* ---------- 编辑 ---------- */
+		function startAdd() {
+			if (state.editing) {
+				var ta = document.querySelector('.cpd-ta');
+				if (ta) { ta.focus(); }
+				return;
+			}
+			state.editing = true;
+			state.draft = state.saved;
+			renderPanel();
+		}
+
+		function cancelEdit() {
+			state.editing = false;
+			state.draft = state.saved;
+			renderPanel();
+			CPD.toast(_('已取消编辑，未保存本次修改'));
+		}
+
+		function clearDraft() {
+			state.draft = '';
+			var ta = document.querySelector('.cpd-ta');
+			if (ta) ta.value = '';
+			CPD.toast(_('已清空编辑内容，点击保存后生效'), 'warn');
+		}
+
+		function saveEdit(ta) {
+			var text = (ta ? ta.value : state.draft).replace(/\r\n/g, '\n');
+			CPD.api('router', 'validate', ['text_b64=' + CPD.b64encode(text)]).then(function (j) {
+				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+				if (!j.ok && j.errors) {
+					CPD.showErrors(j.errors);
+					return; /* 保持编辑态 */
+				}
+				if (!j.ok) { CPD.toast(j.error || _('校验失败'), 'err'); return; }
+				var lines = text.split('\n').map(function (l) { return l.trim(); })
+					.filter(function (l) { return l; });
+				var value = lines.join('\n');
+				state.saved = value;
+				state.draft = value;
+				state.editing = false;
+				renderPanel();
+				CPD.toast(value ? _('开放端口配置已保存') : _('开放端口配置已清空'), value ? 'ok' : '');
+			}).catch(function (e) {
+				CPD.toast((e && e.error) || _('校验失败'), 'err');
+			});
+		}
+
+		/* ---------- 应用 ---------- */
+		function handleApply() {
+			if (state.editing) {
+				CPD.toast(_('请先保存或取消端口编辑'), 'warn');
+				return;
+			}
+			CPD.apiConfirmable('router', 'apply', [
+				'text_b64=' + CPD.b64encode(state.saved),
+				'passthrough=' + (state.takeoverOff ? '1' : '0')
+			]).then(function (j) {
+				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+				if (j.ok) {
+					CPD.toast(_('配置已应用'), 'ok');
+					CPD.showWarnings(j.warnings);
+					refresh();
+				} else if (j.errors) {
+					CPD.showErrors(j.errors);
+				} else {
+					CPD.toast(j.error || _('应用失败'), 'err');
+				}
+			}).catch(function (e) {
+				CPD.toast((e && e.error) || _('应用失败'), 'err');
+			});
+		}
+
+		function refresh() {
+			CPD.api('router', 'status').then(function (j) {
+				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
+				state.takeoverOff = (j.passthrough === 1);
+				state.fw4 = j.fw4;
+				state.saved = j.text || '';
+				state.draft = state.saved;
+				state.editing = false;
+				renderAll();
+			}).catch(function (e) {
+				CPD.toast((e && e.error) || _('读取状态失败'), 'err');
+			});
+		}
+
+		refresh();
+		return body;
+	},
+
+	handleSave: null,
+	handleApply: null
+});

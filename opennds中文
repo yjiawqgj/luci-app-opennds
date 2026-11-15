@@ -1,0 +1,983 @@
+config opennds
+    # 启用
+    # 默认值：1（启用）
+    # 设置为 0 以禁用 opennds
+    #option enabled 0
+    ###########################################################################################
+
+    # 调试级别
+    # 设置调试级别（0-3）
+    # 默认值：1
+    # 0：静默（仅显示初始启动、LOG_ERR、LOG_EMERG 和 LOG_CRIT 消息，其他情况下无日志记录。）
+    # 1：LOG_ERR、LOG_EMERG、LOG_CRIT、LOG_WARNING 和 LOG_NOTICE。（级别 1 为默认级别。）
+    # 2：调试级别 1 + LOG_INFO
+    # 3：调试级别 2 + LOG_DEBUG
+    #option debuglevel '2'
+    ###########################################################################################
+
+    # fwhook_enabled
+    # 防火墙重启钩子
+    # 默认值：1（启用）
+    # 对于 OpenWrt 防火墙 4 NFT（OpenWrt 22.03.0 及更高版本）是必需的
+    #
+    # 警告：禁用此选项可能会导致路由器软砖
+    # 此选项应始终保持启用。
+    #
+    #option fwhook_enabled '1'
+    ###########################################################################################
+
+    # ndsctlsocket
+    # 用于 ndsctl 套接字访问的套接字名称，相对于 tmpfs 挂载点。
+    # 指定的任何目录/文件夹必须存在。
+    # 默认值：ndsctl.sock（不要添加前导“/”）
+    # 在 OpenWrt 中，默认完整套接字路径为 /tmp/ndsctl.sock
+    # 在以下示例中，套接字路径将为 /tmp/sockets/ndsctl.sock
+    #option ndsctlsocket 'sockets/ndsctl.sock'
+    ###########################################################################################
+
+    # log_mountpoint
+    # 本地日志挂载点
+    # 默认值：路由器的易失性 tmpfs 存储，例如在 OpenWrt 上为 '/tmp'
+    #
+    # 本地日志可以定向到路由器可访问的任何存储设备，例如 USB 驱动器、SSD 等
+    #
+    # **警告** - 您不能使用路由器的内置闪存存储，因为这会导致
+    # 过度磨损并最终导致闪存故障
+    #
+    # 示例：
+    #option log_mountpoint '/logs'
+    ###########################################################################################
+
+    # 登录选项
+    # 默认值：0
+    # 作为登录模式发送给 PreAuth 脚本的整数值
+    #
+    # opennds 预配置了三种基本操作模式
+    #
+    # 0. 如果未启用 FAS，则此模式功能等同于模式 1
+    #
+    # 1. 默认动态点击继续
+    # 通过设置 option login_option_enabled = '1' 启用预装的动态登录页面。
+    # 它生成一个“点击继续”页面，随后是一个信息/广告页面。
+    # 用户点击“继续”的记录保存在日志文件 /[tmpfs_dir]/ndslog/ndslog.log 中
+    #
+    # 2. 用户名/电子邮件地址动态登录
+    # 通过设置 option login_option_enabled = '2' 启用预装的动态登录页面。
+    # 它生成一个要求输入用户名和电子邮件地址的登录页面，随后是一个信息/广告页面。
+    # 用户登录记录保存在日志文件 /[tmpfs_dir]/ndslog/ndslog.log 中
+    #
+    # 3. 使用 ThemeSpec 路径（option themespec_path）中定义的主题
+    #
+    #option login_option_enabled '3'
+    ###########################################################################################
+
+    # 允许抢先认证
+    # 默认值：1 - 启用
+    # 设置为 0 以禁用
+    # 这允许 ndsctl 工具抢先授权 **已连接** 但尚未进入预认证状态的客户端
+    # 默认情况下用于在重启后重新认证客户端。
+    # 这对于没有 CPD（捕获门户检测）的物联网设备或 FAS 通过集中式客户端验证数据库管理门户间漫游也很有用。
+    #
+    #option allow_preemptive_authentication '1'
+    ###########################################################################################
+
+    # ThemeSpec 路径
+    # 默认值：无
+    # 当 login_option_enabled 设置为 '3' 时需要
+    #
+    # 注意：/usr/lib/opennds/theme_click-to-continue.sh 用于 login_option_enabled '1'
+    # 以及：/usr/lib/opennds/theme_user_email_login.sh 用于 login_option_enabled '2'
+    #
+    # 设置 ThemeSpec 文件路径，当 login_option_enabled 为 '3' 时使用
+    #
+    # ThemeSpec 脚本利用自定义参数列表、自定义变量、自定义图像 URL 和自定义文件。
+    # 用于生成动态启动页面序列
+    #
+    # ThemeSpec 文件通常位于 /usr/lib/opennds/ 中，但可以位于 openNDS 可访问的任何位置。
+    # 该文件必须标记为可执行文件，并具有默认 shell 的正确 shebang。
+    #
+    #option themespec_path '/usr/lib/opennds/<filename>'
+    ###########################################################################################
+
+    # 自定义 DHCP 租约文件位置
+    # 默认值：尝试 /tmp/dhcp.leases、/var/lib/misc/dnsmasq.lease 或 /var/db/dnsmasq.leases
+    #
+    # 这允许设置 DHCP 租约文件的自定义路径，在路径更改或使用多个 DNSmasq 实例需要多个 DHCP 租约文件时很有用。
+    #
+    #option dhcp_leases_file '/tmp/dhcp.leases.special'
+    ###########################################################################################
+
+    # 定义自定义参数
+    # 自定义参数作为固定值发送给 FAS
+    # 默认值：无
+    #
+    # 自定义参数以 param_name=param_value 的形式列出
+    # 如果 param_name 和 param_value 包含空格或单引号，必须进行 URL 编码
+    # 例如，将空格替换为 %20，将单引号替换为 %27
+    #
+    # 参数应每行配置一个，以防止可能的解析错误。
+    # 例如：
+    #list fas_custom_parameters_list '<param_name1=param_value1>'
+    #list fas_custom_parameters_list '<param_name2=param_value2>'
+    # 等。
+    #
+    # 以下工作示例适用于已安装的 ThemeSpec 文件：
+    # theme_click-to-continue-custom-placeholders
+    # 和
+    # theme_user-email-login-custom-placeholders
+    #
+    #list fas_custom_parameters_list 'logo_message=openNDS:%20Perfect%20on%20OpenWrt!'
+    #list fas_custom_parameters_list 'banner1_message=BlueWave%20-%20Wireless%20Network%20Specialists'
+    #list fas_custom_parameters_list 'banner2_message=HMS%20Pickle'
+    #list fas_custom_parameters_list 'banner3_message=SeaWolf%20Cruiser%20Racer'
+    ###########################################################################################
+
+    # 定义自定义变量
+    # 自定义变量由 FAS 用于动态收集客户端信息
+    # 默认值：无
+    #
+    # 通用自定义变量以 var_name=var_type 的形式列出
+    # 如果 var_name 和 var_type 包含单引号，必须进行 URL 编码
+    # 例如，将单引号替换为 %27
+    #
+    # 变量应每行配置一个，以防止可能的解析错误。
+    # 例如：
+    #list fas_custom_variables_list '<var_name1=var_type1>'
+    #list fas_custom_variables_list '<var_name2=var_type2>'
+    # 等。
+    #
+    # 通用自定义变量可供 ThemeSpec 脚本使用
+    #-----------------------------------------------------------------
+    # 例如：
+    #list fas_custom_variables_list 'caretaker_phone_number=Ext0118'
+    #list fas_custom_variables_list 'room_service=Ext0111'
+    #
+    # ThemeSpec 动态生成的表单字段
+    #--------------------------------------------
+    # ThemeSpec 脚本可以动态生成表单字段 HTML 并注入动态启动页面序列。
+    # 这是通过一个或多个包含关键字“input”的列表条目实现的，
+    # 形式为：fieldname:field-description:fieldtype
+    #
+    # 每个“input=”行中可以定义多个字段，用分号 (;) 分隔。
+    #
+    # 以下工作示例适用于已安装的 ThemeSpec 文件：
+    # theme_click-to-continue-custom-placeholders
+    # 和
+    # theme_user-email-login-custom-placeholders
+    #
+    # 此示例插入电话号码和家庭邮编字段：
+    #
+    #list fas_custom_variables_list 'input=phone:Phone Number:text;postcode:Home Post Code:text'
+    #
+    ###########################################################################################
+
+    # 定义自定义图像
+    # 自定义图像由本地 FAS 在动态门户页面中需要时提供
+    # 默认值：无
+    #
+    # 自定义图像将从 URL 复制到 openNDS 路由器
+    #
+    # 自定义图像以 image_name_type=image_url 的形式列出
+    # 如果 image_name 和 image_url 包含空格或单引号，必须进行 URL 编码
+    # 图像 URL 必须以 http://、https:// 或 file:// 开头
+    # 自定义图像将从 URL 复制到 openNDS 路由器
+    #
+    # 图像应每行配置一个，以防止可能的解析错误。
+    #
+    #list fas_custom_images_list '<image_name1_[type]=image_url1>'
+    #list fas_custom_images_list '<image_name2_[type]=image_url2>'
+    # 等。
+    #
+    # “type”可以是任何认可的图像文件扩展名，例如 jpg、png、ico 等。
+    #
+    # 以下工作示例适用于已安装的 ThemeSpec 文件：
+    # theme_click-to-continue-custom-placeholders
+    # 和
+    # theme_user-email-login-custom-placeholders
+    #
+    #list fas_custom_images_list 'logo_png=https://openwrt.org/_media/logo.png'
+    #list fas_custom_images_list 'banner1_jpg=https://raw.githubusercontent.com/openNDS/openNDS/v9.5.0/resources/bannerbw.jpg'
+    #list fas_custom_images_list 'banner2_jpg=https://raw.githubusercontent.com/openNDS/openNDS/v9.5.0/resources/bannerpickle.jpg'
+    #list fas_custom_images_list 'banner3_jpg=https://raw.githubusercontent.com/openNDS/openNDS/v9.5.0/resources/bannerseawolf.jpg'
+    #
+    ###########################################################################################
+
+    # 定义自定义文件
+    # 自定义文件由本地 FAS 在动态门户页面中需要时提供
+    # 默认值：无
+    #
+    # 自定义文件将从 URL 复制到 openNDS 路由器
+    #
+    # 文件应每行配置一个，以防止可能的解析错误。
+    #
+    # 自定义文件以 file_name_type=file_url 的形式列出
+    # 如果 file_name 和 file_url 包含空格或单引号，必须进行 URL 编码
+    # 文件 URL 必须以 http://、https:// 或 file:// 开头
+    # 自定义文件将从 URL 复制到 openNDS 路由器
+    #
+    #list fas_custom_files_list '<file_name1_[type]=file_url1>'
+    #list fas_custom_files_list '<file_name2_[type]=file_url2>'
+    # “type”可以是任何可用于显示网页内容的认可文件扩展名，例如 txt、htm 等。
+    #
+    # 以下工作示例适用于已安装的 ThemeSpec 文件：
+    # theme_click-to-continue-custom-placeholders
+    # 和
+    # theme_user-email-login-custom-placeholders
+    #
+    #list fas_custom_files_list 'advert1_htm=https://raw.githubusercontent.com/openNDS/openNDS/v9.5.0/resources/bannerpickle.htm'
+    #
+    ###########################################################################################
+
+    # 设置远程下载文件的刷新间隔（以分钟为单位）
+    # 设置为 0（零）表示禁用刷新
+    # 默认值 0
+    #
+    #option remotes_refresh_interval '720'
+    #
+    ###########################################################################################
+
+    # 使用过时的 libmicrohttpd (MHD)
+    # 默认值 0
+    #
+    # 警告，这可能不稳定或完全失败 - 最好升级 MHD。
+    # 使用风险自担
+    #
+    # 旧版本的 MHD 在表单数据中将 & 和 + 字符转换为空格
+    # 如果表单数据包含这些字符（例如用户名或密码），可能会导致 PreAuth 或 BinAuth 无法使用
+    #
+    # 检测到早于 0.9.71 的 MHD 版本。
+    #
+    # 如果此选项设置为 0（默认值），MHD 早于 0.9.71 时 NDS 将终止
+    # 如果此选项设置为 1，NDS 将尝试启动并记录错误。
+    #
+    #option use_outdated_mhd '0'
+    ###########################################################################################
+
+    # MHD 提供服务的最大页面大小
+    # 默认值 10240 字节
+    # 最小值 1024 字节
+    # 最大值 - 仅受路由器可用 RAM 的限制
+    #
+    # 这设置了 MHD Web 服务器每页提供的最大字节数
+    # 设置此选项很有用：
+    #	1. 在资源受限的路由器上减少内存需求
+    #	2. 在内存使用不是问题的情况下允许提供大页面
+    #
+    #option max_page_size '4096'
+    ###########################################################################################
+
+    # 本地日志条目最大数量
+    # 默认值 100
+    # 最小值 0
+    # 最大值 - 仅受日志挂载点的可用存储空间限制
+    #
+    # 如果设置为 '0'，则无限制
+    #
+    # 这是日志轮换开始前允许的最大本地日志条目数
+    # 如果启用，ThemeSpec 和 Binauth 都会在本地记录日志
+    #
+    # **警告** - 默认情况下，本地日志写入 tmpfs 易失性存储
+    # 如果此选项设置过高，路由器可能会耗尽 tmpfs 存储和/或可用 RAM
+    #
+    # 可以使用 log_mountpoint 选项定义非易失性存储，例如 USB 存储设备
+    #
+    # 示例：
+    #option max_log_entries '1000'
+    ###########################################################################################
+
+    # WebRoot
+    # 默认值：/etc/opennds/htdocs
+    #
+    # 系统 CSS 文件和默认启动页面图像所在的本地路径。
+    # 即从此目录提供文件 splash.css
+    #option webroot '/etc/opennds/htdocs'
+    ###########################################################################################
+
+    # GateWayInterface
+    # 默认值 br-lan
+    # 使用此选项设置 opennds 将绑定的设备。
+    # 值可以是 /etc/config/network 中的接口部分或设备名称，例如 br-lan。
+    # 所选接口必须分配 IPv4 地址。
+    # 在 OpenWrt 中，通常为 br-lan，在通用 Linux 中可能有所不同。
+    #
+    #option gatewayinterface 'br-lan'
+    ###########################################################################################
+
+    # GatewayPort
+    # 默认值：2050
+    #
+    # openNDS 自己的 HTTP 服务器使用网关地址作为其 IP 地址。
+    # 它在此 IP 上监听的端口可在此设置；默认值为 2050。
+    # 此选项很少需要更改
+    # 警告：端口 80 是禁止的。
+    #
+    #option gatewayport '2050'
+    ###########################################################################################
+
+	# 网关名称
+	# 默认值：openNDS
+	#
+	# 网关名用作 openNDS 实例的标识符
+	#
+	# 它显示在默认闪屏页面序列上。
+	#
+	# 它在单个远程 FAS 服务器为多个
+	它特别适用于单个远程 FAS 服务器为多个 # openNDS 站点提供服务的情况，使 FAS 能够为每个站点定制响应。
+	#
+	# 注意：网关名称中不能使用单引号（或撇号）字符（'）。
+	# 如果需要，请使用 htmlentity &#39; 代替。
+	#
+	# 例如
+	# option  gatewayname 'Bill's WiFi' 无效。
+	# 请使用
+	# option  gatewayname 'Bill&#39;s WiFi' 
+	#
+        #option gatewayname 'My Captive Portal'
+    ###########################################################################################
+
+    # 启用序列号后缀
+    # 将序列号后缀附加到 gatewayname 字符串。
+    #
+    # openNDS 根据路由器 MAC 地址构造一个序列号并将其添加到 gatewayname
+    #
+    # 默认值 1（启用）
+    #
+    # 设置为 0 以禁用
+    #
+    # 示例：
+    #
+    #option enable_serial_number_suffix '0'
+    ###########################################################################################
+
+    # GatewayFQDN
+    # 默认值：status.client
+    # 这是客户端用来访问客户端状态页面的模拟 FQDN
+    # 如果未设置，状态页面可以通过以下地址访问：http://gatewayaddress:gatewayport/
+    #
+    # 警告 - 网关上的端口 80 服务将不再可访问（例如 Luci 管理界面）
+    #
+    # 默认情况下，Error511/状态页面将通过端口 80 重定向到 http://gatewayaddress:gatewayport/，位于 http://status.client/
+    #
+    # 通过将选项设置为 'disable' 来禁用 GatewayFQDN
+    # 即：
+    #option gatewayfqdn 'disable'
+    #
+    # 替代有用示例：
+    #option gatewayfqdn 'login.page'
+    ###########################################################################################
+
+    # StatusPath
+    # 默认值：/usr/lib/opennds/client_params.sh
+    # 这是用于生成 GatewayFQDN 客户端状态和 Error511 页面的脚本
+    #
+    #option statuspath '/mycustomscripts/custom_client_params.sh'
+    ###########################################################################################
+
+    # MaxClients
+    # 默认值 250
+    # 允许连接的最大客户端数量
+    # 这应小于或等于允许的 DHCP 租约数量
+    # 例如：
+    #option maxclients '500'
+    ###########################################################################################
+
+    # 客户端超时（以分钟为单位）
+    #
+    # preauthidletimeout 是客户端在未认证的情况下断开连接的时间（分钟），即客户端在此期间未尝试认证
+    # 默认值 30 分钟
+    #option preauthidletimeout '15'
+
+    # authidletimeout 是空闲客户端断开连接的时间（分钟），即客户端在此期间未使用网络访问
+    # 默认值 120 分钟
+    #option authidletimeout '180'
+
+    # 会话超时是客户端被迫断开的时间间隔（值为 0 表示永不超时）
+    # 客户端将在此期间结束后被取消认证
+    # 默认值 1440 分钟（24 小时）
+    # 示例：设置为 20 小时（1200 分钟）
+    #option sessiontimeout '1200'
+    ###########################################################################################
+
+    # checkinterval
+    # opennds 检查客户端超时和配额状态的间隔（以秒为单位）
+    # 默认值 15 秒
+    # 示例：设置为 30 秒
+    #option checkinterval '30'
+    ###########################################################################################
+
+    # 速率配额
+    # 注意：上传表示到互联网，下载表示从互联网
+    # 默认值 0
+    # 仅限整数值
+    #
+    # 如果客户端平均数据速率超过此处设置的值，客户端将被限制速率
+    # 值单位为 kb/s
+    # 如果设置为 0，则没有上限
+    #
+    # 配额和速率也可以通过 FAS 通过 Authmon 守护进程、ThemeSpec 脚本、BinAuth 和 ndsctl auth 设置。
+    # 通过这些方法设置的值将覆盖此配置文件中的值。
+    #
+    # 速率：
+    #option uploadrate '0'
+    #option downloadrate '0'
+    #
+    ###########################################################################################
+
+    # 桶比率
+    # 默认值 10
+    #
+    # 可以定义上传和下载桶比率。
+    # 允许控制每个客户端的上传速率限制阈值超限。
+    # 与 MaxDownloadBucketSize 和 MaxUploadBucketSize 一起使用
+    # 有助于计算动态“桶大小”或“队列长度”（以数据包为单位），
+    # 用于缓冲上传和下载流量，以实现此配置文件或 FAS 为各个客户端定义的速率限制。
+    # 如果桶变满，数据包将溢出并丢弃，以维持速率限制。
+    #
+    # 为了尽量减少丢包数量，可以增加桶比率，同时仍保持配置的速率限制。
+    #
+    # ***注意*** 大值可能会为每个客户端消耗大量内存。
+    #
+    # 如果客户端的平均速率在 ratecheck 窗口间隔内（参见 RateCheckWindow 选项）未超过其配置值，则不消耗内存。
+    #
+    # 如果速率设置为 0，则桶比率设置无意义，且不消耗内存。
+    #
+    # option upload_bucket_ratio '1'
+    # option download_bucket_ratio '5'
+    ###########################################################################################
+
+    # MaxDownloadBucketSize
+    # 允许控制下载速率限制数据包丢失，以增加延迟为代价
+    # ***注意*** 大值可能会为每个客户端消耗大量内存。
+    # 默认值 250
+    # 允许范围 5 到 10000
+    #option max_download_bucket_size '100'
+    ###########################################################################################
+
+    # MaxUploadBucketSize
+    # 允许控制上传速率限制数据包丢失，以增加延迟为代价
+    # ***注意*** 大值可能会为每个客户端消耗大量内存。
+    # 默认值 250
+    # 允许范围 5 到 10000
+    #
+    #option max_upload_bucket_size '100'
+    ###########################################################################################
+
+    # DownLoadUnrestrictedBursting
+    # 默认值 0
+    # 启用/禁用无限制突发
+    # 设置为 0 禁用
+    # 设置为 1 启用
+    #
+    # 如果启用，客户端允许无限制突发，直到其平均下载速率超过设定的下载速率阈值。
+    # 无限制突发以潜在的短期带宽占用为代价减少内存消耗
+    #
+    # 如果禁用，客户端不允许无限制突发。
+    #
+    # option download_unrestricted_bursting '1'
+    ###########################################################################################
+
+    # UpLoadUnrestrictedBursting
+    # 默认值 0
+    # 启用/禁用无限制突发
+    # 设置为 0 禁用
+    # 设置为 1 启用
+    #
+    # 如果启用，客户端允许无限制突发，直到其平均上传速率超过设定的上传速率阈值。
+    # 无限制突发以潜在的短期带宽占用为代价减少内存消耗
+    #
+    # 如果禁用，客户端不允许无限制突发。
+    #
+    # option upload_unrestricted_bursting '1'
+    ###########################################################################################
+
+    # RateCheckWindow
+    # 默认值 2
+    #
+    # 客户端数据速率使用移动平均值计算。
+    #
+    # 移动平均窗口大小（或突发间隔）等于 ratecheckwindow 乘以 checkinterval（秒）
+    #
+    # 通过将此选项设置为 0（零）可以全局禁用所有速率限制
+    #
+    # 示例：为所有客户端禁用所有速率配额，覆盖 FAS 通过 Authmon 守护进程、ThemeSpec 脚本、BinAuth 和 ndsctl auth 所做的设置：
+    #option ratecheckwindow '0'
+    #
+    # 示例：设置为 3 个 checkinterval 周期：
+    #option ratecheckwindow '3'
+    ###########################################################################################
+
+    # 容量配额：
+    # 如果客户端数据配额超过此处设置的值，
+    # 客户端将被取消认证或根据公平使用政策限速速率进行限制。
+    # 默认值 0
+    # 仅限整数值
+    #
+    # 值单位为 kB
+    # 如果设置为 0，则没有限制
+    #
+    #option uploadquota '0'
+    #option downloadquota '0'
+    ###########################################################################################
+
+    # 公平使用政策限速速率：
+    # 如果设置了容量配额，可以配置上传/下载限速速率
+
+    # 默认值 0
+    # 仅限整数值
+    #
+    # 值单位为 kb/s
+    # 如果设置为 0，当容量配额超限时，客户端将被取消认证
+    #
+    #option fup_upload_throttle_rate '0'
+    #option fup_download_throttle_rate '0'
+    ###########################################################################################
+
+    # BinAuth 便于认证后处理
+    #
+    # 无法禁用
+    #
+    # 默认值：使用 /usr/lib/opennds/binauth_log.sh
+    #
+    # 默认情况下，它管理已认证客户端数据库。
+    # 该数据库反过来被 openNDS 用于在重启时重新认证客户端。
+    # 通过调用 auth_restore() 库函数自动实现。
+    # 在 openNDS 重启后，具有剩余会话时间的客户端将被重新认证。
+    #
+    # 调用自定义 binauth 脚本 /usr/lib/opennds/custombinauth.sh。
+    # 可以编辑此自定义脚本以提供额外的用户定义功能。
+    #
+    ####
+    # 警告：
+    # 默认 binauth 脚本可以被替换，但这将禁用 auth_restore 功能。
+    ####
+    #
+    #option binauth '/usr/lib/opennds/my_binauth_script.sh'
+    ###########################################################################################
+
+    # 设置 Fasport
+    # 这是转发认证服务 (FAS) 的端口号
+    # 重定向更改为系统管理员提供的 FAS 的 IP 端口
+    # 注意：如果 FAS 是本地运行的（即未设置 fasremoteip），则不能使用端口 80。
+    #
+    # 典型的远程共享主机示例：
+    #option fasport '80'
+    #
+    # 典型的本地托管示例（即未设置 fasremoteip）：
+    #option fasport '2080'
+    ###########################################################################################
+
+    # 选项：fasremotefqdn
+    # 默认值：未设置
+    # 如果设置，这是 FAS 的远程完全限定域名 (FQDN)。
+    # FQDN 前不得添加协议（即 http:// 或 https://）
+    # 为避免 CPD 或浏览器安全错误，NDS 会在重定向前根据 fas_secure_enabled 选项添加所需的 http:// 或 https://。
+    #
+    # 如果设置，DNS 必须将 fasremotefqdn 解析为与 fasremoteip 相同的 IP 地址。
+    #
+    # 典型的远程共享主机示例（替换为您自己的 FAS FQDN）：
+    #option fasremotefqdn 'onboard-wifi.net'
+    #
+    # 注意：对于 CDN（内容分发网络）托管的服务器，
+    # 您还必须将 fasremotefqdn 添加到围墙花园的 FQDN 列表中
+    #
+    # 典型的远程共享主机示例（替换为您自己的远程 FQDN）：
+    #option fasremotefqdn 'portal.mydomain.com'
+    ###########################################################################################
+
+    # 选项：fasremoteip
+    # 默认值：GatewayAddress（NDS 的 IP）
+    # 如果设置，这是 FAS 的远程 IP 地址。
+    #
+    # 典型的远程共享主机示例（替换为您自己的远程 FAS IP）：
+    #option fasremoteip '46.32.240.41'
+    ###########################################################################################
+
+    # 选项：faspath
+    # 默认值：/
+    # 这是从 FAS Web 根目录到 FAS 登录页面的路径
+    # （不是文件系统根目录）。
+    #
+    # 在以下示例中，替换为您自己的 faspath 值
+    #
+    # 典型的远程共享主机示例（如果未指定 fasremotefqdn）：
+    #option faspath '/remote_host_fqdn/fas/fas-hid.php'
+    #
+    # 典型的远程共享主机示例（即同时设置了 fasremoteip 和 fasremotefqdn）：
+    #option faspath '/fas/fas-hid.php'
+    #
+    # 典型的本地托管示例（即未设置 fasremoteip）：
+    #option faspath '/fas/fas-hid.php'
+    ###########################################################################################
+
+    # 选项：faskey
+    # 默认值：系统生成的 sha256 字符串
+    # NDS 用于加密发送给 FAS 的查询字符串的密钥短语
+    # 可以是任何不含空格的文本字符串
+    # 提示和示例：选择一个秘密字符串并使用 sha256sum 工具生成哈希。
+    # 例如，使用命令 - echo "secret key" | sha256sum
+    # 选项 faskey 必须与 FAS 预共享。
+    #
+    #option faskey '328411b33fe55127421fa394995711658526ed47d0affad3fe56a0b3930c8689'
+    ###########################################################################################
+
+    # 选项：fas_secure_enabled
+    # 默认值：1
+
+    # ****如果设置为 "0"****
+    ##
+    # 警告：此模式不安全，不推荐使用。
+    ##
+    # NDS 强制 FAS 使用 http 协议。
+    # 客户端令牌以明文形式与 authaction 和 redir 一起在重定向的查询字符串中发送给 FAS。
+    # 注意：此级别不安全，容易被绕过
+
+    # ****如果设置为 "1"****
+    # NDS 强制 FAS 使用 http 协议。
+    # 客户端令牌将被哈希并与其他相关信息一起以 base64 编码字符串发送给 FAS
+    #
+    # FAS 必须返回 hid（哈希原始令牌）与 faskey 拼接的 sha256sum，供 NDS 用于客户端认证。
+    # 这将返回给 FAS 进行认证
+    #
+
+    # ****如果设置为 "2"****
+    # NDS 强制 FAS 使用 http 协议。
+    #
+    # 参数 clientip、clientmac、gatewayname、hid（哈希原始令牌）、gatewayaddress、authdir、originurl 和 clientif
+    # 使用 faskey 加密并在查询字符串中传递给 FAS。
+    #
+    # 查询字符串还将包含一个随机生成的初始化向量，供 FAS 用于解密。
+    #
+    # 使用的加密算法是 "AES-256-CBC"。
+    #
+    # 对于 fas_secure 级别 2 和 3，必须同时安装 "php-cli" 包和 "php-openssl" 模块。
+    #
+    # openNDS 不依赖此包和模块，但如果设置此级别且未安装这些包和模块，将优雅退出。
+    #
+    # FAS 必须使用查询字符串传递的初始化向量和预共享的 fas_key 解密查询字符串。
+    # 示例 FAS 级别 2 php 脚本 (fas-aes.php) 包含在 /etc/opennds 目录中，也在源代码中提供。
+
+    # ****如果设置为 "3"****
+    # NDS 强制 FAS 使用 https 协议。
+    #
+    # 级别 3 与级别 2 相同，只是强制 FAS 使用 https 协议。
+    #
+    # 此外，加载 "authmon" 守护进程。
+    # 这允许外部 FAS 在客户端验证后，有效穿越入站防火墙和地址转换，
+    # 以实现 NDS 认证，而不会生成浏览器安全警告或错误。
+    # 示例 FAS 级别 3 php 脚本 (fas-aes-https.php) 包含在 /etc/opennds 目录中，也在源代码中提供。
+
+    # ****如果设置为 "4"****
+    # NDS 强制 FAS 使用 https 协议。
+    #
+    # 级别 4 与级别 1 相同，只是强制 FAS 使用 https 协议。
+    # 客户端令牌将被哈希并与其他相关信息一起以 base64 编码字符串发送给 FAS
+    #
+    # FAS 必须返回 hid（哈希原始令牌）与 faskey 拼接的 sha256sum，供 NDS 用于客户端认证。
+    #
+    # 此外，加载 "authmon" 守护进程。
+    # 这允许外部 FAS 在客户端验证后，有效穿越入站防火墙和地址转换，
+    # 以实现 NDS 认证，而不会生成浏览器安全警告或错误。
+    # 示例 FAS 级别 4 php 脚本 (fas-hid-https.php) 包含在 /etc/opennds 目录中，也在源代码中提供。
+
+    #
+    # 注意：对于 fas_secure 级别 1、2、3 和 4，选项 faskey 必须与使用的 FAS 脚本（包括任何 ThemeSpec 本地文件）预共享。
+    #
+    # 示例：
+    #option fas_secure_enabled '3'
+    ###########################################################################################
+
+    # NAT 穿越轮询间隔
+    # 设置 NAT 穿越的轮询间隔（以秒为单位）
+    #
+    # 默认值 5 秒
+    # 允许值在 1 到 60 秒之间（含）
+    # 如果设置超出此范围，默认值为 5 秒
+    #
+    # 仅当选项 fas_secure_enabled 设置为 3 或更高时有效
+    #
+    # 示例：
+    #option nat_traversal_poll_interval '2'
+    ###########################################################################################
+
+    # 已认证用户规则集
+    # 可以为已认证用户指定规则。
+    # 如果未指定规则，则已认证用户拥有无限制访问权限。
+    #
+    # 注意：所有已认证用户规则按照在此配置文件中指定的顺序实现。
+    #
+    #
+    # 阻止已认证用户的访问（block）：
+    # 默认值：无
+    #
+    # 如果指定了阻止访问，则之后必须指定允许
+    # 因为此处设置的任何条目将覆盖访问默认值
+    #
+    # 示例：
+    #
+    # 您可能希望阻止整个 IP 子网。例如：
+    #list authenticated_users 'block to 123.2.3.0/24'
+    #list authenticated_users 'block to 123.2.0.0/16'
+    #list authenticated_users 'block to 123.0.0.0/8'
+    #
+    # 或阻止访问单个 IP 地址。例如：
+    #
+    #list authenticated_users 'block to 123.2.3.4'
+    #
+    # 如果该 FQDN 只有一个 IP 地址，可以使用 FQDN 代替 IP 地址
+    #list authenticated_users 'block all to theirwebsite.com'
+    #
+    # 此处添加的阻止规则是最终的，无论操作系统防火墙中的任何设置，所有到目标的数据包都将被丢弃。
+    #
+    ###########################################################################################
+
+    # 授予已认证用户的访问权限（allow）：
+    #
+    # openNDS 可以直接允许访问，但最终决定将传递给其他可能设置的防火墙规则。
+    #
+    # 默认值：list authenticated_users 'allow all'
+    #
+    # 此处或上述阻止访问中设置的任何条目将覆盖默认值
+    #
+    # 示例：
+    # 授予对 https 网站的访问权限，受其他地方可能设置的防火墙规则约束。
+    #list authenticated_users 'allow tcp port 443'
+    #
+    # 授予对地址 123.1.1.1 上端口 5000 的 udp 服务的访问权限，受其他地方可能设置的防火墙规则约束。
+    #list authenticated_users 'allow udp port 5000 to 123.1.1.1'
+    #
+    ###########################################################################################
+
+    # 对于预认证用户：
+    #
+    #	*****重要*****
+    #
+    # 要启用 RFC8910 捕获门户标识
+    # 并防止 DNS 隧道、DNS 劫持并总体提高安全性，
+    #
+    # 	****不要允许访问外部 DNS 服务****
+    #
+    ###########################################################################################
+
+    # 围墙花园
+    # 允许预认证用户访问外部服务
+    # 这通常被称为围墙花园。
+    #
+    # 围墙花园可以配置为：
+    # 1. 手动配置已知 IP 地址或具有单个 IP 地址的 FQDN
+    # 或
+    # 2. 从 FQDN 和端口列表自主配置
+
+    #####
+    # 手动围墙花园配置需要研究以确定围墙花园站点的 IP 地址
+    # 这可能有问题，因为站点可能使用许多动态 IP 地址。
+    # 然而，手动配置不需要任何额外的依赖（即额外安装的包）。
+    #
+    # 请注意，标准未加密 HTTP 端口（TCP 端口 80）用于捕获门户检测 (CPD)，
+    # 访问外部网站应使用 HTTPS（TCP 端口 443）以确保安全。
+    # 通过自主围墙花园方法仍可允许 TCP 端口 80。
+    #
+    # 手动配置示例：
+    #
+    #list preauthenticated_users 'allow udp port 8020 to 112.122.123.124'
+    #
+    # 如果该 FQDN 只有一个可能的 IP 地址，可以使用 FQDN 代替 IP 地址
+    #
+    #list preauthenticated_users 'allow tcp port 443 to mywebsite.com'
+
+    #####
+    # 使用 FQDN 和端口列表的自主围墙花园配置。
+    #
+    # 这具有发现围墙花园站点使用的所有 IP 地址的优势。
+    # 但需要安装 dnsmasq-full 包（如果 dnsmasq 不支持 nftsets，还需安装 ipset 包）
+    #
+    # 配置只需添加以下两个列表：
+    # 
+    # list walledgarden_fqdn_list 'fqdn1 fqdn2 fqdn3 .... fqdnN'
+    # list walledgarden_port_list 'port1 port2 port3 .... portN'
+    #
+    # 注意：如果未指定 walledgarden_port_list，则为 walledgarden_fqdn_list 中指定的每个 FQDN
+    # 授予所有协议（tcp、udp）在所有端口上的围墙花园访问权限。
+    #
+    # 注意：如果指定了 walledgarden_port_list，则：
+    #  1. 指定的端口号适用于 walledgarden_fqdn_list 中指定的所有 FQDN。
+    #  2. 仅为每个围墙花园 FQDN 中的指定端口授予访问权限。
+    #  3. 围墙花园仅适用于预认证用户。
+
+    # 自主配置示例：
+    #
+    # 1. 要将 Facebook 添加到围墙花园，列表条目为：
+    # 	list walledgarden_fqdn_list 'facebook.com fbcdn.net'
+    # 	list walledgarden_port_list '443'
+    #
+    # 2. 要将 Paypal 添加到围墙花园，列表条目为：
+    # 	list walledgarden_fqdn_list 'paypal.com paypalobjects.com'
+    # 	list walledgarden_port_list '443'
+    #
+    # 3. 要限制仅访问一个端口或端口列表：
+    # 	list walledgarden_port_list '443'
+    # 或
+    # 	list walledgarden_port_list '443 8020'
+    #
+    # 警告：将端口 80 添加到 walledgarden_port_list 可能导致客户端内置的 CPD 功能失效，因此不推荐。
+
+    ###########################################################################################
+
+    #####
+    # 阻止列表
+    # 拒绝已认证用户访问外部服务
+    # 这通常被称为阻止列表。
+    #
+    # 阻止列表可以配置为：
+    # 1. 手动配置已知 IP 地址或具有单个 IP 地址的 FQDN
+    # 或
+    # 2. 从 FQDN 和端口列表自主配置
+
+    #####
+    # 手动阻止列表配置需要研究以确定阻止列表站点的 IP 地址
+    # 这可能有问题，因为站点可能使用许多动态 IP 地址。
+    # 然而，手动配置不需要任何额外的依赖（即额外安装的包）。
+    #
+    # 手动配置示例：
+    #
+    #list authenticated_users 'block udp port 8020 to 112.122.123.124'
+    #
+    # 如果该 FQDN 只有一个可能的 IP 地址，可以使用 FQDN 代替 IP 地址
+    #
+    #list authenticated_users 'block tcp port 443 to mywebsite.com'
+
+    # 使用 FQDN 和端口列表的自主阻止列表配置。
+    #
+    # 这具有发现阻止列表站点使用的所有 IP 地址的优势。
+    # 但需要安装 dnsmasq-full 包（如果 dnsmasq 不支持 nftsets，还需安装 ipset 包）
+    #
+    # 配置只需添加以下两个列表：
+    #
+    # list blocklist_fqdn_list 'fqdn1 fqdn2 fqdn3 .... fqdnN'
+    # list blocklist_port_list 'port1 port2 port3 .... portN'
+    #
+    # 或
+    #
+    # list blocklist_fqdn_list 'fqdn1'
+    # list blocklist_fqdn_list 'fqdn2'
+    # list blocklist_fqdn_list '....... 等。
+    # list blocklist_fqdn_list 'fqdnN'
+    #
+    # 类似地，端口也可以在多行上列出
+    #
+    # 注意：如果未指定 blocklist_port_list，则为 blocklist_fqdn_list 中指定的每个 FQDN
+    # 拒绝所有协议（tcp、udp、icmp）在所有端口上的访问。
+    #
+    # 注意：如果指定了 blocklist_port_list，则：
+    #  1. 指定的端口号适用于 blocklist_fqdn_list 中指定的所有 FQDN。
+    #  2. 仅为每个阻止列表 FQDN 中的指定端口阻止访问。
+    #  3. 阻止列表仅适用于已认证用户。
+
+    # 自主配置示例：
+    #
+    # 1. 要将 Facebook 添加到阻止列表，列表条目为：
+    # 	list blocklist_fqdn_list 'facebook.com fbcdn.net'
+    #
+    # 2. 要将 YouTube 添加到阻止列表，列表条目为：
+    # 	list blocklist_fqdn_list 'youtube.com'
+    #
+    # 3. 要仅拒绝访问一个端口或端口列表，允许其他端口：
+    # 	list blocklist_port_list '443 80'
+    #
+
+    ###########################################################################################
+
+    # 用户对路由器的访问
+    #
+    # users_to_router_passthrough
+    # 默认值 0（禁用）
+    #
+    ####
+    # 警告：启用此选项可能会导致路由器软砖
+    ####
+    #
+    # 如果启用，必须通过系统防火墙中配置的规则允许访问基本服务
+    #option users_to_router_passthrough '1'
+
+    ####
+    # 基本服务端口始终包括在内，无需指定。
+    # 这些端口是：
+    # 端口 53 - DNS
+    # 端口 67 - DHCP
+    # 端口 22 - SSH
+    # 端口 443 - 管理界面（OpenWrt 上的 Luci）
+    ####
+    #
+    # 示例：
+    #list users_to_router 'allow tcp port 4443'
+    #list users_to_router 'allow udp port 4267'
+    #list users_to_router 'allow all from 192.168.1.10'
+    #list users_to_router 'allow tcp port 30000 from 192.168.1.11'
+
+    ###########################################################################################
+
+    # 可信客户端
+    # 无需认证的客户端 MAC 地址列表。
+    #
+    # 可信客户端立即获得无条件访问，无需认证。
+    #
+    # 可信客户端的数据使用情况不记录，不应用配额或超时。
+    ####
+    # 警告：由于客户端设备可以使用随机 MAC 地址，客户端可能因更改其 MAC 地址而失去“可信”状态
+    ####
+    # 警告：由于 MAC 地址可以被“伪造”，设置可信 MAC 可能存在安全隐患
+    ####
+    #list trustedmac '00:00:C0:01:D0:1D'
+    #list trustedmac '00:00:C0:01:D0:2A'
+
+    ###########################################################################################
+
+    # 抢先客户端
+    # 抢先认证客户端设备的 MAC 地址和访问条件列表。
+    # 与可信客户端不同，抢先客户端的数据使用情况会被监控。应用配额和超时。
+    # 抢先客户端与普通验证客户端一样，在本地和远程 FAS 服务器中记录日志。
+    # 必须启用抢先认证（默认）。参见 "allow_preemptive_authentication"。
+    #
+    # 默认值：未设置
+    #
+    # 注意：请注意，大多数移动设备会在遇到每个无线网络时随机化其 MAC 地址。
+    #
+    # 列表参数包括 mac、sessiontimeout、uploadrate、downloadrate、uploadquota、downloadquota 和 custom。使用“;”字符作为参数分隔符。
+    # 设置为“0”或省略的列表参数将设置为全局或默认值。
+    #
+    # 示例：
+    #
+    #list preemptivemac 'mac=00:00:C0:01:D0:01;sessiontimeout=1200;uploadrate=200;downloadrate=0;uploadquota=0;downloadquota=0;custom=custom string for preemptivemac1'
+    #list preemptivemac 'mac=00:00:D0:01:D0:02;sessiontimeout=1000;uploadrate=200;downloadrate=800;uploadquota=0;downloadquota=0;custom=custom string for preemptivemac2'
+    #list preemptivemac 'mac=00:00:E0:01:D0:03;sessiontimeout=4200;uploadrate=100;downloadrate=0;uploadquota=0;downloadquota=0;custom=custom_string_for_preemptivemac3'
+
+    ###########################################################################################
+
+    # dhcp_default_url_enable
+    #
+    # 将“default_url”（dhcp 选项 114）与所有 DHCP 请求回复一起发送
+    # 需要用于 RFC8910 捕获门户标识
+    #
+    # 默认值 1（启用）
+    # 警告：禁用将阻止 RFC8910/8908 客户端登录门户
+    #
+    #option dhcp_default_url_enable '1'
+    ###########################################################################################
+
+    # openNDS 使用特定的十六进制值作为 nftables 使用的位掩码标记数据包。
+    # 此掩码可能与其他包的要求冲突。
+    #
+    # 然而，默认值与 mwan3 和 sqm 使用的默认值完全兼容
+    #
+    # 此处设置的任何值都被解释为十六进制格式。
+    #
+    # 选项：fw_mark_authenticated
+    # 默认值：30000（0011|0000|0000|0000|0000 二进制）
+    #
+    # 选项：fw_mark_trusted
+    # 默认值：20000（0010|0000|0000|0000|0000 二进制）
+    #
+    #option fw_mark_authenticated '30000'
+    #option fw_mark_trusted '20000'
+    ###########################################################################################
+
+    option faskey '8d2dca036ed9333f36f25c2a4ffebd6dbbab8fc1ebe096889c4a5610023227a2'
