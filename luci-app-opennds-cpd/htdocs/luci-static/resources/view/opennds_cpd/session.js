@@ -107,10 +107,10 @@ return view.extend({
 		}
 
 		function handleSave() {
-			stageSnapshot().then(function () {
-				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+			return stageSnapshot().then(function () {
+				CPD.statusBar(_('配置已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
 

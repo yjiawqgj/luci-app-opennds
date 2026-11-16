@@ -1287,6 +1287,8 @@ return view.extend({
 					CPD.clearNotice();
 					CPD.notify(_('配置已应用'), 'ok');
 					if (j.warnings && j.warnings.length) CPD.showWarnings(j.warnings);
+					/* 增量已落盘：让右上角「未保存的配置」立刻归零 */
+					CPD.notifyChanges();
 					refresh();
 					resolve();
 				}, function (e) {

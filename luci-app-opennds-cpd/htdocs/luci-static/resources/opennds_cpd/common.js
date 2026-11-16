@@ -268,33 +268,37 @@ var CPD = L.Class.extend({
 	 *   ② 直接拉一次 uci.changes() 交给指示器渲染 —— 不依赖监听是否已注册；
 	 *   ③ 若 ubus 那边读不到（数目为 0）而后端 /tmp/.uci 确实有条目，
 	 *      就用后端计数兜底显示，保证「有暂存就一定看得见」。 */
+	/* 刷新右上角「未保存的配置: N」指示器。
+	 * 走 LuCI 原生的 ui.changes 通道：它内部就是 uci.changes() → renderChangeIndicator()，
+	 * 所以只要 /tmp/.uci 里有增量，数字就会出现在和 openwrt 自带页面完全相同的位置。
+	 * 若 ubus 侧读到的数量为 0（说明两边的增量目录没对上），再用后端直接数 /tmp/.uci 兜底。 */
 	notifyChanges: function () {
 		var self = this;
+		var LC = window.L;
 
+		/* 老版本 LuCI 靠这个事件触发刷新，带上不影响新版本 */
 		try { document.dispatchEvent(new CustomEvent('uci-loaded')); } catch (e) {}
 
-		var LC = window.L;
-		var ui = null;
+		if (!LC || typeof LC.require !== 'function')
+			return self.fallbackChangeCount(null);
 
-		var jobs = [];
-		if (LC && typeof LC.require === 'function') {
-			jobs.push(LC.require('uci').then(function (uci) {
-				return LC.require('ui').catch(function () { return null; }).then(function (u) {
-					ui = u;
-					return uci.changes();
-				}).then(function (ch) {
+		return LC.require('uci').then(function (uci) {
+			return LC.require('ui').catch(function () { return null; }).then(function (ui) {
+				return uci.changes().then(function (ch) {
 					var n = 0, k;
-					if (ch) for (k in ch) if (ch.hasOwnProperty(k)) n += ch[k].length;
-					if (ui && ui.changes && typeof ui.changes.renderChangeIndicator === 'function')
+					if (ch) for (k in ch) if (ch.hasOwnProperty(k)) n += (ch[k] || []).length;
+					/* 优先用原生渲染器：数字、文案、点击查看变更清单都跟 openwrt 一致 */
+					if (ui && ui.changes && typeof ui.changes.renderChangeIndicator === 'function') {
 						ui.changes.renderChangeIndicator(ch || {});
+					} else if (ui && ui.changes && typeof ui.changes.setIndicator === 'function') {
+						ui.changes.setIndicator(n);
+					}
 					if (n === 0) return self.fallbackChangeCount(ui);
 				});
-			}).catch(function () {}));
-		} else {
-			jobs.push(self.fallbackChangeCount(null));
-		}
-
-		return Promise.all(jobs);
+			});
+		}).catch(function () {
+			return self.fallbackChangeCount(null);
+		});
 	},
 
 	/* 兜底：ubus 读不到增量时，用后端直接数 /tmp/.uci 的条目数 */
