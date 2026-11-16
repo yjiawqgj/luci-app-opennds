@@ -864,41 +864,56 @@ return view.extend({
 			}
 		};
 
-		/* 行操作只写 uci 增量，生效统一等 openwrt 的「保存并应用」 */
+		/* 断开 / 拉黑二次确认后立即生效；其余动作只写增量，等 openwrt「保存并应用」 */
 		var ACTION_TOAST = {
 			preauth: _('让「%s」免认证'),
 			unpreauth: _('取消「%s」的免认证'),
 			trust: _('把「%s」设为可信任客户端'),
 			untrust: _('取消「%s」的可信任状态'),
-			deauth: _('断开「%s」'),
-			block: _('拉黑「%s」'),
+			deauth: _('已断开「%s」'),
+			block: _('已拉黑「%s」'),
 			unblock: _('把「%s」移出黑名单')
 		};
+		/* 这两个是即时动作：不走暂存、不等「保存并应用」 */
+		var ACTION_IMMEDIATE = { deauth: true, block: true };
 
 		function askAction(act, row) {
 			var d = CONFIRM_TEXT[act];
 			if (!d) return;
 			var h = row.host || row.mac;
-			/* 所有行操作都只写增量，统一在确认框里说清楚「要点保存并应用才生效」 */
-			CPD.confirm(d.title,
-				d.msg(h) + ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。'),
-				d.ok, d.danger, function () {
-					performAction(act, row);
-				});
+			/* 即时动作（断开 / 拉黑）确认后立刻执行；其余动作要说明「还需点保存并应用」 */
+			var msg = d.msg(h);
+			if (!ACTION_IMMEDIATE[act])
+				msg += ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。');
+			CPD.confirm(d.title, msg, d.ok, d.danger, function () {
+				performAction(act, row);
+			});
 		}
 
 		function performAction(act, row) {
-			/* 只写 uci 增量：不 commit、不重启 nds、不踢人。
-			   这里刻意不 refresh()，让「还没生效」这件事在界面上保持可见 */
-			runOp(5, function () {
+			var h = row.host || row.mac;
+			var immediate = !!ACTION_IMMEDIATE[act];
+			/* 拉黑要重启 openNDS → 15 秒；其余很快 */
+			runOp(immediate && act === 'block' ? 15 : 5, function () {
 				return CPD.api('overview', 'client_action', [act, row.mac]);
 			}, {
 				onok: function (j) {
-					var h = row.host || row.mac;
 					/* 无 DHCP 租约等 warnings：只显示 warn，不报成功 */
-					if (j.warnings && j.warnings.length) CPD.showWarnings(j.warnings);
-					else CPD.statusBar(_('已记录：%s，点击页面底部的「保存并应用」后生效')
-						.format(ACTION_TOAST[act].format(h)));
+					if (j.warnings && j.warnings.length) {
+						CPD.showWarnings(j.warnings);
+						if (immediate) refresh();
+						return;
+					}
+					if (immediate) {
+						/* 立即生效：给完成态提示并刷新列表（断开的会从在线列表消失） */
+						CPD.clearNotice();
+						CPD.notify(ACTION_TOAST[act].format(h), act === 'block' ? 'warn' : 'ok');
+						refresh();
+					} else {
+						/* 只写增量：不刷新，让「还没生效」在界面上保持可见 */
+						CPD.statusBar(_('已记录：%s，点击页面底部的「保存并应用」后生效')
+							.format(ACTION_TOAST[act].format(h)));
+					}
 				}
 			});
 		}

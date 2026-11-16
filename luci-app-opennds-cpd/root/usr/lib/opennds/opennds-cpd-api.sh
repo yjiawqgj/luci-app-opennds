@@ -974,6 +974,55 @@ ov_client_action() { # $1=action $2=mac
 		mac_in_bl "$lm" && out_err '该客户端在黑名单中，请先解除拉黑'
 	fi
 
+	# 断开 / 拉黑是即时动作：二次确认后立刻生效，不受 openwrt「保存并应用」约束
+	case "$action" in
+		deauth)
+			acquire_lock
+			# 先踢下线，再撤掉它的免认证条目并落盘（否则重连又自动登录）
+			ndsctl_mac deauth "$lm"
+			ov_load_lists
+			e=$(entry_for_mac "$PM_LIST" "$lm")
+			if [ -n "$e" ]; then
+				uci del_list 'opennds.@opennds[0].preemptivemac' "$e" 2>/dev/null
+				uci commit opennds || out_err '写入配置失败'
+				remove_preauth_queue "$lm"
+			fi
+			printf '{"ok":1,"immediate":1}\n'
+			return 0
+			;;
+		block)
+			acquire_lock
+			local bsc
+			# 黑名单节缺失才新建（仅用户点动作时发生，安装零写入）
+			if uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
+				bsc='main'
+			else
+				bsc=$(sys_ensure_sec zone_blacklist main) ||
+					out_err '写入配置失败：找不到 zone_blacklist 配置节，且无法新建'
+			fi
+			ov_load_lists
+			# ① 黑名单追加并立刻落盘（theme_zone_detect.sh 读的就是 /etc/config）
+			mac_in_bl "$lm" || { uci add_list "zone_blacklist.$bsc.mac" "$lm" || out_err '写入配置失败'; }
+			uci commit zone_blacklist || out_err '写入配置失败'
+			# ② 摘两份名单并立刻落盘
+			if uci -q show 'opennds.@opennds[0]' >/dev/null 2>&1; then
+				e=$(entry_for_mac "$PM_LIST" "$lm")
+				[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac' "$e" 2>/dev/null
+				mac_in_tr "$lm" && uci del_list 'opennds.@opennds[0].trustedmac' "$lm" 2>/dev/null
+				uci commit opennds
+			fi
+			# ③ 撤信任 + 清预认证队列 + 踢下线
+			ndsctl_mac untrust "$lm"
+			remove_preauth_queue "$lm"
+			ndsctl_mac deauth "$lm"
+			# ④ 重启并等就绪（黑名单门户与 fw 规则要重新加载）
+			local ready=1
+			service_restart || ready=0
+			printf '{"ok":1,"immediate":1,"restarted":%s,"ready":%s}\n' "$SR_RESTARTED" "$ready"
+			return 0
+			;;
+	esac
+
 	acquire_lock
 
 	local osc ond bsc
@@ -1008,15 +1057,6 @@ ov_client_action() { # $1=action $2=mac
 			fi
 			printf '{"ok":1,"staged":1}\n'
 			;;
-		deauth)
-			# 断开 = 撤掉免认证条目（重启后不再自动登录），不碰其它配置
-			ov_load_lists
-			e=$(entry_for_mac "$PM_LIST" "$lm")
-			if [ -n "$e" ]; then
-				uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail
-			fi
-			printf '{"ok":1,"staged":1}\n'
-			;;
 		trust)
 			ov_load_lists
 			e=$(entry_for_mac "$PM_LIST" "$lm")
@@ -1027,23 +1067,6 @@ ov_client_action() { # $1=action $2=mac
 			;;
 		untrust)
 			ov_load_lists
-			mac_in_tr "$lm" && { uci_w del_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
-			printf '{"ok":1,"staged":1}\n'
-			;;
-		block)
-			# 黑名单节缺失才新建（仅用户点动作时发生，安装零写入）
-			if uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
-				bsc='main'
-			else
-				bsc=$(sys_ensure_sec zone_blacklist main) ||
-					out_err '暂存配置失败：找不到 zone_blacklist 配置节，且无法新建'
-			fi
-			ov_load_lists
-			# ① 黑名单追加（只加这一个，不许整体重写）
-			mac_in_bl "$lm" || { uci_w add_list "zone_blacklist.$bsc.mac" "$lm" || sys_stage_fail; }
-			# ② 摘两份名单（按 MAC 删整条，不看条目原文）
-			e=$(entry_for_mac "$PM_LIST" "$lm")
-			[ -n "$e" ] && { uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail; }
 			mac_in_tr "$lm" && { uci_w del_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
 			printf '{"ok":1,"staged":1}\n'
 			;;
