@@ -291,14 +291,31 @@ return view.extend({
 			if (which === 'trusted') {
 				state.trusted = out;
 			} else {
-				/* 保留已有条目参数：新 MAC 交给后端补 6 参数条目 */
+				/* 保留已有条目参数；新 MAC 交给后端补全参数条目 */
 				var byMac = {};
 				state.preempt.forEach(function (e) { byMac[macOf(e)] = e; });
-				state.preempt = out.map(function (m) { return byMac[m] || ('mac=' + m); });
+				state.preempt = out.map(function (m) {
+					return byMac[m] ||
+						('mac=' + m + ';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0');
+				});
 			}
 			state.editing[which] = false;
 			renderAll();
-			CPD.toast(_('MAC 地址列表已保存'), 'ok');
+			stageExempt().then(function () {
+				CPD.toast(_('MAC 地址列表已保存（尚未生效，请点击应用）'), 'ok');
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+			});
+		}
+
+		/* 把当前名单与开关落成 uci 暂存（顶部出现「未保存的配置」） */
+		function stageExempt() {
+			return Promise.all([
+				CPD.stageUci('opennds', '@opennds[0]', 'trustedmac', 'list', state.trusted),
+				CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list', state.preempt),
+				CPD.stageUci('opennds', '@opennds[0]', 'allow_preemptive_authentication',
+					'opt', String(state.preemptEnabled))
+			]);
 		}
 
 		function askRemove(which, mac, host) {
@@ -349,6 +366,8 @@ return view.extend({
 				a0.forEach(function (x) { if (!s1[x]) rem.push(x); });
 				return { add: add, rem: rem };
 			};
+			/* 差量基准是上次后端刷新/应用时的名单（不含本地暂存），
+			   这样后端能对差量做运行时同步与黑名单检查 */
 			var dt = diff(state.trusted0, state.trusted);
 			var dp = diff(state.preempt0.map(macOf), state.preempt.map(macOf));
 			var args = [];
@@ -358,13 +377,10 @@ return view.extend({
 			if (dp.rem.length) args.push('preempt_remove=' + dp.rem.join(','));
 			if (!state.preempt.length && state.preempt0.length) args.push('preempt_clear=1');
 			args.push('preempt_enabled=' + state.preemptEnabled);
-			if (args.length === 1) { /* 只有开关且值未变 */
-				if (state.preemptEnabled === state.pe0) {
-					CPD.toast(_('配置已应用'), 'ok');
-					return;
-				}
-			}
-			CPD.apiConfirmable('exempt', 'save', args).then(function (j) {
+			/* 保存并应用：先把当前名单落成 uci 暂存，再交给后端差量执行 */
+			stageExempt().then(function () {
+				return CPD.apiConfirmable('exempt', 'save', args);
+			}).then(function (j) {
 				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.error === 'duplicate' && j.duplicates) {
 					ui.addNotification(null, E('p', {},
@@ -374,9 +390,10 @@ return view.extend({
 				}
 				if (!j.ok) { CPD.toast(j.error || _('应用失败'), 'err'); return; }
 				CPD.toast(_('配置已应用'), 'ok');
+				CPD.notifyChanges();
 				refresh();
 			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -399,15 +416,22 @@ return view.extend({
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			CPD.toast(_('本页改动即时生效，无需单独保存'), 'ok');
+			stageExempt().then(function () {
+				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+			});
 			return Promise.resolve();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();
 		};
 		this.handleReset = function () {
-			refresh();
-			return Promise.resolve();
+			return CPD.revertStaged(['opennds']).then(function () {
+				refresh();
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

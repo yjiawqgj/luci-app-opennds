@@ -80,7 +80,8 @@ return view.extend({
 			if (state.editing) {
 				var ta = E('textarea', {
 					'class': 'cpd-ta',
-					'spellcheck': 'false'
+					'spellcheck': 'false',
+					'placeholder': '4433\ntcp/udp 4267\n192.168.1.1\ntcp/udp 3654 192.168.1.1'
 				});
 				ta.value = state.draft;
 				ta.addEventListener('input', function () { state.draft = ta.value; });
@@ -114,7 +115,7 @@ return view.extend({
 				return;
 			}
 			state.editing = true;
-			state.draft = state.saved;
+			state.draft = ''; /* 编辑框不预填已有配置，配置内容在下方列表展示 */
 			renderPanel();
 		}
 
@@ -154,20 +155,38 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 应用 ---------- */
+		/* ---------- 暂存 / 应用 ---------- */
+		function stageRouter() {
+			return CPD.api('router', 'validate', ['text_b64=' + CPD.b64encode(state.saved)])
+				.then(function (j) {
+					if (j.error === 'busy') throw { error: 'busy' };
+					if (!j.ok && j.errors) { CPD.showErrors(j.errors); throw { silent: true }; }
+					if (!j.ok) throw { error: j.error || _('校验失败') };
+					return Promise.all([
+						CPD.stageUci('opennds', '@opennds[0]', 'users_to_router', 'list', j.rules || []),
+						CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough', 'opt',
+							state.takeoverOff ? '1' : '0')
+					]);
+				});
+		}
+
 		function handleApply() {
 			if (state.editing) {
 				CPD.toast(_('请先保存或取消端口编辑'), 'warn');
 				return;
 			}
-			CPD.apiConfirmable('router', 'apply', [
-				'text_b64=' + CPD.b64encode(state.saved),
-				'passthrough=' + (state.takeoverOff ? '1' : '0')
-			]).then(function (j) {
-				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
+			stageRouter().then(function () {
+				return CPD.apiConfirmable('router', 'apply', [
+					'text_b64=' + CPD.b64encode(state.saved),
+					'passthrough=' + (state.takeoverOff ? '1' : '0')
+				]);
+			}).then(function (j) {
+				if (j && j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
 					CPD.toast(_('配置已应用'), 'ok');
 					CPD.showWarnings(j.warnings);
+					CPD.notifyChanges();
 					refresh();
 				} else if (j.errors) {
 					CPD.showErrors(j.errors);
@@ -175,7 +194,8 @@ return view.extend({
 					CPD.toast(j.error || _('应用失败'), 'err');
 				}
 			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+				if (e && e.silent) return;
+				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -196,15 +216,23 @@ return view.extend({
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			CPD.toast(_('本页改动即时生效，无需单独保存'), 'ok');
+			stageRouter().then(function () {
+				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+			}, function (e) {
+				if (e && e.silent) return;
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+			});
 			return Promise.resolve();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();
 		};
 		this.handleReset = function () {
-			refresh();
-			return Promise.resolve();
+			return CPD.revertStaged(['opennds']).then(function () {
+				refresh();
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

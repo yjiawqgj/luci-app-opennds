@@ -41,17 +41,6 @@ return view.extend({
 			return scopeSel.value;
 		}
 
-		function matchesSaved() {
-			if (!state.saved) return false;
-			var s = state.saved;
-			var f = formValues();
-			return (s.sessiontimeout || '') === f[0] &&
-				(s.authidletimeout || '') === f[1] &&
-				(s.preauthidletimeout || '') === f[2] &&
-				(s.checkinterval || '') === f[3] &&
-				(s.scope || 'default') === formScope();
-		}
-
 		/* ---------- 渲染 ---------- */
 		function renderAll() {
 			body.innerHTML = '';
@@ -77,7 +66,7 @@ return view.extend({
 						_('检查客户端超时和配额状态的间隔（秒）')));
 				}
 				if (fd.key === 'st') {
-					scopeSel = E('select', { 'class': 'cpd-input', 'style': 'max-width:320px;min-width:190px' }, [
+					scopeSel = E('select', { 'class': 'cpd-input', 'style': 'max-width:320px;min-width:190px;height:36px;padding:0 8px;line-height:34px' }, [
 						E('option', { value: 'default' }, _('默认')),
 						E('option', { value: 'override' }, _('覆盖'))
 					]);
@@ -96,15 +85,17 @@ return view.extend({
 		}
 
 		/* ---------- 保存 / 应用 ---------- */
-		function handleSave() {
-			var args = [formScope(),
-				'st=' + formValues()[0], 'ait=' + formValues()[1],
-				'pit=' + formValues()[2], 'ci=' + formValues()[3]];
-			/* 后端 save 的参数是位置式：scope st ait pit ci（空=沿用默认） */
-			args = [formScope(), formValues()[0], formValues()[1], formValues()[2], formValues()[3]];
-			CPD.api('session', 'save', args).then(function (j) {
-				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j.ok) { CPD.toast(j.error || _('保存失败'), 'err'); return; }
+		function snapshotString() {
+			return 'sessiontimeout=' + formValues()[0] +
+				';authidletimeout=' + formValues()[1] +
+				';preauthidletimeout=' + formValues()[2] +
+				';checkinterval=' + formValues()[3] +
+				';scope=' + formScope();
+		}
+
+		function stageSnapshot() {
+			return CPD.stageUci('zone_detect', 'main', 'session_snapshot', 'opt',
+				snapshotString()).then(function () {
 				state.saved = {
 					sessiontimeout: formValues()[0],
 					authidletimeout: formValues()[1],
@@ -112,29 +103,33 @@ return view.extend({
 					checkinterval: formValues()[3],
 					scope: formScope()
 				};
-				CPD.toast(_('配置已保存'), 'ok');
-				refresh();
-			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('保存失败'), 'err');
+			});
+		}
+
+		function handleSave() {
+			stageSnapshot().then(function () {
+				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
 
 		function handleApply() {
-			if (!state.saved || !matchesSaved()) {
-				CPD.toast(_('存在未保存的修改，请先保存后再应用。'), 'warn');
-				return;
-			}
-			CPD.apiConfirmable('session', 'apply').then(function (j) {
+			/* 保存并应用：先把当前表单落成 uci 暂存，再由后端写入 openNDS 并重启 */
+			stageSnapshot().then(function () {
+				return CPD.apiConfirmable('session', 'apply');
+			}).then(function (j) {
 				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
 					CPD.toast(_('配置应用完成'), 'ok');
 					CPD.showWarnings(j.warnings);
+					CPD.notifyChanges();
 					refresh(true);
 				} else {
 					CPD.toast(j.error || _('应用失败'), 'err');
 				}
 			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -177,8 +172,11 @@ return view.extend({
 			return handleApply();
 		};
 		this.handleReset = function () {
-			refresh();
-			return Promise.resolve();
+			return CPD.revertStaged(['zone_detect']).then(function () {
+				refresh();
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

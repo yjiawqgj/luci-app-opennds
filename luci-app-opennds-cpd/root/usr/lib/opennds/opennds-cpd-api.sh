@@ -33,6 +33,13 @@ log() {
 	logger -t opennds-cpd "$*" 2>/dev/null
 }
 
+# 写配置失败的定位信息（rt/wg/ac/st 四个 apply 用）
+FAIL_STEP=''
+fail_at() {
+	FAIL_STEP="$1"
+	log "uci 写入失败：$1"
+}
+
 # uci 只读
 uci_get() {
 	uci -q get "$1" 2>/dev/null
@@ -143,15 +150,21 @@ nds_engaged() { # login_option_enabled=='3' 且 themespec_path 指向本插件�
 	fi
 }
 
-managed_iface() { # 先 uci，取不到再从 ndsctl status 的 Managed interface 取（冒号后第一个空格前）
+managed_iface() { # 先 uci，取不到再从 ndsctl status 的 Managed interface 取，都没有回退 br-lan
 	local v
 	v=$(uci_get 'opennds.@opennds[0].gatewayinterface')
 	if [ -n "$v" ]; then
 		printf '%s' "$v"
 		return 0
 	fi
-	ndsctl status 2>/dev/null |
-		awk '/^Managed interface:/ {split($2, a, " "); print a[1]; exit}'
+	v=$(ndsctl status 2>/dev/null |
+		awk '/^Managed interface:/ {split($2, a, " "); print a[1]; exit}')
+	if [ -n "$v" ]; then
+		printf '%s' "$v"
+		return 0
+	fi
+	# openNDS 未运行 / ndsctl 不可用时按默认管理接口展示，概览与有线区域卡片才有内容
+	printf 'br-lan'
 	return 0
 }
 
@@ -1070,7 +1083,7 @@ name_bytes() { # 字节数（长度一律按字节计）
 	printf '%s' "$1" | wc -c | tr -d ' '
 }
 
-# 门户文件/文件夹名：只允许 [A-Za-z0-9._-] 与中文；拒绝 / \ | .. 前导. 控制字符 空名
+# 门户文件/文件夹名：只允许 [A-Za-z0-9._-]、空格 与中文；拒绝 / \ | .. 前导. 控制字符 空名
 # $1=名称 $2=最大字节数
 name_ok() {
 	local n="$1" rest
@@ -1080,7 +1093,7 @@ name_ok() {
 	esac
 	[ "$(name_bytes "$n")" -le "$2" ] 2>/dev/null || return 1
 	# 去掉允许的 ASCII 字符后，剩下的字节必须全部 >=0x80（UTF-8 中文）
-	rest=$(printf '%s' "$n" | tr -d 'A-Za-z0-9._\-')
+	rest=$(printf '%s' "$n" | tr -d 'A-Za-z0-9._\- ')
 	[ -z "$rest" ] && return 0
 	if printf '%s' "$rest" | od -An -tu1 2>/dev/null |
 		awk '{ for (i = 1; i <= NF; i++) if ($i < 128) exit 1 }'; then
@@ -1966,10 +1979,21 @@ EOF2
 	printf '{"ok":1,"clients":{%s}}\n' "$out"
 }
 
-ex_save() { # 槽位：trusted_add trusted_remove preempt_add preempt_remove preempt_clear preempt_enabled
-	# confirm_enable=1 摘掉、空串槽位保留（见 take_slots）
-	take_slots "$@"
-	local ta="${SLOT_1:-}" tr="${SLOT_2:-}" pa="${SLOT_3:-}" pr="${SLOT_4:-}" pc="${SLOT_5:-}" pe="${SLOT_6:-}"
+ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_remove=
+	# preempt_clear=0|1 preempt_enabled=0|1 [confirm_enable=1]
+	# MAC 串只含冒号逗号、不含空格，按 k=v 前缀解析不会误切
+	local a ta='' tr='' pa='' pr='' pc='' pe=''
+	for a in "$@"; do
+		case "$a" in
+			confirm_enable=1) CONFIRM_ENABLE=1 ;;
+			trusted_add=*) ta="${a#trusted_add=}" ;;
+			trusted_remove=*) tr="${a#trusted_remove=}" ;;
+			preempt_add=*) pa="${a#preempt_add=}" ;;
+			preempt_remove=*) pr="${a#preempt_remove=}" ;;
+			preempt_clear=*) pc="${a#preempt_clear=}" ;;
+			preempt_enabled=*) pe="${a#preempt_enabled=}" ;;
+		esac
+	done
 	local t_add t_rem p_add p_rem
 	ex_parse_macs "$ta" T_ADD
 	ex_parse_macs "$tr" T_REM
@@ -2147,26 +2171,6 @@ ex_save() { # 槽位：trusted_add trusted_remove preempt_add preempt_remove pre
 		"$restarted" "$n_added" "$n_removed" "$EN_BY_APPLY"
 }
 
-# 通用：把参数按顺序填进 SLOT_1..SLOT_9（空串槽位保留），
-# confirm_enable=1 摘出。凡位置参数可能为空的子命令都走这里，
-# 不能用 strip_confirm 的空白重排（会把空槽挤掉、错位）
-take_slots() {
-	local a idx=0
-	unset SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_7 SLOT_8 SLOT_9 2>/dev/null
-	for a in "$@"; do
-		case "$a" in
-			confirm_enable=1)
-				CONFIRM_ENABLE=1
-				;;
-			*)
-				idx=$((idx + 1))
-				[ "$idx" -le 9 ] && eval "SLOT_$idx=\$a"
-				;;
-		esac
-	done
-	return 0
-}
-
 # 文件是否为文本（无 NUL 字节即视为文本；前 8KB 现查）
 file_is_text() { # $1=文件路径
 	head -c 8192 "$1" 2>/dev/null | od -An -tu1 2>/dev/null |
@@ -2222,9 +2226,16 @@ EOF2
 		"$enabled" "$macj" "$(json_escape "$portal")" "$pj"
 }
 
-bl_save_macs() { # 槽位：add remove clear
-	take_slots "$@"
-	local add="${SLOT_1:-}" rem="${SLOT_2:-}" clear="${SLOT_3:-}"
+bl_save_macs() { # 命名参数：add= remove= clear=0|1 [confirm_enable=1]
+	local a add='' rem='' clear=''
+	for a in "$@"; do
+		case "$a" in
+			confirm_enable=1) CONFIRM_ENABLE=1 ;;
+			add=*) add="${a#add=}" ;;
+			remove=*) rem="${a#remove=}" ;;
+			clear=*) clear="${a#clear=}" ;;
+		esac
+	done
 	case "$clear" in
 		'' | 0 | 1) ;;
 		*) out_err 'clear 必须是 0 或 1' ;;
@@ -2293,8 +2304,13 @@ bl_save_macs() { # 槽位：add remove clear
 	printf '{"ok":1,"deauthed":0,"untrusted":0,"restarted":0}\n'
 }
 
-bl_save_portal() { # $1=门户名（default/空 = 默认门户，落盘是删除该 option）
-	local p="$1"
+bl_save_portal() { # 命名参数：portal=<门户名>（default/空 = 默认门户，落盘是删除该 option）
+	local a p=''
+	for a in "$@"; do
+		case "$a" in
+			portal=*) p="${a#portal=}" ;;
+		esac
+	done
 	case "$p" in
 		'' | default)
 			uci -q delete 'zone_blacklist.main.portal' 2>/dev/null
@@ -2344,8 +2360,13 @@ bl_upload_store() { # $1=id $2=文件名（落点固定 cpd/blacklist/，保留�
 	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
 }
 
-bl_portal_delete() { # $1=门户名
-	local name="$1"
+bl_portal_delete() { # 命名参数：name=<门户名>
+	local a name=''
+	for a in "$@"; do
+		case "$a" in
+			name=*) name="${a#name=}" ;;
+		esac
+	done
 	name_ok "$name" 31 || out_err '门户名非法'
 	acquire_lock
 	local cur
@@ -2801,22 +2822,22 @@ rt_apply() { # $@ 含 text_b64=... passthrough=0|1 [confirm_enable=1]
 	uci -q delete 'opennds.@opennds[0].users_to_router' 2>/dev/null
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].users_to_router' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].users_to_router' "$r" || { fail=1; fail_at 'users_to_router 写入'; }
 	done <<EOF2
 $RT_RULES
 EOF2
-	uci set 'opennds.@opennds[0].users_to_router_passthrough'="$pt" || fail=1
+	uci set 'opennds.@opennds[0].users_to_router_passthrough'="$pt" || { fail=1; fail_at 'users_to_router_passthrough 写入'; }
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
 		EN_BY_APPLY=1
 	fi
-	uci commit opennds || fail=1
+	uci commit opennds || { fail=1; fail_at 'opennds commit'; }
 	uci commit zone_detect 2>/dev/null || true
 	if [ "$fail" = '1' ]; then
 		# revert 丢掉 /tmp/.uci 增量 → 文件放回原位 → 不再 commit（§6.2 第 3 步）
 		uci revert opennds 2>/dev/null
 		cp "$RT_BAK_DIR/opennds.bak" "$OPENNDS_CONF" 2>/dev/null
-		out_err '写入配置失败，已回滚'
+		out_err "写入配置失败（$FAIL_STEP），已回滚"
 	fi
 	local wjson='[]'
 	if [ "$pt" = '1' ] && [ "$RT_N" -gt 0 ]; then
@@ -3332,28 +3353,28 @@ wg_apply() { # $@: manual_b64 domains_b64 ports [confirm_enable=1]
 	uci -q delete 'opennds.@opennds[0].walledgarden_port_list' 2>/dev/null
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].preauthenticated_users' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].preauthenticated_users' "$r" || { fail=1; fail_at 'preauthenticated_users 写入'; }
 	done <<EOF2
 $WG_RULES
 EOF2
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].walledgarden_fqdn_list' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].walledgarden_fqdn_list' "$r" || { fail=1; fail_at 'walledgarden_fqdn_list 写入'; }
 	done <<EOF2
 $WG_FQDNS
 EOF2
 	for r in $WG_PORTS; do
-		uci add_list 'opennds.@opennds[0].walledgarden_port_list' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].walledgarden_port_list' "$r" || { fail=1; fail_at 'walledgarden_port_list 写入'; }
 	done
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
 		EN_BY_APPLY=1
 	fi
-	uci commit opennds || fail=1
+	uci commit opennds || { fail=1; fail_at 'opennds commit'; }
 	if [ "$fail" = '1' ]; then
 		uci revert opennds 2>/dev/null
 		cp "$RT_BAK_DIR/opennds.bak" "$OPENNDS_CONF" 2>/dev/null
-		out_err '写入配置失败，已回滚'
+		out_err "写入配置失败（$FAIL_STEP），已回滚"
 	fi
 	# warnings 恒为数组（§6）；两条固定文案
 	local wjson='[' sep=''
@@ -3854,10 +3875,32 @@ ac_validate() { # $@: manual_b64 auto_b64 ports
 		pj="$pj$psep\"$p\""
 		psep=','
 	done
-	printf '{"ok":1,"manual_rules":%s,"fqdns":%s,"ports":[%s],"port_only":%s}\n' \
+	# 最终 authenticated_users 全量（block 在前 + 原有非 block 条目），
+	# 与 ac_apply 的写入结果一致，供前端 uci 暂存使用
+	local fjson='' fsep='' existing
+	existing=$(cache_pairs 'opennds.@opennds[0].authenticated_users')
+	while IFS= read -r r; do
+		[ -n "$r" ] || continue
+		fjson="$fjson$fsep\"$(json_escape "$r")\""
+		fsep=','
+	done <<EOF2
+$WG_RULES
+EOF2
+	if [ -n "$existing" ]; then
+		while IFS= read -r r; do
+			[ -n "$r" ] || continue
+			case "$r" in
+				block*) continue ;;
+			esac
+			fjson="$fjson$fsep\"$(json_escape "$r")\""
+		done <<EOF2
+$existing
+EOF2
+	fi
+	printf '{"ok":1,"manual_rules":%s,"fqdns":%s,"ports":[%s],"port_only":%s,"final_list":[%s]}\n' \
 		"$(wg_json_list "$WG_RULES")" \
 		"$(wg_json_list "$WG_FQDNS")" \
-		"$pj" "$po"
+		"$pj" "$po" "$fjson"
 }
 
 ac_apply() { # $@: manual_b64 auto_b64 ports [confirm_enable=1]
@@ -3882,7 +3925,7 @@ ac_apply() { # $@: manual_b64 auto_b64 ports [confirm_enable=1]
 	# 1) 新 block 条目在前（决策 #14：链内顺序 = list 顺序，先写的在上）
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].authenticated_users' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].authenticated_users' "$r" || { fail=1; fail_at 'authenticated_users(block) 写入'; }
 	done <<EOF2
 $WG_RULES
 EOF2
@@ -3893,7 +3936,7 @@ EOF2
 			case "$r" in
 				block*) continue ;;
 			esac
-			uci add_list 'opennds.@opennds[0].authenticated_users' "$r" || fail=1
+			uci add_list 'opennds.@opennds[0].authenticated_users' "$r" || { fail=1; fail_at 'authenticated_users(allow) 写入'; }
 		done <<EOF2
 $existing
 EOF2
@@ -3902,22 +3945,22 @@ EOF2
 	uci -q delete 'opennds.@opennds[0].blocklist_port_list' 2>/dev/null
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].blocklist_fqdn_list' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].blocklist_fqdn_list' "$r" || { fail=1; fail_at 'blocklist_fqdn_list 写入'; }
 	done <<EOF2
 $WG_FQDNS
 EOF2
 	for r in $WG_PORTS; do
-		uci add_list 'opennds.@opennds[0].blocklist_port_list' "$r" || fail=1
+		uci add_list 'opennds.@opennds[0].blocklist_port_list' "$r" || { fail=1; fail_at 'blocklist_port_list 写入'; }
 	done
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
 		EN_BY_APPLY=1
 	fi
-	uci commit opennds || fail=1
+	uci commit opennds || { fail=1; fail_at 'opennds commit'; }
 	if [ "$fail" = '1' ]; then
 		uci revert opennds 2>/dev/null
 		cp "$RT_BAK_DIR/opennds.bak" "$OPENNDS_CONF" 2>/dev/null
-		out_err '写入配置失败，已回滚'
+		out_err "写入配置失败（$FAIL_STEP），已回滚"
 	fi
 	if service_restart; then
 		printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"warnings":[],"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
@@ -4030,22 +4073,35 @@ EOF3
 		),\"items\":[$items]}"
 		sep=','
 	done
-	# 接口列表：只列有 IPv4 的（决策 #7），同名只取第一条
-	while IFS='	' read -r n ipaddr; do
-		[ -n "$n" ] || continue
-		ij="$ij$isep{\"name\":\"$(json_escape "$n")\",\"ip\":\"$(json_escape "$ipaddr")\"}"
-		isep=','
-	done <<EOF2
-$(ip -4 -o addr show 2>/dev/null | awk '
+	# 接口列表：只列有 IPv4 的，排除 lo/虚拟隧道/wan 侧设备，同名只取第一条
+	local wanskip=' ' i=0 zname nets nd dv w
+	while :; do
+		zname=$(uci -q get "firewall.@zone[$i].name" 2>/dev/null) || break
+		case "$zname" in
+			wan | wan6 | wwan)
+				nets=$(uci -q get "firewall.@zone[$i].network" 2>/dev/null)
+				for nd in $nets; do
+					wanskip="$wanskip$nd "
+					dv=$(uci -q get "network.$nd.device" 2>/dev/null)
+					for w in $dv; do wanskip="$wanskip$w "; done
+					dv=$(uci -q get "network.$nd.ifname" 2>/dev/null)
+					for w in $dv; do wanskip="$wanskip$w "; done
+				done
+				;;
+		esac
+		i=$((i + 1))
+	done
+	local ifl ordered='' n ipaddr
+	ifl=$(ip -4 -o addr show 2>/dev/null | awk -v wl="$wanskip" '
 		function skip(n) {
 			return n == "lo" || n ~ /^docker/ || n ~ /^veth/ ||
-			       n ~ /^ppp/ || n ~ /^tun/ || n ~ /^tap/ || n ~ /^wg/
+			       n ~ /^ppp/ || n ~ /^tun/ || n ~ /^tap/ || n ~ /^wg/ ||
+			       n ~ /^wan/ || n ~ /^wwan/ || index(wl, " " n " ") > 0
 		}
 		{
 			split($4, a, "/")
 			if ($2 != "" && !($2 in s) && !skip($2)) { s[$2] = 1; print $2 "\t" a[1] }
 		}')
-EOF2
 	ifc=$(uci_val 'opennds.@opennds[0].gatewayinterface' 'br-lan')
 	[ -n "$ifc" ] || ifc='br-lan'
 	dev="$ifc"
@@ -4057,6 +4113,26 @@ EOF2
 			dev="$rd"
 		fi
 	fi
+	# 正在使用的设备永远排第一，其余按系统顺序
+	while IFS='	' read -r n ipaddr; do
+		[ -n "$n" ] || continue
+		if [ "$n" = "$dev" ]; then
+			ordered="$n	$ipaddr
+$ordered"
+		else
+			ordered="$ordered$n	$ipaddr
+"
+		fi
+	done <<EOF2
+$ifl
+EOF2
+	while IFS='	' read -r n ipaddr; do
+		[ -n "$n" ] || continue
+		ij="$ij$isep{\"name\":\"$(json_escape "$n")\",\"ip\":\"$(json_escape "$ipaddr")\"}"
+		isep=','
+	done <<EOF2
+$ordered
+EOF2
 	local fup_en
 	fup_en=$(fup_enabled_val)
 	printf '{"ok":1,"enabled":%s,"portals":{%s},"fupEnabled":%s,"fup":{"upAction":"%s","upRate":%s,"downAction":"%s","downRate":%s},"iface":"%s","device":"%s","ifaces":[%s]}\n' \
@@ -4064,38 +4140,101 @@ EOF2
 		"$(json_escape "$ifc")" "$(json_escape "$dev")" "$ij"
 }
 
-st_upload_default() { # $1=tab $2=id $3=文件名（保留上传时的原名落盘）
+st_upload_mkdir() { # $1=tab $2=id $3=文件夹原名 [$4=相对子路径（建嵌套目录用）]
 	st_tab_ok "$1" || out_err '目标类型非法'
-	local tab="$1" id="$2" name="$3"
+	local tab="$1" id="$2" name="$3" sub="${4:-}"
 	case "$id" in
 		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
 	esac
 	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
 		out_err '文件名过长（最多 31 个字符）'
 	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
-	case "$name" in
-		*.sh) ;;
-		*) out_err '只接受 .sh 门户脚本' ;;
+	# 子路径逐段校验（名称规则同 name_ok）
+	if [ -n "$sub" ]; then
+		case "$sub" in
+			/* | *//*) out_err '子路径非法' ;;
+		esac
+		local seg oldifs="$IFS"
+		IFS='/'
+		for seg in $sub; do
+			[ -n "$seg" ] || continue
+			name_ok "$seg" 31 || out_err '子路径含非法名称'
+		done
+		IFS="$oldifs"
+	fi
+	[ -d "$ZONE_UP/$id" ] || out_err '上传会话不存在或已过期，请重新上传'
+	acquire_lock
+	mkdir -p "$ZONE_UP/$id/$name${sub:+/$sub}" 2>/dev/null || out_err '无法创建上传临时文件夹'
+	mkdir -p "$CPD_ROOT/default/$tab" 2>/dev/null || out_err '无法创建目标目录'
+	printf '{"ok":1}\n'
+}
+
+# 互斥覆盖：default/<tab>/ 下要么一个单文件要么一个文件夹，
+# 上传新的就把旧的（除内置 default.sh 外）全部删掉
+st_clean_portal_dir() { # $1=目录 $2=保留名
+	local dir="$1" keep="$2" f b
+	for f in "$dir"/*; do
+		[ -e "$f" ] || continue
+		b="${f##*/}"
+		case "$b" in
+			default.sh) continue ;;
+			"$keep" | "$keep.tmp") continue ;;
+		esac
+		rm -rf "$f" 2>/dev/null
+	done
+	return 0
+}
+
+st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上传时的原名落盘）
+	st_tab_ok "$1" || out_err '目标类型非法'
+	local tab="$1" id="$2" kind="$3" name="$4"
+	case "$id" in
+		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
 	esac
+	case "$kind" in
+		file | dir) ;;
+		*) out_err 'kind 必须是 file 或 dir' ;;
+	esac
+	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
+		out_err '文件名过长（最多 31 个字符）'
+	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
 	local tmp="$ZONE_UP/$id/$name"
-	[ -f "$tmp" ] || out_err '上传会话不存在或已过期，请重新上传'
-	local sz
-	sz=$(wc -c < "$tmp" 2>/dev/null | tr -d ' ')
-	[ -n "$sz" ] && [ "$sz" -gt 0 ] || out_err '文件内容为空'
-	[ "$sz" -le 524288 ] || out_err '文件过大（上限 512KB）'
+	if [ "$kind" = 'file' ]; then
+		case "$name" in
+			*.sh) ;;
+			*) out_err '只接受 .sh 门户脚本，或包含 theme.sh 的文件夹' ;;
+		esac
+		[ -f "$tmp" ] || out_err '上传会话不存在或已过期，请重新上传'
+		local sz
+		sz=$(wc -c <"$tmp" 2>/dev/null | tr -d ' ')
+		[ -n "$sz" ] && [ "$sz" -gt 0 ] || out_err '文件内容为空'
+		[ "$sz" -le 524288 ] || out_err '文件过大（上限 512KB）'
+		file_is_text "$tmp" || out_err '只支持文本脚本，二进制文件无法上传'
+	else
+		[ -d "$tmp" ] || out_err '上传会话不存在或已过期，请重新上传'
+		[ -f "$tmp/theme.sh" ] || out_err '只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'
+	fi
 	acquire_lock
 	local dir="$CPD_ROOT/default/$tab"
 	mkdir -p "$dir" 2>/dev/null || out_err '无法创建目标目录'
-	# 原子覆盖：先落同盘 .tmp 再 mv（决策 #14，避免 source 时读到半截文件）
-	cp "$tmp" "$dir/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
-	chmod 755 "$dir/$name.tmp" 2>/dev/null || {
-		rm -f "$dir/$name.tmp" 2>/dev/null
-		out_err '无法设置执行权限'
-	}
-	mv "$dir/$name.tmp" "$dir/$name" 2>/dev/null || {
-		rm -f "$dir/$name.tmp" 2>/dev/null
-		out_err '替换门户文件失败'
-	}
+	if [ "$kind" = 'file' ]; then
+		# 原子覆盖：先落同盘 .tmp 再 mv（避免 source 时读到半截文件）
+		cp "$tmp" "$dir/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
+		chmod 755 "$dir/$name.tmp" 2>/dev/null || {
+			rm -f "$dir/$name.tmp" 2>/dev/null
+			out_err '无法设置执行权限'
+		}
+		# 互斥覆盖：先清掉其它门户，再落位
+		st_clean_portal_dir "$dir" "$name"
+		mv "$dir/$name.tmp" "$dir/$name" 2>/dev/null || {
+			rm -f "$dir/$name.tmp" 2>/dev/null
+			out_err '替换门户文件失败'
+		}
+	else
+		st_clean_portal_dir "$dir" "$name"
+		rm -rf "$dir/$name" 2>/dev/null
+		mv "$tmp" "$dir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
+	fi
 	# 清临时目录（id 已白名单校验，路径限定在 ZONE_UP 下）
 	case "$ZONE_UP/$id" in
 		"$ZONE_UP"/*) rm -rf "$ZONE_UP/$id" 2>/dev/null ;;
@@ -4197,25 +4336,87 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [fup_enabl
 	cp "$OPENNDS_CONF" "$RT_BAK_DIR/opennds.bak" 2>/dev/null ||
 		out_err '无法备份 openNDS 配置'
 	local fail=0
-	uci set 'opennds.@opennds[0].fup_upload_throttle_rate'="$uv" || fail=1
-	uci set 'opennds.@opennds[0].fup_download_throttle_rate'="$dv" || fail=1
-	uci set 'opennds.@opennds[0].gatewayinterface'="$ifc" || fail=1
-	uci set 'zone_detect.main.fup_enabled'="$fen" || fail=1
+	uci set 'opennds.@opennds[0].fup_upload_throttle_rate'="$uv" || { fail=1; fail_at 'fup_upload_throttle_rate 写入'; }
+	uci set 'opennds.@opennds[0].fup_download_throttle_rate'="$dv" || { fail=1; fail_at 'fup_download_throttle_rate 写入'; }
+	uci set 'opennds.@opennds[0].gatewayinterface'="$ifc" || { fail=1; fail_at 'gatewayinterface 写入'; }
+	uci set 'zone_detect.main.fup_enabled'="$fen" || { fail=1; fail_at 'fup_enabled 写入'; }
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
 		EN_BY_APPLY=1
 	fi
-	uci commit opennds || fail=1
+	uci commit opennds || { fail=1; fail_at 'opennds commit'; }
+	uci commit zone_detect 2>/dev/null || true
 	if [ "$fail" = '1' ]; then
 		uci revert opennds 2>/dev/null
 		cp "$RT_BAK_DIR/opennds.bak" "$OPENNDS_CONF" 2>/dev/null
-		out_err '写入配置失败，已回滚'
+		out_err "写入配置失败（$FAIL_STEP），已回滚"
 	fi
 	if service_restart; then
 		printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"enabled_by_apply":%s}\n' "$EN_BY_APPLY"
 	else
 		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
 	fi
+}
+
+# ============================================================
+# 页面：sys（LuCI 框架保存/复位按钮的 uci 暂存通道）
+# uci_stage 只写 /tmp/.uci 增量、不 commit —— openwrt 顶部的
+# 「未保存的配置: N」指示器与复位按钮都以这份增量为数据源。
+# ============================================================
+
+SYS_CONFS='opennds|zone_detect|zone_blacklist'
+
+sys_conf_ok() {
+	case "$1" in
+		opennds | zone_detect | zone_blacklist) return 0 ;;
+	esac
+	return 1
+}
+
+sys_sid_ok() { # section：匿名 @type[0] 与命名 section 都放行
+	case "$1" in
+		'' | *[!A-Za-z0-9_@.\[\]-]*) return 1 ;;
+	esac
+	return 0
+}
+
+sys_opt_ok() {
+	case "$1" in
+		'' | *[!A-Za-z0-9_-]*) return 1 ;;
+	esac
+	return 0
+}
+
+sys_uci_stage() { # $1=config $2=section $3=option $4=opt|list [值…]
+	local conf="$1" sid="$2" opt="$3" typ="$4"
+	shift 4
+	sys_conf_ok "$conf" || out_err '配置名非法'
+	sys_sid_ok "$sid" || out_err 'section 名非法'
+	sys_opt_ok "$opt" || out_err 'option 名非法'
+	case "$typ" in
+		opt)
+			if [ $# -eq 0 ]; then
+				uci -q delete "$conf.$sid.$opt" 2>/dev/null
+			else
+				uci set "$conf.$sid.$opt"="$1" || out_err '暂存配置失败'
+			fi
+			;;
+		list)
+			uci -q delete "$conf.$sid.$opt" 2>/dev/null
+			local v
+			for v in "$@"; do
+				uci add_list "$conf.$sid.$opt" "$v" || out_err '暂存配置失败'
+			done
+			;;
+		*) out_err '类型必须是 opt 或 list' ;;
+	esac
+	printf '{"ok":1}\n'
+}
+
+sys_uci_revert() { # $1=config → 丢弃该配置的未提交增量（复位按钮用）
+	sys_conf_ok "$1" || out_err '配置名非法'
+	uci revert "$1" 2>/dev/null
+	printf '{"ok":1}\n'
 }
 
 # ============================================================
@@ -4345,11 +4546,22 @@ case "$PAGE" in
 		case "$SUB" in
 			status) st_status ;;
 			upload_begin) z_upload_begin "$1" ;;
-			upload_default) st_upload_default "$1" "$2" "$3" ;;
+			upload_mkdir) st_upload_mkdir "$1" "$2" "$3" "$4" ;;
+			upload_default) st_upload_default "$1" "$2" "$3" "$4" ;;
 			portal_save) st_portal_save "$1" "$2" ;;
 			clean_default) st_clean_default "$1" "$2" ;;
 			apply) st_apply "$@" ;;
 			*) out_err "settings：未知子命令 $SUB" ;;
+		esac
+		;;
+	sys)
+		[ $# -ge 2 ] || out_err 'sys：缺少子命令'
+		SUB="$2"
+		shift 2
+		case "$SUB" in
+			uci_stage) [ $# -ge 3 ] || out_err 'uci_stage 需要 config section option 参数'; sys_uci_stage "$@" ;;
+			uci_revert) [ $# -ge 1 ] || out_err 'uci_revert 需要 config 参数'; sys_uci_revert "$1" ;;
+			*) out_err "sys：未知子命令 $SUB" ;;
 		esac
 		;;
 	'')

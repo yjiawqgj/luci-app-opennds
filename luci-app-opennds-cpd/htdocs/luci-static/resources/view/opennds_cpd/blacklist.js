@@ -101,13 +101,16 @@ return view.extend({
 					ta.focus();
 					try { ta.select(); } catch (e) {}
 				}, 0);
-			} else {
+			} else if (state.macs.length) {
 				macPanel.appendChild(E('div', {}, [
 					E('div', { 'class': 'cpd-viewer-label' }, _('黑名单')),
 					E('div', { 'class': 'cpd-viewer' },
 						E('pre', { 'aria-live': 'polite' },
 							state.macs.map(function (m) { return m.toUpperCase(); }).join('\n')))
 				]));
+			} else {
+				macPanel.appendChild(E('p', { 'class': 'cpd-note', 'style': 'margin-top:10px' },
+					_('暂无客户端记录')));
 			}
 		}
 
@@ -174,7 +177,7 @@ return view.extend({
 			portalBox.innerHTML = '';
 			var sel = E('select', {
 				'class': 'cpd-input',
-				'style': 'max-width:320px;min-width:190px;height:34px'
+				'style': 'max-width:320px;min-width:190px;height:36px;padding:0 8px;line-height:34px'
 			}, [
 				E('option', { value: 'default', 'title': _('默认门户') }, _('默认门户'))
 			].concat(state.portals.map(function (p) {
@@ -234,7 +237,7 @@ return view.extend({
 							refreshSilently();
 						});
 					}).catch(function (e) {
-						toast((e && e.error) || _('上传失败'), 'err');
+						toast(CPD.errText(e, _('上传失败')), 'err');
 					});
 				};
 				reader.readAsText(f);

@@ -53,8 +53,11 @@ return view.extend({
 				E('input', {
 					'type': 'file', 'accept': '.sh', 'id': 'cpd-portal-file', 'style': 'display:none'
 				}),
+				E('input', {
+					'type': 'file', 'webkitdirectory': '', 'id': 'cpd-portal-dir', 'style': 'display:none'
+				}),
 				E('p', { 'class': 'cpd-note' },
-					_('这里上传的是该类型的默认门户（区域未单独选门户时使用）。文件保留原名，openNDS 直接 source，不能有输出语句。'))
+					_('这里上传的是该类型的默认门户（区域未单独选门户时使用）。可上传 .sh 脚本或包含 theme.sh 的文件夹；同一类型只保留一个门户，上传新的会替换旧的（文件夹与单文件互为覆盖）。'))
 			]));
 			body.appendChild(sec1);
 
@@ -118,6 +121,7 @@ return view.extend({
 		function renderPortalTabs() {
 			portalBox.innerHTML = '';
 			var tabs = ['wireless', 'wired', 'blacklist'];
+			/* 与顶部页面切换同风格：无背景色，选中只加深色下划线 */
 			var tabRow = E('div', { 'role': 'tablist',
 				'style': 'display:flex;flex-wrap:wrap;border-bottom:1px solid #e3e9ee;margin-top:16px' });
 			tabs.forEach(function (t) {
@@ -125,7 +129,7 @@ return view.extend({
 				tabRow.appendChild(E('button', {
 					'role': 'tab', 'type': 'button',
 					'style': 'font-family:inherit;font-size:13px;line-height:1.4;padding:9px 14px;border:0;' +
-						'background:' + (on ? '#e7f1f8' : 'transparent') + ';cursor:pointer;' +
+						'background:transparent;cursor:pointer;' +
 						'color:' + (on ? '#1a5c85' : '#657585') + ';' +
 						'font-weight:' + (on ? '600' : '400') + ';' +
 						'border-bottom:2px solid ' + (on ? '#2274a5' : 'transparent') + ';' +
@@ -142,7 +146,7 @@ return view.extend({
 			});
 			var sel = E('select', {
 				'class': 'cpd-input',
-				'style': 'max-width:420px;min-width:200px;height:34px'
+				'style': 'max-width:420px;min-width:200px;height:36px;padding:0 8px;line-height:34px'
 			}, opts);
 			sel.value = cur.sel || '';
 			sel.addEventListener('change', function () {
@@ -177,7 +181,8 @@ return view.extend({
 			var tools = E('div', {
 				'style': 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px'
 			}, [
-				E('button', { 'class': 'cbi-button', 'click': pickFile }, _('上传')),
+				E('button', { 'class': 'cbi-button', 'click': pickFile }, _('上传脚本')),
+				E('button', { 'class': 'cbi-button', 'click': pickFolder }, _('上传文件夹')),
 				E('button', {
 					'class': 'cbi-button cbi-button-negative',
 					'disabled': cur.sel ? null : '',
@@ -191,9 +196,39 @@ return view.extend({
 					field,
 					tools,
 					E('p', { 'class': 'cpd-note', 'style': 'margin-top:12px' },
-						_('上传的门户保留原文件名，直接出现在「门户选择」里；同名上传即覆盖为新版本。'))
+						_('上传的门户保留原文件名，直接出现在「门户选择」里；上传后该类型只保留这一个门户，原有门户会被替换。'))
 				])
 			]));
+		}
+
+		/* 名字规则与后端 name_ok 口径一致：ASCII 限 [A-Za-z0-9._- ]，其余须为中文（多字节） */
+		function fileNameOk(n) {
+			if (!n || /[/\\|]/.test(n) || /[\x00-\x1f]/.test(n)) return false;
+			if (n.charAt(0) === '.') return false;
+			if (n !== n.replace(/^\s+|\s+$/g, '')) return false;
+			for (var i = 0; i < n.length; i++) {
+				var cc = n.charCodeAt(i);
+				if (cc < 128 && !/[A-Za-z0-9._\- ]/.test(n.charAt(i))) return false;
+			}
+			return true;
+		}
+
+		function nameBytes(s) {
+			return unescape(encodeURIComponent(String(s == null ? '' : s))).length;
+		}
+
+		function genId() {
+			return 't' + Date.now().toString(36) + Math.floor(Math.random() * 1679616).toString(36) +
+				Math.floor(Math.random() * 1679616).toString(36);
+		}
+
+		function readText(f) {
+			return new Promise(function (resolve, reject) {
+				var r = new FileReader();
+				r.onload = function () { resolve(String(r.result)); };
+				r.onerror = function () { reject({ error: _('读取文件失败') }); };
+				r.readAsText(f);
+			});
 		}
 
 		function pickFile() {
@@ -204,38 +239,128 @@ return view.extend({
 				if (!f) return;
 				var name = f.name || '';
 				if (!/\.sh$/i.test(name)) {
-					CPD.toast(_('只支持上传后缀为 .sh 的脚本'), 'warn');
+					CPD.toast(_('只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'), 'warn');
 					return;
 				}
-				var reader = new FileReader();
-				reader.onload = function () {
-					uploadDefault(name, String(reader.result));
-				};
-				reader.readAsText(f);
+				if (nameBytes(name) > 31) {
+					CPD.toast(name + '：' + _('文件名过长（最多 31 个字符）'), 'warn');
+					return;
+				}
+				if (!fileNameOk(name)) {
+					CPD.toast(name + '：' + _('文件名含非法字符，无法上传'), 'warn');
+					return;
+				}
+				readText(f).then(function (text) {
+					return uploadDefault(name, text);
+				}, function (e) {
+					CPD.toast(CPD.errText(e, _('上传失败')), 'err');
+				});
+			};
+			input.click();
+		}
+
+		function pickFolder() {
+			var input = document.getElementById('cpd-portal-dir');
+			input.value = '';
+			input.onchange = function () {
+				var files = Array.prototype.slice.call(input.files || []);
+				if (!files.length) return;
+				var tab = state.tab;
+				/* webkitRelativePath：<文件夹名>/…/文件 */
+				var rels = [], folderName = '', hasTheme = false, bad = null;
+				files.forEach(function (f) {
+					var rp = f.webkitRelativePath || f.name || '';
+					var segs = rp.split('/');
+					if (!folderName) folderName = segs[0] || '';
+					var sub = segs.slice(1).join('/');
+					if (!sub) return;
+					rels.push({ f: f, sub: sub });
+					var base = segs[segs.length - 1];
+					if (base === 'theme.sh') hasTheme = true;
+					if (/[\x00-\x1f]/.test(sub) || sub.split('/').indexOf('..') >= 0) bad = sub;
+				});
+				if (!folderName || bad !== null) {
+					CPD.toast((bad || folderName) + '：' + _('文件名含非法字符，无法上传'), 'warn');
+					return;
+				}
+				if (!hasTheme) {
+					CPD.toast(_('只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'), 'warn');
+					return;
+				}
+				if (nameBytes(folderName) > 31) {
+					CPD.toast(folderName + '：' + _('文件名过长（最多 31 个字符）'), 'warn');
+					return;
+				}
+				if (!fileNameOk(folderName)) {
+					CPD.toast(folderName + '：' + _('文件名含非法字符，无法上传'), 'warn');
+					return;
+				}
+				var id = genId();
+				/* 嵌套子目录去重（不含顶层），按深度排序 */
+				var dirs = [];
+				rels.forEach(function (r) {
+					var segs = r.sub.split('/');
+					segs.pop();
+					for (var i = 1; i <= segs.length; i++) {
+						var d = segs.slice(0, i).join('/');
+						if (dirs.indexOf(d) < 0) dirs.push(d);
+					}
+				});
+				dirs.sort(function (a, b) {
+					return a.split('/').length - b.split('/').length;
+				});
+				var chain = CPD.api('settings', 'upload_begin', [id]).then(function (j) {
+					if (!j.ok) throw { error: j.error || 'upload_begin 失败' };
+					return CPD.api('settings', 'upload_mkdir', [tab, id, folderName]);
+				});
+				dirs.forEach(function (d) {
+					chain = chain.then(function () {
+						return CPD.api('settings', 'upload_mkdir', [tab, id, folderName, d]);
+					});
+				});
+				rels.forEach(function (r) {
+					chain = chain.then(function () {
+						return readText(r.f).then(function (text) {
+							return fs.write('/tmp/zone_up/' + id + '/' + folderName + '/' + r.sub, text);
+						});
+					});
+				});
+				chain.then(function () {
+					return CPD.api('settings', 'upload_default', [tab, id, 'dir', folderName]);
+				}).then(function (j) {
+					if (!j.ok) throw { error: j.error || '上传失败' };
+					CPD.toast(_('已上传门户文件夹 %s，并在门户选择中启用').format(folderName), 'ok');
+					uploadActivated(tab, folderName);
+				}).catch(function (e) {
+					CPD.toast(CPD.errText(e, _('上传失败')), 'err');
+				});
 			};
 			input.click();
 		}
 
 		function uploadDefault(name, content) {
-			var id = 't' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+			var id = genId();
 			var tab = state.tab;
 			CPD.api('settings', 'upload_begin', [id]).then(function (j) {
 				if (!j.ok) throw { error: j.error || 'upload_begin 失败' };
 				return fs.write('/tmp/zone_up/' + id + '/' + name, content);
 			}).then(function () {
-				return CPD.api('settings', 'upload_default', [tab, id, name]);
+				return CPD.api('settings', 'upload_default', [tab, id, 'file', name]);
 			}).then(function (j) {
 				if (!j.ok) throw { error: j.error || '上传失败' };
 				CPD.toast(_('已上传 %s，并在门户选择中启用').format(name), 'ok');
-				var info = portalInfo(tab);
-				if (info.items.indexOf(name) < 0) info.items.push(name);
-				info.sel = name;
-				/* 上传即选中：让 openNDS 用这份新门户 */
-				return CPD.api('settings', 'portal_save', [tab, name]);
-			}).then(function () {
-				renderPortalTabs();
+				uploadActivated(tab, name);
 			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('上传失败'), 'err');
+				CPD.toast(CPD.errText(e, _('上传失败')), 'err');
+			});
+		}
+
+		function uploadActivated(tab, name) {
+			/* 上传即选中：让 openNDS 用这份新门户 */
+			CPD.api('settings', 'portal_save', [tab, name]).then(function () {
+				refresh();
+			}).catch(function () {
+				refresh();
 			});
 		}
 
@@ -269,7 +394,7 @@ return view.extend({
 		function quotaColumn(label, isUp) {
 			var action = isUp ? state.upAction : state.downAction;
 			var rate = isUp ? state.upRate : state.downRate;
-			var sel = E('select', { 'class': 'cpd-input', 'style': 'max-width:260px;min-width:170px' }, [
+			var sel = E('select', { 'class': 'cpd-input', 'style': 'max-width:260px;min-width:170px;height:36px;padding:0 8px;line-height:34px' }, [
 				E('option', { value: 'limit' }, _('限速')),
 				E('option', { value: 'reject' }, _('取消认证'))
 			]);
@@ -350,7 +475,7 @@ return view.extend({
 						active ? E('span', { 'class': 'cpd-badge' }, '● ' + _('正在使用中')) : E([])
 					]),
 					E('div', { 'class': 'cpd-note', 'style': 'margin-top:4px' },
-						_('对应 IP') + '：' + it.ip)
+						'IP：' + it.ip)
 				]);
 				grid.appendChild(card);
 			});

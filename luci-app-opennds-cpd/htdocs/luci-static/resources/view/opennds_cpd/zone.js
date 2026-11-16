@@ -93,9 +93,10 @@ function zoneNameOk(n) {
 function fileNameOk(n) {
 	if (!zoneNameOk(n)) return false;
 	if (n.charAt(0) === '.') return false;
+	if (n !== n.replace(/^\s+|\s+$/g, '')) return false; /* 首尾空格不允许 */
 	for (var i = 0; i < n.length; i++) {
 		var cc = n.charCodeAt(i);
-		if (cc < 128 && !/[A-Za-z0-9._\-]/.test(n.charAt(i))) return false;
+		if (cc < 128 && !/[A-Za-z0-9._\- ]/.test(n.charAt(i))) return false;
 	}
 	return true;
 }
@@ -312,15 +313,13 @@ return view.extend({
 		}
 
 		function handleDefaultSave() {
-			CPD.api('zone', 'save_cache', ['global']).then(function (j) {
-				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j || !j.ok) { CPD.toast((j && j.error) || _('保存失败'), 'err'); return; }
+			CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'global').then(function () {
 				state.scope = 'global';
-				state.snapshot.scope = state.scopeSel;
+				state.snapshot = uiSnapshot();
 				renderAll();
-				CPD.toast(_('保存成功'), 'ok');
+				CPD.toast(_('保存成功（尚未生效，请点击应用）'), 'ok');
 			}, function (e) {
-				CPD.toast((e && e.error) || _('保存失败'), 'err');
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
 
@@ -330,8 +329,9 @@ return view.extend({
 				if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
 				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
 				state.scope = 'global';
-				state.snapshot.scope = state.scopeSel;
+				state.snapshot = uiSnapshot();
 				CPD.toast(_('应用成功'), 'ok');
+				CPD.notifyChanges();
 				loadStatus();
 			}, function (e) {
 				CPD.toast((e && e.error) || _('应用失败'), 'err');
@@ -418,7 +418,7 @@ return view.extend({
 			}
 			var any = uniqueSsids().some(function (s) { return !!state.zoneDraft[s]; });
 			if (any) return { text: _('有未保存的修改'), kind: 'dirty' };
-			return { text: _('尚未保存'), kind: '' };
+			return null; /* 无可提示内容时不占位显示「尚未保存」 */
 		}
 
 		function uploadCtx() {
@@ -486,41 +486,41 @@ return view.extend({
 			]));
 		}
 
-		function wirelessSave() {
-			var pairs = uniqueSsids().map(function (s) {
-				return s + '|' + (state.zoneDraft[s] || '');
-			});
-			return CPD.api('zone', 'save_cache', ['wireless'].concat(pairs)).then(function (j) {
-				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j || !j.ok) { CPD.toast((j && j.error) || _('保存失败'), 'err'); return; }
-				CPD.showWarnings(j.warnings);
+		function wirelessSave(silent) {
+			var jobs = [
+				CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'zone'),
+				CPD.stageUci('zone_detect', 'main', 'wireless', 'list',
+					uniqueSsids().map(function (s) {
+						return s + '|' + (state.zoneDraft[s] || '');
+					}))
+			];
+			return Promise.all(jobs).then(function () {
 				state.scope = 'zone';
-				state.wireless.forEach(function (c) { c.saved = state.zoneDraft[c.ssid] || ''; });
 				state.snapshot = uiSnapshot();
 				renderAll();
-				CPD.toast(_('保存成功'), 'ok');
+				if (!silent) CPD.toast(_('保存成功（尚未生效，请点击应用）'), 'ok');
 			}, function (e) {
-				CPD.toast((e && e.error) || _('保存失败'), 'err');
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				throw e; /* 保存失败时中止后续应用 */
 			});
 		}
 
 		function wirelessApply() {
-			/* 两道守卫固定顺序：先「保存过没有」，引用检查由后端按缓存做 */
-			if (!wirelessHasSaved()) {
-				CPD.toast(_('请先保存无线区域配置，再点击应用'), 'warn');
-				return Promise.resolve();
-			}
-			return CPD.apiConfirmable('zone', 'apply', ['wireless']).then(function (j) {
-				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
-				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
-				CPD.showWarnings(j.warnings);
-				state.scope = 'zone';
-				state.snapshot = uiSnapshot();
-				CPD.toast(_('应用成功'), 'ok');
-				loadStatus();
-			}, function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+			/* 先把当前选择落成 uci 暂存（应用按缓存里的已保存配置执行） */
+			return wirelessSave(true).then(function () {
+				return CPD.apiConfirmable('zone', 'apply', ['wireless']).then(function (j) {
+					if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+					if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
+					if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
+					CPD.showWarnings(j.warnings);
+					state.scope = 'zone';
+					state.snapshot = uiSnapshot();
+					CPD.toast(_('应用成功'), 'ok');
+					CPD.notifyChanges();
+					loadStatus();
+				}, function (e) {
+					CPD.toast((e && e.error) || _('应用失败'), 'err');
+				});
 			});
 		}
 
@@ -557,7 +557,7 @@ return view.extend({
 			if (state.wiredSaved === null || state.wiredSaved === undefined) {
 				return state.wiredDraft ?
 					{ text: _('有未保存的修改'), kind: 'dirty' } :
-					{ text: _('尚未保存'), kind: '' };
+					null; /* 无可提示内容时不占位显示「尚未保存」 */
 			}
 			if ((state.wiredDraft || '') !== state.wiredSaved) {
 				return { text: _('有未保存的修改'), kind: 'dirty' };
@@ -606,40 +606,39 @@ return view.extend({
 			]));
 		}
 
-		function wiredSave() {
-			if (!state.wiredActive || !state.wired || !state.wired.iface) return Promise.resolve();
-			var pair = state.wired.iface + '|' + (state.wiredDraft || '');
-			return CPD.api('zone', 'save_cache', ['wired', pair]).then(function (j) {
-				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j || !j.ok) { CPD.toast((j && j.error) || _('保存失败'), 'err'); return; }
-				CPD.showWarnings(j.warnings);
+		function wiredSave(silent) {
+			if (!state.wired || !state.wired.iface) return Promise.resolve();
+			return CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'zone').then(function () {
+				return CPD.stageUci('zone_detect', 'main', 'wired', 'list',
+					[state.wired.iface + '|' + (state.wiredDraft || '')]);
+			}).then(function () {
 				state.scope = 'zone';
-				state.wiredSaved = state.wiredDraft || '';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				CPD.toast(_('保存成功'), 'ok');
+				if (!silent) CPD.toast(_('保存成功（尚未生效，请点击应用）'), 'ok');
 			}, function (e) {
-				CPD.toast((e && e.error) || _('保存失败'), 'err');
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				throw e; /* 保存失败时中止后续应用 */
 			});
 		}
 
 		function wiredApply() {
-			if (!state.wiredActive || !state.wired || !state.wired.iface) return Promise.resolve();
-			if (state.wiredSaved === null || state.wiredSaved === undefined) {
-				CPD.toast(_('请先保存有线区域配置，再点击应用'), 'warn');
-				return Promise.resolve();
-			}
-			return CPD.apiConfirmable('zone', 'apply', ['wired']).then(function (j) {
-				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
-				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
-				CPD.showWarnings(j.warnings);
-				state.scope = 'zone';
-				state.snapshot = uiSnapshot();
-				CPD.toast(_('应用成功'), 'ok');
-				loadStatus();
-			}, function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+			if (!state.wired || !state.wired.iface) return Promise.resolve();
+			/* 先把当前选择落成 uci 暂存（应用按缓存里的已保存配置执行） */
+			return wiredSave(true).then(function () {
+				return CPD.apiConfirmable('zone', 'apply', ['wired']).then(function (j) {
+					if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+					if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
+					if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
+					CPD.showWarnings(j.warnings);
+					state.scope = 'zone';
+					state.snapshot = uiSnapshot();
+					CPD.toast(_('应用成功'), 'ok');
+					CPD.notifyChanges();
+					loadStatus();
+				}, function (e) {
+					CPD.toast((e && e.error) || _('应用失败'), 'err');
+				});
 			});
 		}
 
@@ -685,7 +684,7 @@ return view.extend({
 						names.push(f.name);
 					});
 				}).catch(function (e) {
-					rejects.push(f.name + '：' + ((e && e.error) || _('上传失败')));
+					rejects.push(f.name + '：' + CPD.errText(e, _('上传失败')));
 				});
 			});
 			chain.then(function () {
@@ -784,7 +783,7 @@ return view.extend({
 					}).join(_('、'))), 'ok');
 				loadUploaded(ctx.type, ctx.zone).then(renderAll);
 			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('上传失败'), 'err');
+				CPD.toast(CPD.errText(e, _('上传失败')), 'err');
 			});
 		});
 
@@ -934,11 +933,17 @@ return view.extend({
 		/* ---------- 汇总渲染 ---------- */
 		function renderHints() {
 			var z = wirelessHintInfo();
-			zoneHint.textContent = z.text;
-			zoneHint.className = 'zd-save-state' + (z.kind ? ' ' + z.kind : '');
+			zoneHint.style.display = z ? '' : 'none';
+			if (z) {
+				zoneHint.textContent = z.text;
+				zoneHint.className = 'zd-save-state' + (z.kind ? ' ' + z.kind : '');
+			}
 			var w = wiredHintInfo();
-			wiredHint.textContent = w.text;
-			wiredHint.className = 'zd-save-state' + (w.kind ? ' ' + w.kind : '');
+			wiredHint.style.display = w ? '' : 'none';
+			if (w) {
+				wiredHint.textContent = w.text;
+				wiredHint.className = 'zd-save-state' + (w.kind ? ' ' + w.kind : '');
+			}
 			renderDefault();
 			renderModeState();
 		}
@@ -1033,17 +1038,24 @@ return view.extend({
 			if (state.scopeSel !== 'zone') { handleDefaultSave(); return Promise.resolve(); }
 			return Promise.resolve()
 				.then(function () { return wirelessSave(); })
-				.then(function () { return wiredSave(); });
+				.then(function () { return wiredSave(); })
+				.catch(function () { /* 失败 toast 已在内部显示 */ });
 		};
 		this.handleSaveApply = function () {
 			if (state.scopeSel !== 'zone') { handleDefaultApply(); return Promise.resolve(); }
 			return Promise.resolve()
 				.then(function () { return wirelessApply(); })
-				.then(function () { return wiredApply(); });
+				.then(function () { return wiredApply(); })
+				.catch(function () { /* 失败 toast 已在内部显示 */ });
 		};
 		this.handleReset = function () {
-			loadStatus();
-			return Promise.resolve();
+			return CPD.revertStaged(['zone_detect']).then(function () {
+				state.zoneDraft = {};
+				state.wiredDraft = null;
+				loadStatus();
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

@@ -207,6 +207,53 @@ var CPD = L.Class.extend({
 		return E('div', { 'class': 'cpd-sec' }, [
 			E('h3', {}, [title, E('span', { 'class': 'cpd-en' }, en)])
 		]);
+	},
+
+	/* ---------- OpenWRT 框架保存流程对接 ----------
+	 * 顶部「未保存的配置: N」指示器读的是 ubus uci changes，
+	 * 即 /tmp/.uci 里未 commit 的增量；uci-loaded 事件触发指示器刷新。
+	 * sys uci_stage 只写增量不 commit → 保存后指示器出现、复位可还原；
+	 * 后端 apply commit 时一并清掉增量 → 指示器归零。
+	 */
+
+	/* 通知顶部刷新未保存配置指示器 */
+	notifyChanges: function () {
+		document.dispatchEvent(new CustomEvent('uci-loaded'));
+		return true;
+	},
+
+	/* 错误对象 → 展示文本（fs.exec 的异常带 message，后端应答带 error） */
+	errText: function (e, fallback) {
+		return (e && e.error) || (e && e.message) || fallback || _('操作失败');
+	},
+
+	/* uci 暂存：typ='opt' 时 values 是标量（null=删除该键）；
+	 * typ='list' 时 values 是数组（空数组=清空该 list） */
+	stageUci: function (conf, sid, opt, typ, values) {
+		var self = this;
+		var args = [conf, sid, opt, typ];
+		if (typ === 'opt') {
+			if (values !== null && values !== undefined) args.push(String(values));
+		} else if (Array.isArray(values)) {
+			args = args.concat(values.map(function (v) { return String(v); }));
+		}
+		return self.api('sys', 'uci_stage', args).then(function (j) {
+			if (!j || !j.ok) throw { error: (j && j.error) || _('暂存配置失败') };
+			self.notifyChanges();
+			return j;
+		});
+	},
+
+	/* 复位：丢弃指定配置的未提交增量（对应 openwrt 复位按钮语义） */
+	revertStaged: function (confs) {
+		var self = this;
+		return Promise.all(confs.map(function (c) {
+			return self.api('sys', 'uci_revert', [c]);
+		})).then(function () {
+			self.notifyChanges();
+		}, function (e) {
+			throw { error: self.errText(e, _('复位失败')) };
+		});
 	}
 });
 

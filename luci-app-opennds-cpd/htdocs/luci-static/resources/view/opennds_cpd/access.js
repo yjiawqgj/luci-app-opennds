@@ -238,66 +238,93 @@ return view.extend({
 		}
 
 		/* ---------- 保存 / 应用 ---------- */
-		function precheck(focusPorts) {
-			if (editingBusy()) {
-				toast(_('请先保存或取消正在编辑的规则'), 'warn');
-				return false;
-			}
-			if (portOnly()) {
-				toast(_('只填端口不写域名无法保存：没有域名，拦截列表为空，规则不会生效'), 'warn');
-				state.autoEditing = true; /* 展开自动区编辑器 */
-				renderAuto();
-				return false;
-			}
+		function stageAccess() {
+			/* 先过后端校验，把展开后的最终规则落成 uci 暂存 */
+			return CPD.api('access', 'validate', [
+				'manual_b64=' + CPD.b64encode(state.manual),
+				'auto_b64=' + CPD.b64encode(state.domains),
+				'ports=' + state.ports
+			]).then(function (j) {
+				if (j.error === 'busy') throw { error: 'busy' };
+				if (j.error === 'port_only') {
+					toast(_('只填端口不写域名无法保存：没有域名，拦截列表为空，规则不会生效'), 'warn');
+					state.autoEditing = true; /* 展开自动区编辑器 */
+					renderAuto();
+					throw { silent: true };
+				}
+				if (!j.ok && j.errors) { CPD.showErrors(j.errors); throw { silent: true }; }
+				if (!j.ok) throw { error: j.error || _('校验失败') };
+				return Promise.all([
+					CPD.stageUci('opennds', '@opennds[0]', 'authenticated_users', 'list',
+						j.final_list || []),
+					CPD.stageUci('opennds', '@opennds[0]', 'blocklist_fqdn_list', 'list',
+						j.fqdns || []),
+					CPD.stageUci('opennds', '@opennds[0]', 'blocklist_port_list', 'list',
+						j.ports || [])
+				]);
+			});
+		}
+
+		function precheckPorts() {
 			var pe = checkPorts(state.ports);
 			if (pe) {
 				toast(pe, 'warn');
-				if (portsInput && focusPorts) portsInput.focus();
+				if (portsInput) portsInput.focus();
 				return false;
 			}
 			return true;
 		}
 
 		function handleSave() {
-			if (!precheck(true)) return;
-			state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
-			toast(_('配置已保存（尚未应用）'), 'ok');
-		}
-
-		function notSaved() {
-			if (!state.snapshot) return true;
-			return state.snapshot.manual !== state.manual ||
-				state.snapshot.domains !== state.domains ||
-				state.snapshot.ports !== state.ports;
+			if (editingBusy()) {
+				toast(_('请先保存或取消正在编辑的规则'), 'warn');
+				return;
+			}
+			if (!precheckPorts()) return;
+			stageAccess().then(function () {
+				state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
+				toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+			}, function (e) {
+				if (e && e.silent) return;
+				toast(CPD.errText(e, _('保存失败')), 'err');
+			});
 		}
 
 		function handleApply() {
-			if (!precheck(true)) return;
-			if (notSaved()) {
-				toast(_('当前配置尚未保存，请先保存后再应用'), 'warn');
+			if (editingBusy()) {
+				toast(_('请先保存或取消正在编辑的规则'), 'warn');
 				return;
 			}
-			CPD.apiConfirmable('access', 'apply', [
-				'manual_b64=' + CPD.b64encode(state.manual),
-				'auto_b64=' + CPD.b64encode(state.domains),
-				'ports=' + state.ports
-			]).then(function (j) {
-				if (j.error === 'busy') { toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (j.error === 'port_only') {
+			if (!precheckPorts()) return;
+			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
+			stageAccess().then(function () {
+				return CPD.apiConfirmable('access', 'apply', [
+					'manual_b64=' + CPD.b64encode(state.manual),
+					'auto_b64=' + CPD.b64encode(state.domains),
+					'ports=' + state.ports
+				]);
+			}).then(function (j) {
+				if (j && j.error === 'busy') {
+					toast(_('等待上一步完成，请稍候重试'), 'warn');
+					return;
+				}
+				if (j && j.error === 'port_only') {
 					toast(_('只填端口不写域名无法保存：没有域名，拦截列表为空，规则不会生效'), 'warn');
 					return;
 				}
-				if (j.ok) {
+				if (j && j.ok) {
 					toast(_('配置已应用'), 'ok');
 					CPD.showWarnings(j.warnings);
+					CPD.notifyChanges();
 					refresh();
-				} else if (j.errors) {
+				} else if (j && j.errors) {
 					CPD.showErrors(j.errors);
 				} else {
-					toast(j.error || _('应用失败'), 'err');
+					toast((j && j.error) || _('应用失败'), 'err');
 				}
 			}).catch(function (e) {
-				toast((e && e.error) || _('应用失败'), 'err');
+				if (e && e.silent) return;
+				toast(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -327,8 +354,11 @@ return view.extend({
 			return handleApply();
 		};
 		this.handleReset = function () {
-			refresh();
-			return Promise.resolve();
+			return CPD.revertStaged(['opennds']).then(function () {
+				refresh();
+			}, function (e) {
+				toast(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

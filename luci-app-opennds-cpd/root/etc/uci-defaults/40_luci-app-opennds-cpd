@@ -1,0 +1,14 @@
+#!/bin/sh
+# luci-app-opennds-cpd 安装引导：
+# openNDS 登录模式为 3（自定义主题门户）时，把主题脚本指向本插件的
+# 区域识别分发脚本，否则 LuCI 插件读到的模式是 3 却无法进行网络区域识别。
+[ -n "$(uci -q get opennds.@opennds[0] 2>/dev/null)" ] || exit 0
+
+lo=$(uci -q get opennds.@opennds[0].login_option_enabled 2>/dev/null)
+tp=$(uci -q get opennds.@opennds[0].themespec_path 2>/dev/null)
+if [ "$lo" = "3" ] && [ "$tp" != "/usr/lib/opennds/theme_zone_detect.sh" ]; then
+	uci set opennds.@opennds[0].themespec_path='/usr/lib/opennds/theme_zone_detect.sh'
+	uci commit opennds
+fi
+
+exit 0
