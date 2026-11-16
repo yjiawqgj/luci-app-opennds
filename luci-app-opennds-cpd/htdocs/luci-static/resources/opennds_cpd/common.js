@@ -261,10 +261,49 @@ var CPD = L.Class.extend({
 	 * 后端 apply commit 时一并清掉增量 → 指示器归零。
 	 */
 
-	/* 通知顶部刷新未保存配置指示器 */
+	/* 通知顶部刷新未保存配置指示器。
+	 * 增量由后端 shell 写进 /tmp/.uci（与 ubus uci 同一份文件），但 LuCI 前端
+	 * 只在自己 save() 或 uci-loaded 事件后才会重新统计，所以这里做三件事：
+	 *   ① 派 uci-loaded 事件（走 LuCI 自己的刷新链路）；
+	 *   ② 直接拉一次 uci.changes() 交给指示器渲染 —— 不依赖监听是否已注册；
+	 *   ③ 若 ubus 那边读不到（数目为 0）而后端 /tmp/.uci 确实有条目，
+	 *      就用后端计数兜底显示，保证「有暂存就一定看得见」。 */
 	notifyChanges: function () {
-		document.dispatchEvent(new CustomEvent('uci-loaded'));
-		return true;
+		var self = this;
+
+		try { document.dispatchEvent(new CustomEvent('uci-loaded')); } catch (e) {}
+
+		var LC = window.L;
+		var ui = null;
+
+		var jobs = [];
+		if (LC && typeof LC.require === 'function') {
+			jobs.push(LC.require('uci').then(function (uci) {
+				return LC.require('ui').catch(function () { return null; }).then(function (u) {
+					ui = u;
+					return uci.changes();
+				}).then(function (ch) {
+					var n = 0, k;
+					if (ch) for (k in ch) if (ch.hasOwnProperty(k)) n += ch[k].length;
+					if (ui && ui.changes && typeof ui.changes.renderChangeIndicator === 'function')
+						ui.changes.renderChangeIndicator(ch || {});
+					if (n === 0) return self.fallbackChangeCount(ui);
+				});
+			}).catch(function () {}));
+		} else {
+			jobs.push(self.fallbackChangeCount(null));
+		}
+
+		return Promise.all(jobs);
+	},
+
+	/* 兜底：ubus 读不到增量时，用后端直接数 /tmp/.uci 的条目数 */
+	fallbackChangeCount: function (ui) {
+		return this.api('sys', 'changes_count', []).then(function (j) {
+			if (!j || !j.ok || !j.count) return;
+			if (!ui || typeof ui.showIndicator !== 'function') return;
+			ui.showIndicator('uci-changes', _('未保存的配置') + ': ' + j.count, null);
+		}).catch(function () {});
 	},
 
 	/* 错误对象 → 展示文本（fs.exec 的异常带 message，后端应答带 error） */

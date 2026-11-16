@@ -4626,6 +4626,17 @@ sys_ensure_sec() { # $1=config $2=sid → stdout 输出可写 section 名
 	return 0
 }
 
+# 直接数 /tmp/.uci 里的增量条目（ubus 那边读不到时，用来兜底显示「未保存的配置: N」）
+sys_changes_count() {
+	local n=0 f c
+	for f in /tmp/.uci/*; do
+		[ -f "$f" ] || continue
+		c=$(grep -c '=' "$f" 2>/dev/null || echo 0)
+		n=$((n + c))
+	done
+	printf '{"ok":1,"count":%s}\n' "$n"
+}
+
 sys_uci_stage() { # $1=config $2=section $3=option $4=opt|list [值…]
 	local conf="$1" sid="$2" opt="$3" typ="$4" real
 	shift 4
@@ -4883,6 +4894,7 @@ case "$PAGE" in
 		case "$SUB" in
 			uci_stage) [ $# -ge 3 ] || out_err 'uci_stage 需要 config section option 参数'; sys_uci_stage "$@" ;;
 			uci_revert) [ $# -ge 1 ] || out_err 'uci_revert 需要 config 参数'; sys_uci_revert "$1" ;;
+			changes_count) sys_changes_count ;;
 			selftest) sys_selftest ;;
 			restore_scan) sys_restore_scan ;;
 			restore_apply) [ $# -ge 1 ] || out_err 'restore_apply 需要备份路径'; sys_restore_apply "$1" ;;

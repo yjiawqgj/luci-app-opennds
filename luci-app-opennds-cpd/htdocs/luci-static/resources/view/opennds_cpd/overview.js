@@ -316,6 +316,20 @@ return view.extend({
 
 		/* 配置写入自检：在临时配置上跑一遍 uci set/get/delete，
 		 * 只在排障时用，不碰 openNDS 的任何设置 */
+		/* ubus 侧（LuCI 顶部「未保存的配置」读的就是它）与后端 /tmp/.uci 的条目数对比，
+		 * 两边不一致说明增量写到的地方 ubus 看不到，顶部指示器就不会出现 */
+		function countUbusChanges() {
+			var LC = window.L;
+			if (!LC || typeof LC.require !== 'function') return Promise.resolve(null);
+			return LC.require('uci').then(function (uci) {
+				return uci.changes();
+			}).then(function (ch) {
+				var n = 0;
+				if (ch) for (var k in ch) if (ch.hasOwnProperty(k)) n += ch[k].length;
+				return n;
+			}).catch(function () { return null; });
+		}
+
 		function runSelfTest() {
 			CPD.api('sys', 'selftest').then(function (j) {
 				var rows = [];
@@ -329,6 +343,18 @@ return view.extend({
 					if (j.delErr) rows.push(_('删除时报错：%s').format(j.delErr));
 				}
 				rows.push(_('自检只在 /etc/config/cpd_probe 上操作，不修改 openNDS 配置。'));
+
+				return Promise.all([CPD.api('sys', 'changes_count').catch(function () { return null; }),
+					countUbusChanges()]).then(function (r) {
+					var be = (r[0] && r[0].count) || 0, fe = r[1];
+					var txt = _('未保存增量：LuCI 侧 %s 条 / 后端 %s 条')
+						.format(fe === null ? '—' : fe, be);
+					if (fe !== null && fe === 0 && be > 0)
+						txt += ' —— ' + _('两边不一致，顶部「未保存的配置」不会出现，请把这一行发给开发者');
+					rows.push(txt);
+					return rows;
+				});
+			}).then(function (rows) {
 				ui.showModal(_('配置写入自检'), E('div', {},
 					rows.map(function (t) {
 						return E('p', { 'style': 'margin:6px 0;font-size:13px;line-height:1.6' }, t);
