@@ -304,7 +304,7 @@ return view.extend({
 					CPD.notify((j && j.error) || _('恢复失败'), 'err');
 					return;
 				}
-				CPD.notify(_('已恢复 %s 个信任客户端，重启 openNDS 后生效').format(j.added), 'ok');
+				CPD.statusBar(_('已恢复 %s 个信任客户端，点击页面底部的「保存并应用」后生效').format(j.added));
 				state.counts.trusted = j.added;
 				restoreInfo = null;
 				renderRestoreBar();
@@ -851,7 +851,7 @@ return view.extend({
 			block: {
 				title: _('拉黑客户端'),
 				msg: function (h) {
-					return _('确定要拉黑「%s」吗？拉黑后该客户端会立即断开，并从在线列表中移除。').format(h);
+					return _('确定要拉黑「%s」吗？拉黑后该客户端将无法访问网络，并从在线列表中移除。').format(h);
 				},
 				ok: _('拉黑'), danger: true
 			},
@@ -864,41 +864,41 @@ return view.extend({
 			}
 		};
 
+		/* 行操作只写 uci 增量，生效统一等 openwrt 的「保存并应用」 */
 		var ACTION_TOAST = {
-			preauth: _('已将「%s」设为免认证'),
-			unpreauth: _('已移除「%s」的免认证'),
-			trust: _('已将「%s」设为可信任客户端'),
-			untrust: _('已移除「%s」的可信任状态'),
-			deauth: _('已解除「%s」的认证'),
-			block: _('已拉黑「%s」，该客户端已移出在线列表'),
-			unblock: _('已将「%s」移出黑名单')
+			preauth: _('让「%s」免认证'),
+			unpreauth: _('取消「%s」的免认证'),
+			trust: _('把「%s」设为可信任客户端'),
+			untrust: _('取消「%s」的可信任状态'),
+			deauth: _('断开「%s」'),
+			block: _('拉黑「%s」'),
+			unblock: _('把「%s」移出黑名单')
 		};
 
 		function askAction(act, row) {
 			var d = CONFIRM_TEXT[act];
 			if (!d) return;
 			var h = row.host || row.mac;
-			CPD.confirm(d.title, d.msg(h), d.ok, d.danger, function () {
-				performAction(act, row);
-			});
+			/* 所有行操作都只写增量，统一在确认框里说清楚「要点保存并应用才生效」 */
+			CPD.confirm(d.title,
+				d.msg(h) + ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。'),
+				d.ok, d.danger, function () {
+					performAction(act, row);
+				});
 		}
 
 		function performAction(act, row) {
-			/* 拉黑要重启 openNDS → 15 秒；其余不重启 → 5 秒 */
-			var secs = (act === 'block') ? 15 : 5;
-			runOp(secs, function () {
+			/* 只写 uci 增量：不 commit、不重启 nds、不踢人。
+			   这里刻意不 refresh()，让「还没生效」这件事在界面上保持可见 */
+			runOp(5, function () {
 				return CPD.api('overview', 'client_action', [act, row.mac]);
 			}, {
 				onok: function (j) {
+					var h = row.host || row.mac;
 					/* 无 DHCP 租约等 warnings：只显示 warn，不报成功 */
-					if (j.warnings && j.warnings.length) {
-						CPD.showWarnings(j.warnings);
-					} else {
-						var h = row.host || row.mac;
-						CPD.toast(ACTION_TOAST[act].format(h),
-							act === 'block' ? 'warn' : 'ok');
-					}
-					refresh();
+					if (j.warnings && j.warnings.length) CPD.showWarnings(j.warnings);
+					else CPD.statusBar(_('已记录：%s，点击页面底部的「保存并应用」后生效')
+						.format(ACTION_TOAST[act].format(h)));
 				}
 			});
 		}
@@ -1255,12 +1255,17 @@ return view.extend({
 			});
 		};
 		this.handleReset = function () {
-			state.filter = 'online';
-			state.ap = null;
-			state.query = '';
-			if (searchInput) searchInput.value = '';
-			refresh();
-			return Promise.resolve();
+			/* 复位 = 丢弃本页暂存的增量（客户端限额 / 免认证 / 信任 / 黑名单）*/
+			return CPD.revertStaged(['opennds', 'zone_blacklist']).then(function () {
+				state.filter = 'online';
+				state.ap = null;
+				state.query = '';
+				if (searchInput) searchInput.value = '';
+				CPD.clearNotice();
+				refresh();
+			}, function (e) {
+				CPD.notify(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

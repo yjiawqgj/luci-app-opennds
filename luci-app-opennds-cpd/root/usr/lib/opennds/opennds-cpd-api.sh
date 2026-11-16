@@ -956,6 +956,8 @@ ov_restart() {
 	printf '{"ok":1}\n'
 }
 
+# 客户端行操作（免认证 / 信任 / 拉黑 / 断开…）一律只写 uci 增量：
+# 不 commit、不重启 nds、不踢人 —— 真正生效等 openwrt 自带的「保存并应用」。
 ov_client_action() { # $1=action $2=mac
 	local action="$1" mac="$2"
 	case "$action" in
@@ -974,92 +976,83 @@ ov_client_action() { # $1=action $2=mac
 
 	acquire_lock
 
+	local osc ond bsc
+	osc=$(sys_ensure_sec opennds '@opennds[0]') ||
+		out_err '暂存配置失败：找不到 opennds 配置节，且无法新建（请检查 /etc/config 是否可写）'
+	ond="opennds.$osc"
+
 	case "$action" in
 		preauth)
 			ov_load_lists
-			# 已在名单内：不覆盖已有参数，按成功返回（§11.2 第 5 条）
+			# 已在名单内：不覆盖已有参数（§11.2 第 5 条）
 			mac_in_pm "$lm" && {
-				printf '{"ok":1}\n'
+				printf '{"ok":1,"staged":1}\n'
 				return 0
 			}
 			# 6 参数写全（缺字段会继承上一条客户端的值）；MAC 一律小写
-			uci add_list 'opennds.@opennds[0].preemptivemac' \
-				"mac=$lm;sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0"
-			uci commit opennds
-			kick_preemptive
-			# 没有 DHCP 租约：预认证不会生效 → warnings（不报成功 toast）
+			uci_w add_list "$ond.preemptivemac" \
+				"mac=$lm;sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0" ||
+				sys_stage_fail
+			# 没有 DHCP 租约 → 预认证拿不到 IP，应用后也不会生效
 			if ! grep -qw "$lm" /tmp/dhcp.leases 2>/dev/null; then
-				printf '{"ok":1,"warnings":["该客户端没有 DHCP 租约，预认证不会生效"]}\n'
+				printf '{"ok":1,"staged":1,"warnings":["该客户端没有 DHCP 租约，预认证不会生效"]}\n'
 			else
-				printf '{"ok":1}\n'
+				printf '{"ok":1,"staged":1}\n'
 			fi
 			;;
 		unpreauth)
 			ov_load_lists
 			e=$(entry_for_mac "$PM_LIST" "$lm")
 			if [ -n "$e" ]; then
-				uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
-				uci commit opennds
+				uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail
 			fi
-			# 队列文件与 deauth 都不能省：只删配置它不会自己掉线
-			remove_preauth_queue "$lm"
-			ndsctl_mac deauth "$lm"
-			printf '{"ok":1}\n'
+			printf '{"ok":1,"staged":1}\n'
 			;;
 		deauth)
-			ndsctl_mac deauth "$lm"
+			# 断开 = 撤掉免认证条目（重启后不再自动登录），不碰其它配置
 			ov_load_lists
-			if e=$(entry_for_mac "$PM_LIST" "$lm") && [ -n "$e" ]; then
-				uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
-				uci commit opennds
-				remove_preauth_queue "$lm"
+			e=$(entry_for_mac "$PM_LIST" "$lm")
+			if [ -n "$e" ]; then
+				uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail
 			fi
-			printf '{"ok":1}\n'
+			printf '{"ok":1,"staged":1}\n'
 			;;
 		trust)
-			ndsctl_mac trust "$lm"
-			uci add_list 'opennds.@opennds[0].trustedmac' "$lm"
-			# 两份名单必须互斥：顺手摘掉 preemptivemac 条目
 			ov_load_lists
 			e=$(entry_for_mac "$PM_LIST" "$lm")
-			[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
-			uci commit opennds
-			printf '{"ok":1}\n'
+			mac_in_tr "$lm" || { uci_w add_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
+			# 两份名单必须互斥：顺手摘掉 preemptivemac 条目
+			[ -n "$e" ] && { uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail; }
+			printf '{"ok":1,"staged":1}\n'
 			;;
 		untrust)
-			ndsctl_mac untrust "$lm"
-			uci del_list 'opennds.@opennds[0].trustedmac' "$lm" 2>/dev/null
-			uci commit opennds
-			printf '{"ok":1}\n'
+			ov_load_lists
+			mac_in_tr "$lm" && { uci_w del_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
+			printf '{"ok":1,"staged":1}\n'
 			;;
 		block)
-			ov_load_lists
-			# ① zone_blacklist 追加（只加这一个，不许整体重写）
-			if ! mac_in_bl "$lm"; then
-				uci add_list 'zone_blacklist.main.mac' "$lm"
+			# 黑名单节缺失才新建（仅用户点动作时发生，安装零写入）
+			if uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
+				bsc='main'
+			else
+				bsc=$(sys_ensure_sec zone_blacklist main) ||
+					out_err '暂存配置失败：找不到 zone_blacklist 配置节，且无法新建'
 			fi
-			uci commit zone_blacklist
+			ov_load_lists
+			# ① 黑名单追加（只加这一个，不许整体重写）
+			mac_in_bl "$lm" || { uci_w add_list "zone_blacklist.$bsc.mac" "$lm" || sys_stage_fail; }
 			# ② 摘两份名单（按 MAC 删整条，不看条目原文）
 			e=$(entry_for_mac "$PM_LIST" "$lm")
-			[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
-			mac_in_tr "$lm" && uci del_list 'opennds.@opennds[0].trustedmac' "$lm"
-			uci commit opennds
-			# ③ 撤信任 + 清预认证队列 + 踢下线
-			ndsctl_mac untrust "$lm"
-			remove_preauth_queue "$lm"
-			ndsctl_mac deauth "$lm"
-			# ④ 重启并等就绪（最多 15 秒）再返回
-			local ready=1
-			service_restart || ready=0
-			printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"ready":%s}\n' "$ready"
+			[ -n "$e" ] && { uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail; }
+			mac_in_tr "$lm" && { uci_w del_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
+			printf '{"ok":1,"staged":1}\n'
 			;;
 		unblock)
 			ov_load_lists
-			mac_in_bl "$lm" && {
-				uci del_list 'zone_blacklist.main.mac' "$lm"
-				uci commit zone_blacklist
-			}
-			printf '{"ok":1}\n'
+			if mac_in_bl "$lm" && uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
+				uci_w del_list 'zone_blacklist.main.mac' "$lm" || sys_stage_fail
+			fi
+			printf '{"ok":1,"staged":1}\n'
 			;;
 	esac
 }
@@ -1144,12 +1137,17 @@ ov_client_edit() { # $1=stage|apply $2=mac $3…=k=v（5 项）
 	printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"ready":%s%s}\n' "$ready" "$warn_json"
 }
 
-# openwrt「保存并应用」：把概览页暂存的增量真正落盘，再重启 nds
+# openwrt「保存并应用」：把概览页暂存的增量（客户端限额 / 免认证 / 信任 / 黑名单）
+# 真正落盘，重启 nds 让在线会话按新配置重建。
 ov_apply() {
 	acquire_lock
 	uci commit opennds || out_err '写入配置失败'
+	# 黑名单是另一份配置；没有增量时 commit 是空操作，不会伪造写入
+	uci commit zone_blacklist 2>/dev/null || true
 	local ready=1
 	service_restart || ready=0
+	# 重启后让 openNDS 按新的 preemptivemac 重建预认证队列（否则要等下次接入才生效）
+	[ "$SR_RESTARTED" = '1' ] && kick_preemptive
 	printf '{"ok":1,"restarted":%s,"ready":%s}\n' "$SR_RESTARTED" "$ready"
 }
 
@@ -4712,8 +4710,8 @@ sys_restore_apply() { # $1=备份文件路径 → 把该文件的 trustedmac 写
 		uci_w add_list "opennds.$real.trustedmac" "$m" || sys_stage_fail
 		added=$((added + 1))
 	done
-	uci_w commit opennds || sys_stage_fail
-	printf '{"ok":1,"added":%s}\n' "$added"
+	# 只写增量：真正落盘与重启 nds 等 openwrt 的「保存并应用」
+	printf '{"ok":1,"staged":1,"added":%s}\n' "$added"
 }
 
 # ============================================================
