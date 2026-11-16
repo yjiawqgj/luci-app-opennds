@@ -165,7 +165,7 @@ return view.extend({
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			filter: 'online', ap: null, query: '', fupEnabled: true,
-			themeOk: 1, themespec: '',
+			themeOk: 1, themespec: '', confErr: '',
 			sortKey: null, sortDir: 1
 		};
 		var locked = false, lockTimer = null, pollTimer = null, modalOpen = 0;
@@ -239,6 +239,106 @@ return view.extend({
 				warnbar.style.display = 'none';
 			}
 			renderThemeBar();
+			renderRestoreBar();
+			renderConfBar();
+		}
+
+		/* 配置解析失败：uci 读写都会失败，必须直说 */
+		var confBar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' });
+
+		function renderConfBar() {
+			if (!confBar) return;
+			if (!state.confErr) {
+				confBar.style.display = 'none';
+				return;
+			}
+			confBar.innerHTML = '';
+			confBar.appendChild(E('span', {},
+				_('openNDS 配置文件无法解析，读取与写入都会失败：%s。请先在 SSH 里修复 /etc/config/opennds（uci show opennds 可看到具体行号）。')
+					.format(state.confErr)));
+			confBar.style.display = '';
+		}
+
+		/* ---------- 信任客户端恢复 ----------
+		 * 只读扫描本机的旧配置副本（不写任何东西），
+		 * 配置里 trustedmac 为空而备份里有记录时，给一个「恢复」按钮。
+		 */
+		var restoreBar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' });
+		var restoreInfo = null, restoreScanned = false;
+
+		function scanRestore() {
+			if (restoreScanned) {
+				renderRestoreBar();
+				return;
+			}
+			restoreScanned = true;
+			CPD.api('sys', 'restore_scan').then(function (j) {
+				restoreInfo = (j && j.ok) ? (j.candidates || []) : [];
+				renderRestoreBar();
+			}).catch(function () {});
+		}
+
+		function renderRestoreBar() {
+			if (!restoreBar) return;
+			var cur = (restoreInfo && restoreInfo.length) ? restoreInfo[0] : null;
+			var have = (state.counts && state.counts.trusted) || 0;
+			if (!cur || have > 0) {
+				restoreBar.style.display = 'none';
+				return;
+			}
+			restoreBar.innerHTML = '';
+			restoreBar.appendChild(E('span', {},
+				_('配置里没有信任客户端，但在 %s 里找到 %s 个历史记录。')
+					.format(cur.path, String(cur.count))));
+			restoreBar.appendChild(E('button', {
+				'class': 'cbi-button',
+				'style': 'margin-left:10px',
+				'click': function () { doRestore(cur); }
+			}, _('恢复')));
+			restoreBar.style.display = '';
+		}
+
+		function doRestore(cur) {
+			CPD.api('sys', 'restore_apply', [cur.path]).then(function (j) {
+				if (!j || !j.ok) {
+					CPD.notify((j && j.error) || _('恢复失败'), 'err');
+					return;
+				}
+				CPD.notify(_('已恢复 %s 个信任客户端，重启 openNDS 后生效').format(j.added), 'ok');
+				state.counts.trusted = j.added;
+				restoreInfo = null;
+				renderRestoreBar();
+				refresh();
+			}, function (e) {
+				CPD.notify(CPD.errText(e, _('恢复失败')), 'err');
+			});
+		}
+
+		/* 配置写入自检：在临时配置上跑一遍 uci set/get/delete，
+		 * 只在排障时用，不碰 openNDS 的任何设置 */
+		function runSelfTest() {
+			CPD.api('sys', 'selftest').then(function (j) {
+				var rows = [];
+				if (!j || !j.ok) {
+					rows.push(_('自检失败：%s').format((j && j.error) || '—'));
+				} else {
+					rows.push(_('写入（uci set）：%s').format(j.set === 1 ? _('正常') : _('失败')));
+					if (j.setErr) rows.push(_('uci 报错：%s').format(j.setErr));
+					rows.push(_('回读（uci get）：%s').format(String(j.read) === '1'
+						? _('正常') : _('读不到刚写入的值')));
+					if (j.delErr) rows.push(_('删除时报错：%s').format(j.delErr));
+				}
+				rows.push(_('自检只在 /etc/config/cpd_probe 上操作，不修改 openNDS 配置。'));
+				ui.showModal(_('配置写入自检'), E('div', {},
+					rows.map(function (t) {
+						return E('p', { 'style': 'margin:6px 0;font-size:13px;line-height:1.6' }, t);
+					})), [
+					E('div', { 'class': 'right' },
+						E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('关闭')))
+				]);
+			}).catch(function (e) {
+				CPD.notify(CPD.errText(e, _('自检失败')), 'err');
+			});
 		}
 
 		/* ---------- 主题脚本地址提示（登录模式 3 但脚本不是本插件的）
@@ -290,12 +390,14 @@ return view.extend({
 					state.aps = st.aps || [];
 					state.themeOk = (st.themeOk === 0) ? 0 : 1;
 					state.themespec = st.themespec || '';
+					state.confErr = st.confErr || '';
 				}
 				if (cl && cl.ok) {
 					state.clients = cl.clients || [];
 				}
 				renderStatus();
 				renderWarnbar();
+				scanRestore();
 				renderStats();
 				renderIface();
 				renderAps();
@@ -1076,6 +1178,8 @@ return view.extend({
 			E('h2', {}, _('openNDS 概览'))));
 		body.appendChild(warnbar);
 		body.appendChild(themeBar);
+		body.appendChild(confBar);
+		body.appendChild(restoreBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [
 			E('h3', {}, _('状态')),
@@ -1120,6 +1224,17 @@ return view.extend({
 			])));
 		body.appendChild(clientsSec);
 
+		/* 配置写入自检入口：暂存/保存失败时点它，能看到 uci 到底报了什么 */
+		body.appendChild(E('div', { 'style': 'margin-top:20px' },
+			E('a', {
+				'href': '#',
+				'style': 'font-size:12px;color:#7a8794;text-decoration:none',
+				'click': function (ev) {
+					if (ev && ev.preventDefault) ev.preventDefault();
+					runSelfTest();
+				}
+			}, _('配置写入自检'))));
+
 		body.appendChild(lockMask);
 		body.appendChild(editMask);
 		body.appendChild(detailMask);
@@ -1127,11 +1242,13 @@ return view.extend({
 		refresh();
 
 		/* ---------- LuCI 框架底部按钮：本页只有运行控制，没有需要保存的配置 ---------- */
+		/* 本页没有可保存的配置项：按钮点了就正常返回，不弹任何提示 */
 		this.handleSave = function () {
-			CPD.toast(_('本页没有需要保存的配置'), 'ok');
 			return Promise.resolve();
 		};
-		this.handleSaveApply = this.handleSave;
+		this.handleSaveApply = function () {
+			return Promise.resolve();
+		};
 		this.handleReset = function () {
 			state.filter = 'online';
 			state.ap = null;

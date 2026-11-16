@@ -42,6 +42,14 @@ var CSS = '\
 .cpd-pill.cpd-ok{background:rgba(30,94,62,.94)}\
 .cpd-pill.cpd-warn{background:rgba(150,100,20,.94)}\
 .cpd-pill.cpd-err{background:rgba(160,50,50,.94)}\
+.cpd-statusbar{position:fixed;left:50%;top:56px;transform:translateX(-50%);z-index:700;display:none;align-items:center;gap:12px;padding:9px 14px;border-radius:8px;background:#fff;border:1px solid #d7dde3;border-left:3px solid #2274a5;box-shadow:0 6px 20px rgba(30,42,54,.16);font-size:13px;color:#222a31;max-width:min(720px,calc(100vw - 40px))}\
+.cpd-statusbar.cpd-ok{border-left-color:#2e9468}\
+.cpd-statusbar.cpd-warn{border-left-color:#b57d17}\
+.cpd-statusbar.cpd-err{border-left-color:#c94848}\
+.cpd-sb-text{flex:1 1 auto;line-height:1.5}\
+.cpd-sb-count{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:#8a97a3;min-width:22px;text-align:right}\
+.cpd-sb-x{border:0;background:transparent;cursor:pointer;font-size:16px;line-height:1;color:#8a97a3;padding:0 2px}\
+.cpd-sb-x:hover{color:#222a31}\
 .cpd-badge{font-size:11px;color:#2e9468;margin-left:6px}\
 .cpd-tab{font-family:inherit;font-size:13px;line-height:1.4;padding:9px 14px;border:0;border-bottom:2px solid transparent;background:transparent!important;cursor:pointer;color:inherit;margin-bottom:-1px;outline:none!important;box-shadow:none!important}\
 .cpd-tab:hover,.cpd-tab:focus,.cpd-tab:active{background:transparent!important;outline:none!important;box-shadow:none!important;border-top:0;border-left:0;border-right:0}\
@@ -139,37 +147,71 @@ var CPD = L.Class.extend({
 		});
 	},
 
-	/* ---------- toast（右下角白底卡片，WalledGarden/路由器访问同款） ---------- */
-	toast: function (msg, kind) {
-		ensureToasts();
-		var t = document.createElement('div');
-		t.className = 'cpd-toast' + (kind ? ' cpd-' + kind : '');
-		t.textContent = msg;
-		document.getElementById('cpd-toasts').appendChild(t);
-		window.setTimeout(function () {
-			t.style.opacity = '0';
-			t.style.transition = 'opacity .3s';
-			window.setTimeout(function () { dom.remove(t); }, 320);
-		}, 3000);
+	/* ---------- 通知 ----------
+	 * 一律走 openwrt 自带通知（ui.addNotification）：不再自己弹右下角卡片。
+	 * 运行环境没有该能力时，退化为页面顶部的一条通知栏，
+	 * 默认 100 秒倒计时自动关闭；应用完成后由 clearNotice() 立即关闭。
+	 */
+	notifyKinds: { ok: 'info', warn: 'warning', err: 'error', '': 'info' },
+
+	notify: function (msg, kind) {
+		var self = this;
+		var k = self.notifyKinds[kind === undefined ? '' : kind] || 'info';
+		if (typeof ui.addNotification === 'function') {
+			ui.addNotification(null, E('p', {}, msg), k);
+			return true;
+		}
+		return self.statusBar(msg, kind);
 	},
 
-	/* 底部居中深色胶囊 toast（访问限制 / 黑名单页同款） */
-	toastCenter: function (msg, kind) {
-		var c = document.getElementById('cpd-toasts-center');
-		if (!c) {
-			c = document.createElement('div');
-			c.id = 'cpd-toasts-center';
-			c.setAttribute('aria-live', 'polite');
-			document.body.appendChild(c);
+	/* 兼容老调用点：toast / toastCenter 现在都等于 notify */
+	toast: function (msg, kind) { return this.notify(msg, kind); },
+	toastCenter: function (msg, kind) { return this.notify(msg, kind); },
+
+	/* 页面顶部通知栏（单条）：100 秒倒计时，可手动关闭 */
+	statusBar: function (msg, kind) {
+		var self = this;
+		var bar = document.getElementById('cpd-statusbar');
+		if (!bar) {
+			bar = document.createElement('div');
+			bar.id = 'cpd-statusbar';
+			bar.setAttribute('role', 'status');
+			document.body.appendChild(bar);
 		}
-		var t = document.createElement('div');
-		t.className = 'cpd-pill' + (kind ? ' cpd-' + kind : '');
-		t.textContent = msg;
-		c.appendChild(t);
-		window.setTimeout(function () {
-			t.style.opacity = '0';
-			window.setTimeout(function () { dom.remove(t); }, 260);
-		}, 2400);
+		bar.innerHTML = '';
+		bar.className = 'cpd-statusbar' + (kind ? ' cpd-' + kind : '');
+		var txt = document.createElement('span');
+		txt.className = 'cpd-sb-text';
+		txt.textContent = msg;
+		var cnt = document.createElement('span');
+		cnt.className = 'cpd-sb-count';
+		var x = document.createElement('button');
+		x.type = 'button';
+		x.className = 'cpd-sb-x';
+		x.setAttribute('aria-label', _('关闭通知'));
+		x.textContent = '×';
+		x.addEventListener('click', function () { self.clearNotice(); });
+		bar.appendChild(txt);
+		bar.appendChild(cnt);
+		bar.appendChild(x);
+		bar.style.display = 'flex';
+
+		if (self._sbTimer) { clearInterval(self._sbTimer); self._sbTimer = null; }
+		var left = 100;
+		cnt.textContent = String(left);
+		self._sbTimer = setInterval(function () {
+			left--;
+			if (left <= 0) { self.clearNotice(); return; }
+			cnt.textContent = String(left);
+		}, 1000);
+		return true;
+	},
+
+	clearNotice: function () {
+		var bar = document.getElementById('cpd-statusbar');
+		if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
+		if (this._sbTimer) { clearInterval(this._sbTimer); this._sbTimer = null; }
+		return true;
 	},
 
 	/* ---------- 二次确认弹窗 ---------- */
@@ -231,7 +273,9 @@ var CPD = L.Class.extend({
 	},
 
 	/* uci 暂存：typ='opt' 时 values 是标量（null=删除该键）；
-	 * typ='list' 时 values 是数组（空数组=清空该 list） */
+	 * typ='list' 时 values 是数组（空数组=清空该 list）。
+	 * 注意：uci 写 /tmp/.uci 增量要拿全局锁，多个进程同时写会互相打断，
+	 * 所以这里排成串行队列，一个写完再发下一个。 */
 	stageUci: function (conf, sid, opt, typ, values) {
 		var self = this;
 		var args = [conf, sid, opt, typ];
@@ -240,11 +284,15 @@ var CPD = L.Class.extend({
 		} else if (Array.isArray(values)) {
 			args = args.concat(values.map(function (v) { return String(v); }));
 		}
-		return self.api('sys', 'uci_stage', args).then(function (j) {
-			if (!j || !j.ok) throw { error: (j && j.error) || _('暂存配置失败') };
-			self.notifyChanges();
-			return j;
+		var prev = (self._stageQ || Promise.resolve()).catch(function () {});
+		self._stageQ = prev.then(function () {
+			return self.api('sys', 'uci_stage', args).then(function (j) {
+				if (!j || !j.ok) throw { error: (j && j.error) || _('暂存配置失败') };
+				self.notifyChanges();
+				return j;
+			});
 		});
+		return self._stageQ;
 	},
 
 	/* 复位：丢弃指定配置的未提交增量（对应 openwrt 复位按钮语义） */

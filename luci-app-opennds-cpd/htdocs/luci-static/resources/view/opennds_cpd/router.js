@@ -123,14 +123,14 @@ return view.extend({
 			state.editing = false;
 			state.draft = state.saved;
 			renderPanel();
-			CPD.toast(_('已取消编辑，未保存本次修改'));
+			/* 取消编辑不提示，避免噪音 */
 		}
 
 		function clearDraft() {
 			state.draft = '';
 			var ta = document.querySelector('.cpd-ta');
 			if (ta) ta.value = '';
-			CPD.toast(_('已清空编辑内容，点击保存后生效'), 'warn');
+			CPD.statusBar(_('编辑内容已清空'));
 		}
 
 		function saveEdit(ta) {
@@ -149,7 +149,9 @@ return view.extend({
 				state.draft = value;
 				state.editing = false;
 				renderPanel();
-				CPD.toast(value ? _('开放端口配置已保存') : _('开放端口配置已清空'), value ? 'ok' : '');
+				CPD.statusBar(value
+					? _('开放端口列表已更新，点击页面底部的「保存并应用」后生效')
+					: _('开放端口列表已清空，点击页面底部的「保存并应用」后生效'));
 			}).catch(function (e) {
 				CPD.toast((e && e.error) || _('校验失败'), 'err');
 			});
@@ -172,11 +174,11 @@ return view.extend({
 
 		function handleApply() {
 			if (state.editing) {
-				CPD.toast(_('请先保存或取消端口编辑'), 'warn');
-				return;
+				CPD.notify(_('请先完成或取消端口编辑'), 'warn');
+				return Promise.resolve();
 			}
 			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
-			stageRouter().then(function () {
+			return stageRouter().then(function () {
 				return CPD.apiConfirmable('router', 'apply', [
 					'text_b64=' + CPD.b64encode(state.saved),
 					'passthrough=' + (state.takeoverOff ? '1' : '0')
@@ -184,7 +186,8 @@ return view.extend({
 			}).then(function (j) {
 				if (j && j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
-					CPD.toast(_('配置已应用'), 'ok');
+					CPD.clearNotice();
+					CPD.notify(_('配置已应用'), 'ok');
 					CPD.showWarnings(j.warnings);
 					CPD.notifyChanges();
 					refresh();
@@ -217,10 +220,10 @@ return view.extend({
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
 			return stageRouter().then(function () {
-				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('开放端口列表已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				if (e && e.silent) return;
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		};
 		this.handleSaveApply = function () {

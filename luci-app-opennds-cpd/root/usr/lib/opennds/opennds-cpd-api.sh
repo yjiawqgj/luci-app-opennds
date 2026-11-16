@@ -54,6 +54,14 @@ uci_val() { # $1=键 $2=默认值
 	fi
 }
 
+# openNDS 主配置是否可用：只要配置文件存在就继续（缺配置节时页面按默认值显示，
+# 用户点保存时会自动建节）；只有配置文件完全不存在才报「未找到配置」
+nds_conf_ok() {
+	[ -f "${OPENNDS_CONF:-/etc/config/opennds}" ] && return 0
+	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . && return 0
+	return 1
+}
+
 # MAC：格式校验 + 大小写归一
 mac_valid() {
 	printf '%s' "$1" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
@@ -765,7 +773,12 @@ ov_client_detail() { # $1=mac
 }
 
 ov_status() {
-	local running enabled engaged busy scope theme_ok themespec lo
+	local running enabled engaged busy scope theme_ok themespec lo conf_err=''
+	# 配置文件存在但解析不了时，uci 的读与写都会失败：
+	# 这种情况必须在页面上直说，否则用户只会看到「可信任客户端没了」+「暂存失败」
+	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
+		conf_err=$(uci show opennds 2>&1 >/dev/null)
+	fi
 	enabled=$(nds_enabled)
 	engaged=$(nds_engaged)
 	busy=$(busy_probe)
@@ -828,13 +841,20 @@ EOF2
 		fi
 	fi
 
+	# 可信任客户端以配置里的 trustedmac 为准：在线的照常算，离线的不漏
+	local tr_cfg=0 m2c
+	for m2c in $TR_MACS; do
+		[ -n "$m2c" ] && tr_cfg=$((tr_cfg + 1))
+	done
+	[ "$tr_cfg" -gt "$n_tr" ] && n_tr="$tr_cfg"
+
 	# 管理接口与 IP
 	local mif mip=''
 	mif=$(managed_iface)
 	[ -n "$mif" ] && mip=$(iface_ip "$mif")
 
-	# AP 卡片：uci 启用的 AP section → 运行时接口名 + ssid + 未拉黑客户端数
-	local aps='' secids sec dev mode dis ssid idx apif sep cnt tlm tst cif0
+	# AP 卡片：只列真正启用的 AP（接口 disabled=1 或所属 radio disabled=1 都不算）
+	local aps='' secids sec dev mode dis ssid idx apif sep cnt tlm tst cif0 rd
 	secids=$(uci show wireless 2>/dev/null |
 		awk -F'[.=]' '/^wireless\..+=wifi-iface$/ {print $2}')
 	for sec in $secids; do
@@ -842,8 +862,12 @@ EOF2
 		[ "$mode" = 'ap' ] || continue
 		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
 		[ "$dis" = '1' ] && continue
-		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
 		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
+		if [ -n "$dev" ]; then
+			rd=$(uci -q get "wireless.$dev.disabled" 2>/dev/null)
+			[ "$rd" = '1' ] && continue
+		fi
+		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
 		idx=$(ap_section_index "$sec" "$dev")
 		apif=$(ap_runtime_if "$dev" "$ssid" "$idx")
 		cnt=0
@@ -860,9 +884,9 @@ EOF2
 		sep=','
 	done
 
-	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","themeOk":%s,"themespec":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
+	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","themeOk":%s,"themespec":"%s","confErr":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
 		"$running" "$enabled" "$engaged" "$busy" "$(fup_enabled_val)" "$(json_escape "$scope")" \
-		"$theme_ok" "$(json_escape "$themespec")" \
+		"$theme_ok" "$(json_escape "$themespec")" "$(json_escape "$conf_err")" \
 		"$n_online" "$n_auth" "$n_pre" "$n_tr" "$n_un" "$n_bl" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
 		"$(json_escape "$mif")" "$(json_escape "$mip")" "$aps"
@@ -1320,7 +1344,7 @@ z_status() {
 	[ -n "$wsv" ] || wsv=null
 
 	# 无线卡片：全部 mode=ap section（禁用的也要，可预配置）
-	local secids sec dev mode dis ssid disf dup cards='' sep='' n=0 allss
+	local secids sec dev mode dis ssid disf dup cards='' sep='' n=0 allss rad dis_radio
 	secids=$(uci show wireless 2>/dev/null |
 		awk -F'[.=]' '/^wireless\..+=wifi-iface$/ {print $2}')
 	allss=''
@@ -1335,7 +1359,19 @@ z_status() {
 		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
 		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
 		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
-		[ "$dis" = '1' ] && disf=1 || disf=0
+		# 无线是否启用以 openwrt 无线配置为准：接口自身 disabled=1，
+		# 或它所属的 radio（wifi-device）disabled=1，都算未启用
+		rad=''
+		dis_radio=0
+		if [ -n "$dev" ]; then
+			rad=$(uci -q get "wireless.$dev.disabled" 2>/dev/null)
+			[ "$rad" = '1' ] && dis_radio=1
+		fi
+		if [ "$dis" = '1' ] || [ "$dis_radio" = '1' ]; then
+			disf=1
+		else
+			disf=0
+		fi
 		dup=0
 		if [ -n "$ssid" ]; then
 			dup=$(printf '%s\n' "$allss" | grep -Fx "$ssid" | wc -l | tr -d ' ')
@@ -1343,7 +1379,7 @@ z_status() {
 		fi
 		sv=$(z_saved_json wireless "$ssid")
 		cur=$(z_saved_of wireless "$ssid" 2>/dev/null || true)
-		cards="$cards$sep{\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"device\":\"$(json_escape "$dev")\",\"disabled\":$disf,\"dup\":$dup,\"saved\":$sv,\"current\":\"$(json_escape "$cur")\"}"
+		cards="$cards$sep{\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"device\":\"$(json_escape "$dev")\",\"disabled\":$disf,\"radioDisabled\":$dis_radio,\"dup\":$dup,\"saved\":$sv,\"current\":\"$(json_escape "$cur")\"}"
 		sep=','
 		n=$((n + 1))
 	done
@@ -1495,13 +1531,33 @@ z_upload_delete() { # $1=type $2=zone $3=门户名（原名）
 	acquire_lock
 	local zdir cur
 	zdir=$(zdir_for "$type" "$zone")
-	# 正在使用的门户不许删（先换一个再删）
 	cur=$(z_saved_of "$type" "$zone" 2>/dev/null || true)
-	[ -n "$cur" ] && [ "$cur" = "$store" ] &&
-		out_err '该门户正在使用中，请先在「门户选择」里换一个再清理'
+	# 删掉的正好是这个区域正在用的脚本 → 该区域退回「默认」，
+	# 而不是拒绝删除（页面上没有第二个下拉可选，拒绝就永远删不掉）
+	if [ -n "$cur" ] && [ "$cur" = "$store" ]; then
+		local real p ss st pairs
+		LAST_UCI_ERR=''
+		real=$(sys_ensure_sec zone_detect main) || real='main'
+		pairs=$(cache_pairs "zone_detect.main.$type")
+		uci_w -q delete "zone_detect.$real.$type" || :
+		while IFS= read -r p; do
+			[ -n "$p" ] || continue
+			case "$p" in
+				*'|'*) ;;
+				*) continue ;;
+			esac
+			ss="${p%%|*}"
+			st="${p#*|}"
+			[ "$ss" = "$zone" ] && st=''
+			uci_w add_list "zone_detect.$real.$type" "$ss|$st" || sys_stage_fail
+		done <<EOF4
+$pairs
+EOF4
+		uci_w commit zone_detect || sys_stage_fail
+	fi
 	# 文件已被别处删掉时按成功处理（§3.4）
 	[ -e "$zdir/$store" ] && rm -rf "$zdir/$store" 2>/dev/null
-	printf '{"ok":1}\n'
+	printf '{"ok":1,"unset":%s}\n' "$([ "$cur" = "$store" ] && printf 1 || printf 0)"
 }
 
 z_save_cache() { # $1=global|wireless|wired $2…=对（SSID|门户名）
@@ -2788,8 +2844,7 @@ EOF2
 rt_status() {
 	local pt text='' fw4=1 list
 	command -v fw4 >/dev/null 2>&1 || fw4=0
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	pt=$(uci_val 'opennds.@opennds[0].users_to_router_passthrough' '0')
 	[ "$pt" = '1' ] || pt=0
 	list=$(cache_pairs 'opennds.@opennds[0].users_to_router')
@@ -2863,8 +2918,7 @@ rt_apply() { # $@ 含 text_b64=... passthrough=0|1 [confirm_enable=1]
 	fi
 	guard_enable || return 0
 	acquire_lock
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	mkdir -p "$RT_BAK_DIR" 2>/dev/null
 	cp "$OPENNDS_CONF" "$RT_BAK_DIR/opennds.bak" 2>/dev/null ||
 		out_err '无法备份 openNDS 配置'
@@ -3278,8 +3332,7 @@ EOF2
 }
 
 wg_status() {
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	local text='' domains='' ports='' list
 	list=$(cache_pairs 'opennds.@opennds[0].preauthenticated_users')
 	[ -n "$list" ] && text=$(wg_reverse "$list")
@@ -3392,8 +3445,7 @@ wg_apply() { # $@: manual_b64 domains_b64 ports [confirm_enable=1]
 	fi
 	guard_enable || return 0
 	acquire_lock
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	mkdir -p "$RT_BAK_DIR" 2>/dev/null
 	cp "$OPENNDS_CONF" "$RT_BAK_DIR/opennds.bak" 2>/dev/null ||
 		out_err '无法备份 openNDS 配置'
@@ -3878,8 +3930,7 @@ EOF2
 }
 
 ac_status() {
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	local text='' auto='' ports='' list blocks
 	list=$(cache_pairs 'opennds.@opennds[0].authenticated_users')
 	blocks=''
@@ -3963,8 +4014,7 @@ ac_apply() { # $@: manual_b64 auto_b64 ports [confirm_enable=1]
 	ac_common "$@" || return 0
 	guard_enable || return 0
 	acquire_lock
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	mkdir -p "$RT_BAK_DIR" 2>/dev/null
 	cp "$OPENNDS_CONF" "$RT_BAK_DIR/opennds.bak" 2>/dev/null ||
 		out_err '无法备份 openNDS 配置'
@@ -4094,8 +4144,7 @@ st_portal_items() { # $1=tab
 }
 
 st_status() {
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	local up dw upa upr dwa dwr ifc dev pj='' sep='' t b ij='' isep='' n ipaddr
 	up=$(st_fup_split "$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')")
 	dw=$(st_fup_split "$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')")
@@ -4284,32 +4333,45 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 		st_clean_portal_dir "$dir" "$name"
 		rm -rf "$dir/$name" 2>/dev/null
 		mv "$tmp" "$dir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
+		[ -d "$dir/$name" ] || out_err '门户文件夹入库失败（目标不是文件夹）'
+		[ -f "$dir/$name/theme.sh" ] || out_err '门户文件夹里没有 theme.sh'
+		# 让 SFTP / 其它账号也能进目录、读文件
+		chmod 755 "$dir/$name" 2>/dev/null
+		find "$dir/$name" -type d -exec chmod 755 {} + 2>/dev/null
+		find "$dir/$name" -type f -exec chmod 644 {} + 2>/dev/null
+		chmod 755 "$dir/$name/theme.sh" 2>/dev/null
 	fi
 	# 清临时目录（id 已白名单校验，路径限定在 ZONE_UP 下）
 	case "$ZONE_UP/$id" in
 		"$ZONE_UP"/*) rm -rf "$ZONE_UP/$id" 2>/dev/null ;;
 	esac
-	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
+	printf '{"ok":1,"name":"%s","kind":"%s","path":"%s"}\n' \
+		"$(json_escape "$name")" "$kind" \
+		"$(json_escape "$dir/$name")"
 }
 
 st_portal_save() { # $1=tab $2=门户名（default/空 = 内置 default.sh）
 	st_tab_ok "$1" || out_err '目标类型非法'
 	acquire_lock
+	local real
+	real=$(sys_ensure_sec zone_detect main) ||
+		out_err '写入配置失败：缺少 zone_detect 配置节'
+	LAST_UCI_ERR=''
 	case "$2" in
 		'' | default)
-			uci -q delete "zone_detect.main.portal_$1" 2>/dev/null
+			uci_w -q delete "zone_detect.$real.portal_$1" || :
 			;;
 		*)
 			name_ok "$2" 31 || out_err '门户名非法'
 			z_portal_exists "$CPD_ROOT/default/$1" "$2" || out_err '门户不存在'
-			uci set "zone_detect.main.portal_$1"="$2"
+			uci_w set "zone_detect.$real.portal_$1"="$2" || sys_stage_fail
 			;;
 	esac
-	uci commit zone_detect || out_err '写入配置失败'
+	uci_w commit zone_detect || sys_stage_fail
 	printf '{"ok":1}\n'
 }
 
-st_clean_default() { # $1=tab $2=门户名（保留原名的那个文件）
+st_clean_default() { # $1=tab $2=门户名（保留原名的那个文件/文件夹）
 	st_tab_ok "$1" || out_err '目标类型非法'
 	local tab="$1" name="$2"
 	name_ok "$name" 31 || out_err '门户名非法'
@@ -4317,13 +4379,20 @@ st_clean_default() { # $1=tab $2=门户名（保留原名的那个文件）
 		default.sh) out_err '内置默认门户不能清理' ;;
 	esac
 	acquire_lock
-	local dir="$CPD_ROOT/default/$tab" sel
+	local dir="$CPD_ROOT/default/$tab" sel removed=0 existed=0
+	if [ -e "$dir/$name" ]; then
+		existed=1
+		rm -rf "$dir/$name" 2>/dev/null
+		[ -e "$dir/$name" ] || removed=1
+		[ "$removed" = '1' ] || out_err '清理失败：门户目录不可写'
+	fi
+	# 清掉正在使用的那一个时，把选择改回内置 default.sh（失败不阻断文件清理）
 	sel=$(uci_val "zone_detect.main.portal_$tab" '')
-	[ "$sel" = "$name" ] &&
-		out_err '该门户正在使用中，请先在「门户选择」里换一个再清理'
-	# 文件已被别处删掉时按成功处理
-	[ -e "$dir/$name" ] && rm -rf "$dir/$name" 2>/dev/null
-	printf '{"ok":1}\n'
+	if [ "$sel" = "$name" ]; then
+		uci -q delete "zone_detect.main.portal_$tab" 2>/dev/null
+		uci commit zone_detect 2>/dev/null
+	fi
+	printf '{"ok":1,"removed":%s}\n' "$removed"
 }
 
 st_rate_val() { # $1=动作 $2=速率 $3=结果变量名（直接调用，out_err 退出才有效）
@@ -4380,8 +4449,7 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [fup_enabl
 	fi
 	guard_enable || return 0
 	acquire_lock
-	uci -q show 'opennds.@opennds[0]' 2>/dev/null | grep -q . ||
-		out_err '未找到 openNDS 配置'
+	nds_conf_ok || out_err '未找到 openNDS 配置'
 	mkdir -p "$RT_BAK_DIR" 2>/dev/null
 	cp "$OPENNDS_CONF" "$RT_BAK_DIR/opennds.bak" 2>/dev/null ||
 		out_err '无法备份 openNDS 配置'
@@ -4424,41 +4492,114 @@ sys_conf_ok() {
 }
 
 sys_sid_ok() { # section：匿名 @type[0] 与命名 section 都放行
-	case "$1" in
-		'' | *[!A-Za-z0-9_@.\[\]-]*) return 1 ;;
-	esac
-	return 0
+	printf '%s' "$1" | grep -Eq '^[][A-Za-z0-9_@.-]+$'
 }
 
 sys_opt_ok() {
+	printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_-]+$'
+}
+
+# uci 写操作的统一入口：/tmp/.uci 增量文件是全局锁，
+# 多个进程同时写会拿到「Resource temporarily unavailable」，
+# 这里对锁冲突重试，其它错误立刻上报并把 uci 原文留给前端。
+LAST_UCI_ERR=''
+uci_w() {
+	local i=0 out rc
+	while :; do
+		out=$(uci "$@" 2>&1)
+		rc=$?
+		[ "$rc" -eq 0 ] && return 0
+		LAST_UCI_ERR="$out"
+		case "$out" in
+			*'temporarily unavailable'* | *'Try again'* | *'locked'* | *'Locked'*) ;;
+			*) return "$rc" ;;
+		esac
+		i=$((i + 1))
+		[ "$i" -ge 4 ] && return "$rc"
+		sleep 1
+	done
+}
+
+sys_stage_fail() {
+	if [ -n "$LAST_UCI_ERR" ]; then
+		out_err "暂存配置失败：$LAST_UCI_ERR"
+	fi
+	out_err '暂存配置失败'
+}
+
+# 新建 section 时用的类型名（与出厂模板一致）
+sys_sec_type() {
 	case "$1" in
-		'' | *[!A-Za-z0-9_-]*) return 1 ;;
+		zone_blacklist) printf 'main' ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+# 该配置里第一个 <type> 类型 section 的名字（匿名 section 会输出 @type[n]）
+sys_find_sec() {
+	uci show "$1" 2>/dev/null |
+		awk -F'[.=]' -v t="$2" 'NF == 3 && $3 == t { print $2; exit }'
+}
+
+# 把页面传来的 section 引用落成「一定可写」的 section 名：
+# 引用能解析就直接用；解析不到就先按出厂模板把 section 建出来
+# （只在用户点保存/保存并应用时发生，安装时零写入）。
+sys_ensure_sec() { # $1=config $2=sid → stdout 输出可写 section 名
+	local conf="$1" sid="$2" typ name
+	case "$sid" in
+		@*)
+			typ=$(printf '%s' "$sid" | sed -e 's/^@//' -e 's/\[.*$//')
+			name=$(sys_find_sec "$conf" "$typ")
+			if [ -n "$name" ]; then
+				printf '%s' "$name"
+				return 0
+			fi
+			uci_w "$conf.cpd=$typ" || return 1
+			printf 'cpd'
+			;;
+		*)
+			if uci -q get "$conf.$sid" >/dev/null 2>&1; then
+				printf '%s' "$sid"
+				return 0
+			fi
+			uci_w "$conf.$sid=$(sys_sec_type "$conf")" || return 1
+			printf '%s' "$sid"
+			;;
 	esac
 	return 0
 }
 
 sys_uci_stage() { # $1=config $2=section $3=option $4=opt|list [值…]
-	local conf="$1" sid="$2" opt="$3" typ="$4"
+	local conf="$1" sid="$2" opt="$3" typ="$4" real
 	shift 4
 	sys_conf_ok "$conf" || out_err '配置名非法'
 	sys_sid_ok "$sid" || out_err 'section 名非法'
 	sys_opt_ok "$opt" || out_err 'option 名非法'
 	case "$typ" in
+		opt | list) ;;
+		*) out_err '类型必须是 opt 或 list' ;;
+	esac
+
+	real=$(sys_ensure_sec "$conf" "$sid") ||
+		out_err '暂存配置失败：找不到配置节，且无法新建（请检查 /etc/config 是否可写）'
+	sid="$real"
+
+	LAST_UCI_ERR=''
+	case "$typ" in
 		opt)
 			if [ $# -eq 0 ]; then
-				uci -q delete "$conf.$sid.$opt" 2>/dev/null
+				uci_w -q delete "$conf.$sid.$opt" || sys_stage_fail
 			else
-				uci set "$conf.$sid.$opt"="$1" || out_err '暂存配置失败'
+				uci_w set "$conf.$sid.$opt"="$1" || sys_stage_fail
 			fi
 			;;
 		list)
-			uci -q delete "$conf.$sid.$opt" 2>/dev/null
+			uci_w -q delete "$conf.$sid.$opt" || :
 			local v
 			for v in "$@"; do
-				uci add_list "$conf.$sid.$opt" "$v" || out_err '暂存配置失败'
+				uci_w add_list "$conf.$sid.$opt" "$v" || sys_stage_fail
 			done
 			;;
-		*) out_err '类型必须是 opt 或 list' ;;
 	esac
 	printf '{"ok":1}\n'
 }
@@ -4467,6 +4608,76 @@ sys_uci_revert() { # $1=config → 丢弃该配置的未提交增量（复位按
 	sys_conf_ok "$1" || out_err '配置名非法'
 	uci revert "$1" 2>/dev/null
 	printf '{"ok":1}\n'
+}
+
+# 写通道自检：在临时配置上跑 set / get / delete，把每一步的真实结果交回前端。
+# 目的只有一个——暂存失败时能直接看到 uci 报的是什么，而不是一句笼统的失败。
+sys_selftest() {
+	local f="${CPD_PROBE_CONF:-/etc/config/cpd_probe}" rc seterr='' readv='' rcerr=''
+	rm -f "$f" 2>/dev/null
+	if ! printf "config main 'main'\n" >"$f" 2>/dev/null; then
+		printf '{"ok":0,"step":"create","error":"%s"}\n' \
+			"$(json_escape '/etc/config 不可写，无法创建临时配置')"
+		return 0
+	fi
+	seterr=$(uci set cpd_probe.main.probe='1' 2>&1)
+	rc=$?
+	readv=$(uci -q get cpd_probe.main.probe 2>/dev/null)
+	rcerr=$(uci -q delete cpd_probe.main.probe 2>&1)
+	rm -f "$f" 2>/dev/null
+	uci revert cpd_probe 2>/dev/null
+	printf '{"ok":1,"set":%s,"setErr":"%s","read":"%s","delErr":"%s"}\n' \
+		"$([ "$rc" -eq 0 ] && printf 1 || printf 0)" \
+		"$(json_escape "$seterr")" "$(json_escape "$readv")" "$(json_escape "$rcerr")"
+}
+
+# ---------- 信任客户端恢复：从本机上可能存在的配置副本里找回 trustedmac ----------
+NDS_BAK_LIST="${NDS_BAK_LIST:-/etc/config/opennds.bak /etc/config/opennds.orig /etc/config/opennds-opkg /etc/config/opennds.bak.1 /rom/etc/config/opennds /tmp/zone-router/opennds.bak}"
+
+bak_list_macs() { # $1=文件 → 输出该文件里 trustedmac 的 MAC（每行一个，大写）
+	[ -f "$1" ] || return 0
+	grep -E '^[[:space:]]*list[[:space:]]+trustedmac' "$1" 2>/dev/null |
+		sed -e 's/^.*trustedmac[[:space:]]*//' |
+		tr -d '\047"' |
+		grep -Eio '([0-9a-f]{2}:){5}[0-9a-f]{2}' |
+		tr 'a-z' 'A-Z'
+}
+
+sys_restore_scan() {
+	local f macs n items='' sep='' cur
+	cur=$(list_of 'opennds.@opennds[0].trustedmac')
+	for f in $NDS_BAK_LIST; do
+		[ -f "$f" ] || continue
+		macs=$(bak_list_macs "$f" | sort -u)
+		n=$(printf '%s\n' "$macs" | grep -c .)
+		[ "${n:-0}" -gt 0 ] || continue
+		items="$items$sep{\"path\":\"$(json_escape "$f")\",\"count\":$n,\"macs\":\"$(json_escape "$(printf '%s' "$macs" | tr '\n' ' ')")\"}"
+		sep=','
+	done
+	printf '{"ok":1,"current":%s,"candidates":[%s]}\n' \
+		"$(printf '%s\n' $cur | grep -c .)" "$items"
+}
+
+sys_restore_apply() { # $1=备份文件路径 → 把该文件的 trustedmac 写入 uci 增量
+	local f="$1" macs m added=0
+	case " $NDS_BAK_LIST " in
+		*" $f "*) ;;
+		*) out_err '备份路径不在允许范围内' ;;
+	esac
+	[ -f "$f" ] || out_err '备份文件不存在'
+	macs=$(bak_list_macs "$f" | sort -u)
+	[ -n "$macs" ] || out_err '该备份里没有可恢复的信任客户端'
+	LAST_UCI_ERR=''
+	local real
+	real=$(sys_ensure_sec opennds '@opennds[0]') ||
+		out_err '暂存配置失败：找不到 opennds 配置节'
+	uci_w -q delete "opennds.$real.trustedmac" || :
+	for m in $macs; do
+		uci_w add_list "opennds.$real.trustedmac" "$m" || sys_stage_fail
+		added=$((added + 1))
+	done
+	uci_w commit opennds || sys_stage_fail
+	printf '{"ok":1,"added":%s}\n' "$added"
 }
 
 # ============================================================
@@ -4613,6 +4824,9 @@ case "$PAGE" in
 		case "$SUB" in
 			uci_stage) [ $# -ge 3 ] || out_err 'uci_stage 需要 config section option 参数'; sys_uci_stage "$@" ;;
 			uci_revert) [ $# -ge 1 ] || out_err 'uci_revert 需要 config 参数'; sys_uci_revert "$1" ;;
+			selftest) sys_selftest ;;
+			restore_scan) sys_restore_scan ;;
+			restore_apply) [ $# -ge 1 ] || out_err 'restore_apply 需要备份路径'; sys_restore_apply "$1" ;;
 			*) out_err "sys：未知子命令 $SUB" ;;
 		esac
 		;;

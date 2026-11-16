@@ -213,7 +213,7 @@ return view.extend({
 			state.manual = lines.join('\n');
 			state.manualEditing = false;
 			renderManual();
-			toast(state.manual ? _('手动阻止规则已保存') : _('手动阻止规则已清空'), 'ok');
+			CPD.statusBar(_('手动限制规则已更新，点击页面底部的「保存并应用」后生效'));
 		}
 
 		function saveAuto(ta) {
@@ -230,7 +230,7 @@ return view.extend({
 			state.domains = lines.join('\n');
 			state.autoEditing = false;
 			renderAuto();
-			toast(state.domains ? _('自动阻止规则已保存') : _('自动阻止规则已清空'), 'ok');
+			CPD.statusBar(_('自动阻止规则已更新，点击页面底部的「保存并应用」后生效'));
 		}
 
 		function editingBusy() {
@@ -277,13 +277,13 @@ return view.extend({
 
 		function handleSave() {
 			if (editingBusy()) {
-				toast(_('请先保存或取消正在编辑的规则'), 'warn');
+				toast(_('请先完成或取消正在编辑的规则'), 'warn');
 				return Promise.reject({ silent: true });
 			}
 			if (!precheckPorts()) return Promise.reject({ silent: true });
 			return stageAccess().then(function () {
 				state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
-				toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('规则已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				if (e && e.silent) return;
 				toast(CPD.errText(e, _('保存失败')), 'err');
@@ -292,12 +292,12 @@ return view.extend({
 
 		function handleApply() {
 			if (editingBusy()) {
-				toast(_('请先保存或取消正在编辑的规则'), 'warn');
-				return;
+				toast(_('请先完成或取消正在编辑的规则'), 'warn');
+				return Promise.resolve();
 			}
-			if (!precheckPorts()) return;
+			if (!precheckPorts()) return Promise.resolve();
 			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
-			stageAccess().then(function () {
+			return stageAccess().then(function () {
 				return CPD.apiConfirmable('access', 'apply', [
 					'manual_b64=' + CPD.b64encode(state.manual),
 					'auto_b64=' + CPD.b64encode(state.domains),
@@ -313,6 +313,7 @@ return view.extend({
 					return;
 				}
 				if (j && j.ok) {
+					CPD.clearNotice();
 					toast(_('配置已应用'), 'ok');
 					CPD.showWarnings(j.warnings);
 					CPD.notifyChanges();
@@ -347,8 +348,7 @@ return view.extend({
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			handleSave();
-			return Promise.resolve();
+			return handleSave();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();

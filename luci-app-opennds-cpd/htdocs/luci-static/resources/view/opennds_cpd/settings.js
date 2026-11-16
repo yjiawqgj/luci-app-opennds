@@ -281,10 +281,17 @@ return view.extend({
 				var chain = CPD.api('settings', 'upload_begin', [id]).then(function (j) {
 					if (!j.ok) throw { error: j.error || 'upload_begin 失败' };
 					return CPD.api('settings', 'upload_mkdir', [tab, id, folderName]);
+				}).then(function (j) {
+					if (!j || !j.ok) throw { error: (j && j.error) || _('创建上传目录失败') };
 				});
 				dirs.forEach(function (d) {
 					chain = chain.then(function () {
-						return CPD.api('settings', 'upload_mkdir', [tab, id, folderName, d]);
+						return CPD.api('settings', 'upload_mkdir', [tab, id, folderName, d])
+							.then(function (j) {
+								if (!j || !j.ok) {
+									throw { error: (j && j.error) || _('创建上传目录失败') };
+								}
+							});
 					});
 				});
 				rels.forEach(function (r) {
@@ -298,10 +305,11 @@ return view.extend({
 					return CPD.api('settings', 'upload_default', [tab, id, 'dir', folderName]);
 				}).then(function (j) {
 					if (!j.ok) throw { error: j.error || '上传失败' };
-					CPD.toast(_('已上传门户文件夹 %s，并在门户选择中启用').format(folderName), 'ok');
+					CPD.notify(_('已上传门户文件夹 %s（%s），并已在门户选择中启用')
+						.format(folderName, j.path || portalPath(tab) + folderName), 'ok');
 					uploadActivated(tab, folderName);
 				}).catch(function (e) {
-					CPD.toast(CPD.errText(e, _('上传失败')), 'err');
+					CPD.notify(CPD.errText(e, _('上传失败')), 'err');
 				});
 			};
 			input.click();
@@ -336,24 +344,28 @@ return view.extend({
 		function askClean() {
 			var tab = state.tab;
 			var info = portalInfo(tab);
-			if (!info.sel) return;
-			var name = info.sel;
+			/* 用「当前显示的那个」而不是只看 sel：sel 为空时按钮也能用 */
+			var name = info.sel || (info.items && info.items.length ? info.items[0] : '');
+			if (!name) {
+				CPD.notify(_('该类型当前是内置 default.sh，没有可清理的门户'), 'warn');
+				return;
+			}
 			CPD.confirm(
 				_('清理 %s？').format(shortName(name)),
 				_('将删除门户目录中的 %s，删除后该类型自动切回默认门户。').format(name),
 				_('清理'), true,
 				function () {
 					CPD.api('settings', 'clean_default', [tab, name]).then(function (j) {
-						if (!j.ok) {
-							CPD.toast(j.error || _('清理失败'), 'err');
+						if (!j || !j.ok) {
+							CPD.notify((j && j.error) || _('清理失败'), 'err');
 							return;
 						}
-						CPD.toast(_('已清理 %s，当前类型已切回默认门户').format(name), 'ok');
-						info.items = (info.items || []).filter(function (x) { return x !== name; });
-						info.sel = '';
-						renderPortalTabs();
+						CPD.notify(j.removed === 1
+							? _('已清理 %s，当前类型已切回默认门户').format(name)
+							: _('%s 已不存在，列表已刷新').format(name), 'ok');
+						refresh();
 					}).catch(function (e) {
-						CPD.toast((e && e.error) || _('清理失败'), 'err');
+						CPD.notify(CPD.errText(e, _('清理失败')), 'err');
 					});
 				}
 			);
@@ -431,13 +443,18 @@ return view.extend({
 			var grid = E('div', { 'style': 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px' });
 			state.ifaces.forEach(function (it) {
 				var active = (it.name === state.device);
+				/* 点击事件直接挂在按钮属性上：不依赖 innerHTML 重绘后的二次绑定 */
 				var card = E('button', {
 					'type': 'button',
 					'data-iface': it.name,
 					'style': 'text-align:left;padding:10px 12px;border:1px solid ' +
 						(active ? '#2274a5' : '#d7dde3') + ';border-radius:8px;background:' +
 						(active ? '#e7f1f8' : '#fff') + ';cursor:pointer;font-family:inherit',
-					'aria-pressed': active ? 'true' : 'false'
+					'aria-pressed': active ? 'true' : 'false',
+					'click': function (ev) {
+						if (ev && ev.preventDefault) ev.preventDefault();
+						clickIface(it.name);
+					}
 				}, [
 					E('div', { 'style': 'font-family:ui-monospace,Consolas,monospace;font-size:14px' }, [
 						it.name,
@@ -449,18 +466,11 @@ return view.extend({
 				grid.appendChild(card);
 			});
 			ifaceBox.appendChild(grid);
-			/* 显式绑定，避免框架对 innerHTML/E 事件的差异导致点击无响应 */
-			grid.querySelectorAll('[data-iface]').forEach(function (b) {
-				b.addEventListener('click', function (ev) {
-					ev.preventDefault();
-					clickIface(b.getAttribute('data-iface'));
-				});
-			});
 		}
 
 		function clickIface(name) {
 			if (name === state.device) {
-				CPD.toast(_('当前正在使用 %s').format(name));
+				CPD.notify(_('当前正在使用 %s').format(name), 'warn');
 				return;
 			}
 			CPD.confirm(
@@ -472,7 +482,7 @@ return view.extend({
 					state.device = name;
 					state.iface = name;
 					renderIfaces();
-					CPD.toast(_('网络接口已切换为 %s').format(name), 'ok');
+					CPD.statusBar(_('网络接口已改为 %s，点击「保存并应用」后生效').format(name));
 				}
 			);
 		}
@@ -517,9 +527,9 @@ return view.extend({
 
 		function handleSave() {
 			return stageAll().then(function () {
-				CPD.toast(_('设置已保存（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('设置已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
 
@@ -549,16 +559,17 @@ return view.extend({
 					'fup_enabled=' + (state.fupEnabled ? 1 : 0)
 				]);
 			}).then(function (j) {
-				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+				if (j.error === 'busy') { CPD.notify(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
-					CPD.toast(_('设置已应用'), 'ok');
+					CPD.clearNotice();
+					CPD.notify(_('设置已应用'), 'ok');
 					CPD.notifyChanges();
 					refresh();
 				} else {
-					CPD.toast(j.error || _('应用失败'), 'err');
+					CPD.notify(j.error || _('应用失败'), 'err');
 				}
 			}).catch(function (e) {
-				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
+				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 

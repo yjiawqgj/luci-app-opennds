@@ -313,7 +313,7 @@ return view.extend({
 				state.scope = 'global';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				CPD.toast(_('保存成功（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 			});
@@ -326,7 +326,8 @@ return view.extend({
 				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
 				state.scope = 'global';
 				state.snapshot = uiSnapshot();
-				CPD.toast(_('应用成功'), 'ok');
+				CPD.clearNotice();
+				CPD.notify(_('配置已应用'), 'ok');
 				CPD.notifyChanges();
 				loadStatus();
 			}, function (e) {
@@ -344,7 +345,8 @@ return view.extend({
 		var dirInput = E('input', { 'type': 'file', 'webkitdirectory': '',
 			'style': 'display:none' });
 
-		/* 启用的 Wi-Fi 排在前面，未启用的排最后并带灰色「未启用」标记 */
+		/* 启用的 Wi-Fi 排在前面，未启用的排最后并带灰色「未启用」标记。
+		 * 是否启用完全按 openwrt 无线配置判断（接口 disabled 或所属 radio disabled） */
 		function renderWifiCards() {
 			var list = state.wireless.slice().sort(function (a, b) {
 				return (a.disabled ? 1 : 0) - (b.disabled ? 1 : 0);
@@ -354,7 +356,7 @@ return view.extend({
 				var off = c.disabled ? ' is-off' : '';
 				var pill = c.disabled
 					? '<span class="zd-pill off">' + _('未启用') + '</span>'
-					: '<span class="zd-pill on">' + _('正在使用') + '</span>';
+					: '<span class="zd-pill on">' + _('已启用') + '</span>';
 				var iface = c.device || '—';
 				var d = state.zoneDraft[c.ssid] || '';
 				var sub2 = d ? '<span class="zd-wc-sub">' +
@@ -497,7 +499,7 @@ return view.extend({
 				state.scope = 'zone';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				if (!silent) CPD.toast(_('保存成功（尚未生效，请点击应用）'), 'ok');
+				if (!silent) CPD.statusBar(_('已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 				throw e; /* 保存失败时中止后续应用 */
@@ -514,7 +516,8 @@ return view.extend({
 					CPD.showWarnings(j.warnings);
 					state.scope = 'zone';
 					state.snapshot = uiSnapshot();
-					CPD.toast(_('应用成功'), 'ok');
+					CPD.clearNotice();
+				CPD.notify(_('配置已应用'), 'ok');
 					CPD.notifyChanges();
 					loadStatus();
 				}, function (e) {
@@ -533,14 +536,12 @@ return view.extend({
 			var w = state.wired;
 			var h = '';
 			if (w && w.iface) {
+				/* 卡片只留接口名 + 底部 IP，不再堆说明文字 */
 				h = '<button type="button" class="zd-card' + (state.wiredActive ? ' selected' : '') +
 					'" data-wired="1" aria-pressed="' + (state.wiredActive ? 'true' : 'false') + '">' +
 					'<span class="zd-wc-top"><span class="zd-wc-ssid zd-mono">' + esc(w.iface) + '</span>' +
-					'<span class="zd-pill on">' + _('正在使用') + '</span></span>' +
-					'<span class="zd-wc-ip zd-mono">' + esc(w.ip || '—') +
-						_(' · openNDS 管理接口') + '</span>' +
-					(state.wiredDraft ? '<span class="zd-wc-sub">' +
-						esc(_('认证脚本：%s').format(state.wiredDraft)) + '</span>' : '') +
+					'<span class="zd-pill on">' + _('已启用') + '</span></span>' +
+					'<span class="zd-wc-ip zd-mono">' + esc(w.ip || '—') + '</span>' +
 					'</button>';
 			}
 			wiredGrid.innerHTML = h;
@@ -614,7 +615,7 @@ return view.extend({
 				state.scope = 'zone';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				if (!silent) CPD.toast(_('保存成功（尚未生效，请点击应用）'), 'ok');
+				if (!silent) CPD.statusBar(_('已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 				throw e; /* 保存失败时中止后续应用 */
@@ -632,7 +633,8 @@ return view.extend({
 					CPD.showWarnings(j.warnings);
 					state.scope = 'zone';
 					state.snapshot = uiSnapshot();
-					CPD.toast(_('应用成功'), 'ok');
+					CPD.clearNotice();
+				CPD.notify(_('配置已应用'), 'ok');
 					CPD.notifyChanges();
 					loadStatus();
 				}, function (e) {
@@ -1038,14 +1040,15 @@ return view.extend({
 			return Promise.resolve()
 				.then(function () { return wirelessSave(); })
 				.then(function () { return wiredSave(); })
-				.catch(function () { /* 失败 toast 已在内部显示 */ });
+				.catch(function () { /* 失败提示已在内部给出 */ });
 		};
 		this.handleSaveApply = function () {
 			if (state.scopeSel !== 'zone') { handleDefaultApply(); return Promise.resolve(); }
+			/* wirelessApply / wiredApply 内部会先暂存再应用，不用在外面重复暂存 */
 			return Promise.resolve()
 				.then(function () { return wirelessApply(); })
 				.then(function () { return wiredApply(); })
-				.catch(function () { /* 失败 toast 已在内部显示 */ });
+				.catch(function () { /* 失败提示已在内部给出 */ });
 		};
 		this.handleReset = function () {
 			return CPD.revertStaged(['zone_detect']).then(function () {

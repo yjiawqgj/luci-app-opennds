@@ -94,8 +94,10 @@ return view.extend({
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
 						E('button', { 'class': 'cbi-button', 'click': cancelEdit }, _('取消')),
-						E('button', { 'class': 'cbi-button', 'click': function () { saveMacs(ta); } }, _('保存')),
-						E('button', { 'class': 'cbi-button cbi-button-apply', 'click': function () { saveMacs(ta, true); } }, _('保存并应用'))
+						E('button', {
+							'class': 'cbi-button cbi-button-positive',
+							'click': function () { saveMacs(ta); }
+						}, _('确定'))
 					])
 				]));
 				window.setTimeout(function () {
@@ -148,22 +150,22 @@ return view.extend({
 
 		/* 保存 = 写 uci 暂存（顶部「未保存的配置」出现，复位可还原），不生效 */
 		function stageMacs(list) {
-			return CPD.stageUci('zone_blacklist', 'main', 'mac', 'list', list);
+			return CPD.stageUci('zone_blacklist', 'main', 'mac', 'list', list)
+				.then(function () {
+					return CPD.stageUci('zone_blacklist', 'main', 'portal', 'opt',
+						state.portal || null);
+				});
 		}
 
-		function saveMacs(ta, andApply) {
+		/* 编辑框下的「确定」：只做校验并退出编辑态，不写配置 */
+		function saveMacs(ta) {
 			var p = parseMacs(ta);
-			if (p.error) { toast(p.error, 'err'); if (ta) ta.focus(); return Promise.resolve(); }
-			var unchanged = sameList(p.list, state.macs);
-			return (unchanged ? Promise.resolve() : stageMacs(p.list)).then(function () {
-				state.macs = p.list;
-				state.editing = false;
-				renderMacs();
-				if (andApply) return applyNow();
-				CPD.toast(unchanged ? _('配置未变化') : _('已保存（尚未生效，请点击应用）'), 'ok');
-			}, function (e) {
-				toast(CPD.errText(e, _('保存失败')), 'err');
-			});
+			if (p.error) { CPD.notify(p.error, 'err'); if (ta) ta.focus(); return Promise.resolve(); }
+			state.macs = p.list;
+			state.editing = false;
+			renderMacs();
+			CPD.statusBar(_('黑名单已更新，点击页面底部的「保存并应用」后生效'));
+			return Promise.resolve();
 		}
 
 		/* 应用 = 提交 zone_blacklist 增量 + 运行时同步 + 重启 */
@@ -172,6 +174,7 @@ return view.extend({
 				if (j.error === 'busy') { toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (!j.ok) { toast(j.error || _('应用失败'), 'err'); return; }
 				CPD.notifyChanges();
+				CPD.clearNotice();
 				toast(_('黑名单已应用'), 'ok');
 				return refreshSilently();
 			}).catch(function (e) {
@@ -198,18 +201,13 @@ return view.extend({
 			})));
 			sel.value = state.portal || 'default';
 			if (sel.value !== (state.portal || 'default')) sel.value = 'default';
-			/* 门户切换也走暂存：点「应用/保存并应用」才写配置 */
+			/* 门户切换只改本页状态，配置由底部 openwrt「保存 / 保存并应用」写入 */
 			sel.addEventListener('change', function () {
 				var v = this.value;
 				state.portal = (v === 'default') ? '' : v;
-				CPD.stageUci('zone_blacklist', 'main', 'portal', 'opt',
-					v === 'default' ? null : v).then(function () {
-					toast(v === 'default' ? _('门户已改为默认（尚未生效，请点击应用）')
-						: _('门户已改为 %s（尚未生效，请点击应用）').format(v), 'ok');
-				}, function (e) {
-					toast(CPD.errText(e, _('保存失败')), 'err');
-					renderPortal();
-				});
+				CPD.statusBar(v === 'default'
+					? _('门户已改为默认，点击页面底部的「保存并应用」后生效')
+					: _('门户已改为 %s，点击页面底部的「保存并应用」后生效').format(v));
 			});
 			portalBox.appendChild(E('div', { 'class': 'cpd-field' }, [
 				E('label', {}, _('门户选择')),
@@ -242,14 +240,12 @@ return view.extend({
 						return CPD.api('blacklist', 'upload_store', [id, name]);
 					}).then(function (j) {
 						if (!j.ok) throw { error: j.error || '上传失败' };
-						toast(_('已上传 %s，点击应用后生效').format(name), 'ok');
-						/* 上传即选中（暂存，应用时写入） */
+						/* 上传即选中：只改本页状态，配置由底部 openwrt 按钮写入 */
 						state.portal = name;
-						return CPD.stageUci('zone_blacklist', 'main', 'portal', 'opt', name);
-					}).then(function () {
+						CPD.statusBar(_('已上传 %s，点击页面底部的「保存并应用」后生效').format(name));
 						refreshSilently();
 					}).catch(function (e) {
-						toast(CPD.errText(e, _('上传失败')), 'err');
+						CPD.notify(CPD.errText(e, _('上传失败')), 'err');
 					});
 				};
 				reader.readAsText(f);
@@ -298,27 +294,26 @@ return view.extend({
 
 		/* ---------- LuCI 框架底部按钮：保存 = 暂存，保存并应用 = 提交 ---------- */
 		this.handleSave = function () {
-			if (state.editing) return saveMacs(document.querySelector('.cpd-ta'), false);
 			return stageMacs(state.macs).then(function () {
-				CPD.toast(_('已保存（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('黑名单已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
-				toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		};
 		this.handleSaveApply = function () {
-			if (state.editing) return saveMacs(document.querySelector('.cpd-ta'), true);
 			return stageMacs(state.macs).then(function () {
 				return applyNow();
 			}, function (e) {
-				toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		};
 		this.handleReset = function () {
 			return CPD.revertStaged(['zone_blacklist']).then(function () {
 				state.editing = false;
+				CPD.clearNotice();
 				return refreshSilently();
 			}, function (e) {
-				toast(CPD.errText(e, _('复位失败')), 'err');
+				CPD.notify(CPD.errText(e, _('复位失败')), 'err');
 			});
 		};
 

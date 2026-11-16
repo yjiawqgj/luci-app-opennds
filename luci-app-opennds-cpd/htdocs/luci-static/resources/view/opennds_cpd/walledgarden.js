@@ -170,7 +170,7 @@ return view.extend({
 		function cancelEdit(which) {
 			if (which === 'manual') { state.manualEditing = false; renderManual(); }
 			else { state.autoEditing = false; renderAuto(); }
-			CPD.toast(_('已取消编辑，未保存本次修改'));
+			/* 取消编辑不弹提示 */
 		}
 
 		function finishEdit(which, ta) {
@@ -181,12 +181,12 @@ return view.extend({
 				state.manual = value;
 				state.manualEditing = false;
 				renderManual();
-				CPD.toast(_('规则列表已更新'), 'ok');
+				CPD.statusBar(_('规则列表已更新，点击页面底部的「保存并应用」后生效'));
 			} else {
 				state.domains = value;
 				state.autoEditing = false;
 				renderAuto();
-				CPD.toast(_('域名列表已更新'), 'ok');
+				CPD.statusBar(_('域名列表已更新，点击页面底部的「保存并应用」后生效'));
 			}
 		}
 
@@ -228,7 +228,7 @@ return view.extend({
 
 		function handleSave() {
 			if (editingBusy()) {
-				CPD.toast(_('请先完成或取消列表编辑'), 'warn');
+				CPD.notify(_('请先完成或取消列表编辑'), 'warn');
 				return Promise.reject({ silent: true });
 			}
 			return stageWg().then(function () {
@@ -237,20 +237,20 @@ return view.extend({
 					domains: currentAuto(),
 					ports: currentPorts()
 				};
-				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('配置已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				if (e && e.silent) return;
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
 
 		function handleApply() {
 			if (editingBusy()) {
-				CPD.toast(_('请先完成或取消列表编辑'), 'warn');
-				return;
+				CPD.notify(_('请先完成或取消列表编辑'), 'warn');
+				return Promise.resolve();
 			}
 			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
-			stageWg().then(function () {
+			return stageWg().then(function () {
 				return CPD.apiConfirmable('walledgarden', 'apply', [
 					'manual_b64=' + CPD.b64encode(currentText()),
 					'domains_b64=' + CPD.b64encode(currentAuto()),
@@ -259,7 +259,8 @@ return view.extend({
 			}).then(function (j) {
 				if (j && j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
-					CPD.toast(_('配置已应用'), 'ok');
+					CPD.clearNotice();
+					CPD.notify(_('配置已应用'), 'ok');
 					CPD.showWarnings(j.warnings);
 					CPD.notifyChanges();
 					refresh();
@@ -293,8 +294,7 @@ return view.extend({
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			handleSave();
-			return Promise.resolve();
+			return handleSave();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();

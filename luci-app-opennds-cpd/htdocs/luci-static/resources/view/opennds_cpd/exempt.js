@@ -69,10 +69,10 @@ return view.extend({
 					'class': 'cbi-button ' + (state.preemptEnabled ? 'cbi-button-positive' : ''),
 					'click': function () {
 						state.preemptEnabled = state.preemptEnabled ? 0 : 1;
-						CPD.toast(state.preemptEnabled
-							? _('授权客户端已启用')
-							: _('授权客户端已关闭，配置已保留'), 'ok');
 						renderAll();
+						CPD.statusBar(state.preemptEnabled
+							? _('授权客户端已启用，点击页面底部的「保存并应用」后生效')
+							: _('授权客户端已关闭（配置保留），点击「保存并应用」后生效'));
 					}
 				}, state.preemptEnabled ? _('已启用') : _('已关闭'));
 				sec.appendChild(E('div', { 'style': 'margin-top:10px;display:flex;align-items:center;gap:10px' }, [
@@ -282,7 +282,7 @@ return view.extend({
 			var seen = {}, out = [];
 			for (var i = 0; i < lines.length; i++) {
 				if (!macOk(lines[i])) {
-					CPD.toast(_('非法MAC: %s').format(lines[i]), 'err');
+					CPD.notify(_('非法MAC: %s').format(lines[i]), 'err');
 					return;
 				}
 				var lm = lines[i].toLowerCase();
@@ -299,13 +299,11 @@ return view.extend({
 						('mac=' + m + ';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0');
 				});
 			}
+			/* 编辑框下的「确定」只退出编辑态，不写任何配置；
+			 * 配置由页面底部的 openwrt「保存 / 保存并应用」写入 */
 			state.editing[which] = false;
 			renderAll();
-			stageExempt().then(function () {
-				CPD.toast(_('MAC 地址列表已保存（尚未生效，请点击应用）'), 'ok');
-			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
-			});
+			CPD.statusBar(_('名单已更新，点击页面底部的「保存并应用」后生效'));
 		}
 
 		/* 把当前名单与开关落成 uci 暂存（顶部出现「未保存的配置」） */
@@ -333,7 +331,7 @@ return view.extend({
 						state.preempt = state.preempt.filter(function (e) { return macOf(e) !== mac; });
 					}
 					renderAll();
-					CPD.toast(isPre ? _('客户端已删除') : _('客户端已移除'), 'ok');
+					CPD.statusBar(_('名单已更新，点击页面底部的「保存并应用」后生效'));
 				}
 			);
 		}
@@ -341,8 +339,8 @@ return view.extend({
 		/* ---------- 应用 ---------- */
 		function handleApply() {
 			if (state.editing.trusted || state.editing.preempt) {
-				CPD.toast(_('请先保存或取消 MAC 地址编辑'), 'warn');
-				return;
+				CPD.notify(_('请先完成或取消 MAC 地址编辑'), 'warn');
+				return Promise.resolve();
 			}
 			/* 交集拦截（决策 #12）：err 提示不自动消失 */
 			var tset = {}, dups = {};
@@ -356,7 +354,7 @@ return view.extend({
 				var shown = dlist.slice(0, 3).map(function (m) { return '`' + m + '`'; }).join('、') +
 					(dlist.length > 3 ? _('等 %s 条').format(dlist.length) : '');
 				ui.addNotification(null, E('p', {}, _('%s 同时出现在信任列表和授权列表，一个客户端只能属于一个列表，请删除其中一个后再应用。').format(shown)), 'error');
-				return;
+				return Promise.resolve();
 			}
 			var diff = function (a0, a1) {
 				var s0 = {}, s1 = {}, add = [], rem = [];
@@ -378,22 +376,23 @@ return view.extend({
 			if (!state.preempt.length && state.preempt0.length) args.push('preempt_clear=1');
 			args.push('preempt_enabled=' + state.preemptEnabled);
 			/* 保存并应用：先把当前名单落成 uci 暂存，再交给后端差量执行 */
-			stageExempt().then(function () {
+			return stageExempt().then(function () {
 				return CPD.apiConfirmable('exempt', 'save', args);
 			}).then(function (j) {
-				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
+				if (j.error === 'busy') { CPD.notify(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.error === 'duplicate' && j.duplicates) {
 					ui.addNotification(null, E('p', {},
 						_('同时出现在信任列表和授权列表，一个客户端只能属于一个列表，请删除其中一个后再应用。')),
 						'error');
 					return;
 				}
-				if (!j.ok) { CPD.toast(j.error || _('应用失败'), 'err'); return; }
-				CPD.toast(_('配置已应用'), 'ok');
+				if (!j.ok) { CPD.notify(j.error || _('应用失败'), 'err'); return; }
+				CPD.clearNotice();
+				CPD.notify(_('配置已应用'), 'ok');
 				CPD.notifyChanges();
 				refresh();
 			}).catch(function (e) {
-				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
+				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -417,9 +416,9 @@ return view.extend({
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
 			return stageExempt().then(function () {
-				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
+				CPD.statusBar(_('名单已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		};
 		this.handleSaveApply = function () {
@@ -427,9 +426,10 @@ return view.extend({
 		};
 		this.handleReset = function () {
 			return CPD.revertStaged(['opennds']).then(function () {
+				CPD.clearNotice();
 				refresh();
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
+				CPD.notify(CPD.errText(e, _('复位失败')), 'err');
 			});
 		};
 
