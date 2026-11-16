@@ -903,7 +903,7 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 编辑弹窗（5 项限制，应用 = 保存 + 重启） ---------- */
+		/* ---------- 编辑弹窗（5 项限制；「确定」只暂存，落盘交给 openwrt「保存并应用」） ---------- */
 		var editMask = E('div', { 'class': 'ovd-mask' }, E('div', {
 			'class': 'ovd-dialog', 'role': 'dialog', 'aria-modal': 'true'
 		}, [
@@ -914,7 +914,7 @@ return view.extend({
 			E('div', { 'class': 'ovd-dbody', 'id': 'ovd-ed-body' }),
 			E('div', { 'class': 'ovd-dfoot' }, [
 				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': cancelEdit }, _('取消')),
-				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive', 'click': saveEdit }, _('应用'))
+				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive', 'click': saveEdit }, _('确定'))
 			])
 		]));
 		var editInputs = {};
@@ -1031,31 +1031,19 @@ return view.extend({
 			}
 			var host = editRow.host || editRow.mac;
 			var mac = editRow.mac;
-			runOp(15, function () {
-				return CPD.api('overview', 'client_edit', [mac,
+			runOp(5, function () {
+				return CPD.api('overview', 'client_edit_stage', [mac,
 					'sessiontimeout=' + args.sessiontimeout,
 					'uploadrate=' + args.uploadrate,
 					'downloadrate=' + args.downloadrate,
 					'uploadquota=' + args.uploadquota,
 					'downloadquota=' + args.downloadquota]);
 			}, {
-				onok: function (j) {
+				onok: function () {
 					closeEdit();
-					/* 乐观显示：写入 preemptivemac 的客户端下次接入自动登录（免认证），
-					   下一轮 clients 回来以真实 state 覆盖 */
-					editRow0(mac);
-					CPD.toast(_('已应用「%s」的客户端设置').format(host), 'ok');
-					CPD.showWarnings(j.warnings);
-					refresh();
-				}
-			});
-		}
-
-		function editRow0(mac) {
-			state.clients.forEach(function (c) {
-				if (c.mac === mac && !c.trusted) {
-					c.preauth = true;
-					c.authenticated = true;
+					/* 编辑框下的「确定」= 退出编辑 + 写 uci 增量；
+					   不 commit、不重启 nds，一律等 openwrt 自带的「保存并应用」 */
+					CPD.statusBar(_('已记录「%s」的限制，点击页面底部的「保存并应用」后生效').format(host));
 				}
 			});
 		}
@@ -1241,13 +1229,30 @@ return view.extend({
 
 		refresh();
 
-		/* ---------- LuCI 框架底部按钮：本页只有运行控制，没有需要保存的配置 ---------- */
-		/* 本页没有可保存的配置项：按钮点了就正常返回，不弹任何提示 */
+		/* ---------- LuCI 框架底部按钮：本页只有运行控制，配置写入只走暂存 ---------- */
+		/* 本页没有需要「保存」的常驻配置项：保存 = 保持现状（增量已在编辑时写好） */
 		this.handleSave = function () {
 			return Promise.resolve();
 		};
+		/* 保存并应用：把概览页暂存的客户端限制落盘 + 重启 nds */
 		this.handleSaveApply = function () {
-			return Promise.resolve();
+			return new Promise(function (resolve) {
+				CPD.api('overview', 'apply').then(function (j) {
+					if (!j || !j.ok) {
+						CPD.notify((j && j.error) || _('应用失败'), 'err');
+						resolve();
+						return;
+					}
+					CPD.clearNotice();
+					CPD.notify(_('配置已应用'), 'ok');
+					if (j.warnings && j.warnings.length) CPD.showWarnings(j.warnings);
+					refresh();
+					resolve();
+				}, function (e) {
+					CPD.notify(CPD.errText(e, _('应用失败')), 'err');
+					resolve();
+				});
+			});
 		};
 		this.handleReset = function () {
 			state.filter = 'online';

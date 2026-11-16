@@ -1064,7 +1064,14 @@ ov_client_action() { # $1=action $2=mac
 	esac
 }
 
-ov_client_edit() { # $1=mac $2…=k=v（5 项）
+# $1=stage|apply —— stage 只写 uci 增量（等 openwrt「保存并应用」），apply 才 commit + 重启
+ov_client_edit() { # $1=stage|apply $2=mac $3…=k=v（5 项）
+	local mode="$1"
+	shift
+	case "$mode" in
+		stage | apply) ;;
+		*) out_err '模式必须是 stage 或 apply' ;;
+	esac
 	local mac="$1"
 	shift
 	mac_valid "$mac" || out_err 'MAC 格式不正确'
@@ -1092,6 +1099,12 @@ ov_client_edit() { # $1=mac $2…=k=v（5 项）
 
 	acquire_lock
 
+	# 先确保 opennds 配置节存在（缺失时自愈新建，失败要把 uci 原话带回去）
+	local secname sec
+	secname=$(sys_ensure_sec opennds '@opennds[0]') ||
+		out_err '暂存配置失败：找不到 opennds 配置节，且无法新建（请检查 /etc/config 是否可写）'
+	sec="opennds.$secname"
+
 	# 已有条目里的 custom= 字段要原样保留（别在重排字段时抹掉）
 	local old custom='' tail
 	old=$(entry_for_mac "$(list_of 'opennds.@opennds[0].preemptivemac')" "$lm")
@@ -1107,10 +1120,18 @@ ov_client_edit() { # $1=mac $2…=k=v（5 项）
 	local new
 	new="mac=$lm;sessiontimeout=$st;uploadrate=$ur;downloadrate=$dr;uploadquota=$uq;downloadquota=$dq$custom"
 	if [ -n "$old" ]; then
-		uci del_list 'opennds.@opennds[0].preemptivemac' "$old"
+		uci_w del_list "$sec.preemptivemac" "$old" || sys_stage_fail
 	fi
-	uci add_list 'opennds.@opennds[0].preemptivemac' "$new"
-	uci commit opennds
+	uci_w add_list "$sec.preemptivemac" "$new" || sys_stage_fail
+
+	# 编辑框下的「确定」只写增量：不 commit、不重启，
+	# 配置真正落盘与 nds 重启一律等 openwrt 自带的「保存并应用」。
+	if [ "$mode" = 'stage' ]; then
+		printf '{"ok":1,"staged":1}\n'
+		return 0
+	fi
+
+	uci commit opennds || out_err '写入配置失败'
 
 	# 改已有客户端的限额参数必须重启（在线会话的参数只在启动时读入）
 	local ready=1
@@ -1121,6 +1142,15 @@ ov_client_edit() { # $1=mac $2…=k=v（5 项）
 		warn_json=',"warnings":["该客户端没有 DHCP 租约，预认证不会生效"]'
 	fi
 	printf '{"ok":1,"restarted":'"$SR_RESTARTED"',"ready":%s%s}\n' "$ready" "$warn_json"
+}
+
+# openwrt「保存并应用」：把概览页暂存的增量真正落盘，再重启 nds
+ov_apply() {
+	acquire_lock
+	uci commit opennds || out_err '写入配置失败'
+	local ready=1
+	service_restart || ready=0
+	printf '{"ok":1,"restarted":%s,"ready":%s}\n' "$SR_RESTARTED" "$ready"
 }
 
 # ============================================================
@@ -4547,6 +4577,13 @@ sys_ensure_sec() { # $1=config $2=sid → stdout 输出可写 section 名
 	local conf="$1" sid="$2" typ name
 	case "$sid" in
 		@*)
+			# 先直接探测 @type[n]：uci 能解析就说明这一节确实存在。
+			# （只靠 uci show 的类型行去找，万一行缺失就会误建第二个同名节，
+			#   而 openNDS 只认 @opennds[0]，写进去等于丢失）
+			if uci -q show "$conf.$sid" >/dev/null 2>&1; then
+				printf '%s' "$sid"
+				return 0
+			fi
 			typ=$(printf '%s' "$sid" | sed -e 's/^@//' -e 's/\[.*$//')
 			name=$(sys_find_sec "$conf" "$typ")
 			if [ -n "$name" ]; then
@@ -4700,7 +4737,9 @@ case "$PAGE" in
 			clients) ov_clients ;;
 			client_detail) ov_client_detail "$1" ;;
 			client_action) ov_client_action "$1" "$2" ;;
-			client_edit) ov_client_edit "$@" ;;
+			client_edit) ov_client_edit apply "$@" ;;
+			client_edit_stage) ov_client_edit stage "$@" ;;
+			apply) ov_apply ;;
 			*) out_err "overview：未知子命令 $SUB" ;;
 		esac
 		;;
