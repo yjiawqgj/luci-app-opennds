@@ -281,7 +281,7 @@ return view.extend({
 		function fixThemespec() {
 			CPD.api('overview', 'set_themespec').then(function (j) {
 				if (!j.ok) { CPD.toast(j.error || _('写入失败'), 'err'); return; }
-				CPD.toast(_('脚本地址已设置'), 'ok');
+				/* 写成功后提示条自己会消失，这就是反馈，不再额外弹横幅 */
 				refresh();
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('写入失败')), 'err');
