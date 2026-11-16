@@ -23,9 +23,9 @@ var CSS = '\
 .zd-ms-dirty{color:#b57d17}\
 .zd-state-line{font-size:11.5px;color:#9aa6b2;margin-top:8px;line-height:1.6;max-width:620px}\
 .zd-empty-hint{font-size:12.5px;color:#9aa6b2;margin-top:16px;line-height:1.6}\
-.zd-grid3{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}\
-.zd-grid1{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}\
-.zd-card{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:16px 16px 15px;cursor:pointer;min-width:0;color:#222a31;display:flex;flex-direction:column;justify-content:center;gap:7px;min-height:92px;transition:border-color .12s,background .12s}\
+.zd-grid3{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:14px}\
+.zd-grid1{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:14px}\
+.zd-card{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:11px 13px;cursor:pointer;min-width:0;color:#222a31;display:flex;flex-direction:column;justify-content:center;gap:5px;min-height:62px;transition:border-color .12s,background .12s}\
 .zd-panel{margin-top:28px;padding-top:20px;border-top:1px solid #e9edf0}\
 .zd-card:hover{border-color:#b9c6d1;background:#fafbfc}\
 .zd-card.selected{border-color:#2274a5;background:#e7f1f8}\
@@ -33,7 +33,7 @@ var CSS = '\
 .zd-sec-desc{font-size:12px;color:#657585;margin-top:5px;line-height:1.6;max-width:760px}\
 .zd-sec-desc.mt{margin-top:12px}\
 .zd-wc-top{display:flex;align-items:center;justify-content:space-between;gap:8px}\
-.zd-wc-ssid{font-size:17px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}\
+.zd-wc-ssid{font-size:15px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}\
 .zd-wc-sub{display:block;font-size:12px;color:#9aa6b2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
 .zd-wc-sub.weak{color:#b3bcc5}\
 .zd-wc-ip{display:block;font-size:12px;color:#657585;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
@@ -94,10 +94,6 @@ function fileNameOk(n) {
 	if (!zoneNameOk(n)) return false;
 	if (n.charAt(0) === '.') return false;
 	if (n !== n.replace(/^\s+|\s+$/g, '')) return false; /* 首尾空格不允许 */
-	for (var i = 0; i < n.length; i++) {
-		var cc = n.charCodeAt(i);
-		if (cc < 128 && !/[A-Za-z0-9._\- ]/.test(n.charAt(i))) return false;
-	}
 	return true;
 }
 
@@ -348,26 +344,31 @@ return view.extend({
 		var dirInput = E('input', { 'type': 'file', 'webkitdirectory': '',
 			'style': 'display:none' });
 
-		function cardSub(c) {
-			var d = state.zoneDraft[c.ssid] || '';
-			if (d) return { text: _('认证脚本：%s').format(shortName(d)) };
-			return { text: _('使用默认门户'), weak: true };
-		}
-
-		/* 只显示在用的 Wi-Fi（禁用的不出现，也不带启用/禁用胶囊） */
+		/* 启用的 Wi-Fi 排在前面，未启用的排最后并带灰色「未启用」标记 */
 		function renderWifiCards() {
-			var live = state.wireless.filter(function (c) { return !c.disabled; });
-			var h = live.map(function (c) {
+			var list = state.wireless.slice().sort(function (a, b) {
+				return (a.disabled ? 1 : 0) - (b.disabled ? 1 : 0);
+			});
+			var h = list.map(function (c) {
 				var sel = (state.active === c.ssid) ? ' selected' : '';
-				var sub = cardSub(c);
-				return '<button type="button" class="zd-card' + sel +
+				var off = c.disabled ? ' is-off' : '';
+				var pill = c.disabled
+					? '<span class="zd-pill off">' + _('未启用') + '</span>'
+					: '<span class="zd-pill on">' + _('正在使用') + '</span>';
+				var iface = c.device || '—';
+				var d = state.zoneDraft[c.ssid] || '';
+				var sub2 = d ? '<span class="zd-wc-sub">' +
+					esc(_('认证脚本：%s').format(shortName(d))) + '</span>' : '';
+				return '<button type="button" class="zd-card' + sel + off +
 					'" data-ssid="' + esc(c.ssid) + '" aria-pressed="' +
 					(state.active === c.ssid ? 'true' : 'false') + '">' +
-					'<span class="zd-wc-top"><span class="zd-wc-ssid">' + esc(c.ssid) + '</span></span>' +
-					'<span class="zd-wc-sub' + (sub.weak ? ' weak' : '') + '">' + esc(sub.text) + '</span>' +
+					'<span class="zd-wc-top"><span class="zd-wc-ssid">' + esc(c.ssid) + '</span>' +
+					pill + '</span>' +
+					'<span class="zd-wc-sub weak">' + esc(_('无线接口：%s').format(iface)) + '</span>' +
+					sub2 +
 					'</button>';
 			}).join('');
-			if (!h) h = '<p class="cpd-note">' + _('本机没有处于启用状态的 Wi-Fi') + '</p>';
+			if (!h) h = '<p class="cpd-note">' + _('本机没有 Wi-Fi 接口') + '</p>';
 			wifiGrid.innerHTML = h;
 			wifiGrid.querySelectorAll('[data-ssid]').forEach(function (b) {
 				b.addEventListener('click', function () {
@@ -441,8 +442,6 @@ return view.extend({
 		function renderZoneConfig() {
 			zoneConfig.innerHTML = '';
 			if (!state.active) {
-				zoneConfig.appendChild(E('p', { 'class': 'zd-empty-hint' },
-					_('点击上方任意 Wi-Fi 卡片，为它选择认证脚本。')));
 				zoneSaveRow.style.display = 'none';
 				return;
 			}
@@ -466,7 +465,7 @@ return view.extend({
 				_('尚未选择脚本，选择结果仅对当前选中的 Wi-Fi 生效。'));
 
 			zoneConfig.appendChild(E('div', { 'class': 'zd-tools' }, [
-				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive',
+				E('button', { 'type': 'button', 'class': 'cbi-button',
 					'click': function () { fileInput.value = ''; fileInput.click(); } },
 					_('上传脚本')),
 				E('button', { 'type': 'button', 'class': 'cbi-button',
@@ -536,12 +535,12 @@ return view.extend({
 			if (w && w.iface) {
 				h = '<button type="button" class="zd-card' + (state.wiredActive ? ' selected' : '') +
 					'" data-wired="1" aria-pressed="' + (state.wiredActive ? 'true' : 'false') + '">' +
-					'<span class="zd-wc-top"><span class="zd-wc-ssid zd-mono">' + esc(w.iface) + '</span></span>' +
+					'<span class="zd-wc-top"><span class="zd-wc-ssid zd-mono">' + esc(w.iface) + '</span>' +
+					'<span class="zd-pill on">' + _('正在使用') + '</span></span>' +
 					'<span class="zd-wc-ip zd-mono">' + esc(w.ip || '—') +
 						_(' · openNDS 管理接口') + '</span>' +
-					'<span class="zd-wc-sub' + (state.wiredDraft ? '' : ' weak') + '">' +
-					(state.wiredDraft ? _('认证脚本：%s').format(state.wiredDraft) : _('使用默认门户')) +
-					'</span>' +
+					(state.wiredDraft ? '<span class="zd-wc-sub">' +
+						esc(_('认证脚本：%s').format(state.wiredDraft)) + '</span>' : '') +
 					'</button>';
 			}
 			wiredGrid.innerHTML = h;
@@ -583,7 +582,7 @@ return view.extend({
 				renderHints();
 			});
 			wiredConfig.appendChild(E('div', { 'class': 'zd-tools' }, [
-				E('button', { 'type': 'button', 'class': 'cbi-button cbi-button-positive',
+				E('button', { 'type': 'button', 'class': 'cbi-button',
 					'click': function () { fileInput.value = ''; fileInput.click(); } },
 					_('上传脚本')),
 				E('button', { 'type': 'button', 'class': 'cbi-button',

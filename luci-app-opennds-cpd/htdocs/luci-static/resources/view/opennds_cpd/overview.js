@@ -13,7 +13,7 @@
 var CPD = null;
 
 var CSS = '\
-.ovd-page{max-width:1100px;margin:0 auto;padding:18px 4px 60px;color:#222a31}\
+.ovd-page{max-width:none;width:100%;padding:18px 4px 60px;color:#222a31}\
 .ovd-sec{padding:18px 0 6px}\
 .ovd-sec h3{font-size:16px;font-weight:650;margin:0 0 4px}\
 .ovd-divider{border:0;border-top:1px solid #d7dde3;margin:8px 0 0}\
@@ -165,6 +165,7 @@ return view.extend({
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			filter: 'online', ap: null, query: '', fupEnabled: true,
+			themeOk: 1, themespec: '',
 			sortKey: null, sortDir: 1
 		};
 		var locked = false, lockTimer = null, pollTimer = null, modalOpen = 0;
@@ -237,6 +238,37 @@ return view.extend({
 			} else {
 				warnbar.style.display = 'none';
 			}
+			renderThemeBar();
+		}
+
+		/* ---------- 主题脚本地址提示（登录模式 3 但脚本不是本插件的）
+		 * 只在页面提示，用户点按钮才写这一项，插件安装/加载绝不改配置 ---------- */
+		var themeBar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' });
+
+		function renderThemeBar() {
+			if (state.themeOk === 0) {
+				themeBar.innerHTML = '';
+				themeBar.appendChild(E('span', {},
+					_('当前登录模式为 3（自定义主题门户），但主题脚本地址不是本插件的区域识别脚本，网络区域识别不会生效。')));
+				themeBar.appendChild(E('button', {
+					'class': 'cbi-button',
+					'style': 'margin-left:10px',
+					'click': fixThemespec
+				}, _('设置脚本地址')));
+				themeBar.style.display = '';
+			} else {
+				themeBar.style.display = 'none';
+			}
+		}
+
+		function fixThemespec() {
+			CPD.api('overview', 'set_themespec').then(function (j) {
+				if (!j.ok) { CPD.toast(j.error || _('写入失败'), 'err'); return; }
+				CPD.toast(_('脚本地址已设置'), 'ok');
+				refresh();
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('写入失败')), 'err');
+			});
 		}
 
 		/* ---------- 数据拉取与 10 秒轮询 ---------- */
@@ -256,6 +288,8 @@ return view.extend({
 					state.counts = st.counts || {};
 					state.managed = st.managed || { iface: '', ip: '' };
 					state.aps = st.aps || [];
+					state.themeOk = (st.themeOk === 0) ? 0 : 1;
+					state.themespec = st.themespec || '';
 				}
 				if (cl && cl.ok) {
 					state.clients = cl.clients || [];
@@ -1041,6 +1075,7 @@ return view.extend({
 		body.appendChild(E('div', { 'class': 'cpd-head' },
 			E('h2', {}, _('openNDS 概览'))));
 		body.appendChild(warnbar);
+		body.appendChild(themeBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [
 			E('h3', {}, _('状态')),
@@ -1091,9 +1126,9 @@ return view.extend({
 
 		refresh();
 
-		/* ---------- LuCI 框架底部按钮：本页为即时生效，保存/应用仅提示 ---------- */
+		/* ---------- LuCI 框架底部按钮：本页只有运行控制，没有需要保存的配置 ---------- */
 		this.handleSave = function () {
-			CPD.toast(_('本页操作即时生效，无需保存'), 'ok');
+			CPD.toast(_('本页没有需要保存的配置'), 'ok');
 			return Promise.resolve();
 		};
 		this.handleSaveApply = this.handleSave;

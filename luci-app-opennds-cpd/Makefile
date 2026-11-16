@@ -21,6 +21,8 @@ endef
 
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
+# 只做文件权限与目录准备：绝不修改 openNDS 的任何配置项。
+# 插件所有界面数据一律从现有 /etc/config/opennds 读取，不写默认值、不清空列表。
 [ -n "$${IPKG_INSTROOT}" ] || {
 	chmod 755 /usr/lib/opennds/opennds-cpd-api.sh
 	chmod 755 /usr/lib/opennds/theme_zone_detect.sh
@@ -28,13 +30,6 @@ define Package/$(PKG_NAME)/postinst
 	mkdir -p /usr/lib/opennds/cpd/default/wireless /usr/lib/opennds/cpd/default/wired /usr/lib/opennds/cpd/default/blacklist
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache
-	# 登录模式为 3 时把主题脚本指向本插件的区域识别分发脚本
-	if [ "$$$$(uci -q get opennds.@opennds[0].login_option_enabled 2>/dev/null)" = "3" ] && \
-	   [ "$$$$(uci -q get opennds.@opennds[0].themespec_path 2>/dev/null)" != "/usr/lib/opennds/theme_zone_detect.sh" ]; then
-		uci set opennds.@opennds[0].themespec_path='/usr/lib/opennds/theme_zone_detect.sh'
-		uci commit opennds
-		[ -z "$$$$(pidof opennds 2>/dev/null)" ] || /etc/init.d/opennds restart >/dev/null 2>&1
-	fi
 }
 exit 0
 endef

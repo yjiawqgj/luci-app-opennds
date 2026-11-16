@@ -10,7 +10,7 @@
 var API_PATH = '/usr/lib/opennds/opennds-cpd-api.sh';
 
 var CSS = '\
-.cpd-page{max-width:980px;margin:0 auto;padding:18px 4px 60px;color:var(--text,#222a31)}\
+.cpd-page{max-width:none;width:100%;padding:18px 4px 60px;color:var(--text,#222a31)}\
 .cpd-head{padding-bottom:14px;border-bottom:1px solid var(--line,#d7dde3)}\
 .cpd-head h2{font-size:18px;font-weight:650;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0}\
 .cpd-head h2 .cpd-en{font-size:11.5px;font-weight:500;color:#9aa6b2}\
@@ -18,18 +18,18 @@ var CSS = '\
 .cpd-sec{padding:18px 0 6px}\
 .cpd-sec h3{font-size:15px;font-weight:650;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 6px}\
 .cpd-sec h3 .cpd-en{font-size:10.5px;font-weight:500;color:#9aa6b2}\
-.cpd-note{font-size:12.5px;color:var(--muted,#657585);line-height:1.65;max-width:720px}\
+.cpd-note{font-size:12.5px;color:var(--muted,#657585);line-height:1.65;max-width:920px}\
 .cpd-warnline{font-size:12.5px;color:var(--red,#c94848);line-height:1.65}\
 .cpd-warnbar{font-size:12.5px;line-height:1.6;padding:9px 12px;border:1px solid var(--amber,#b57d17);border-radius:6px;color:var(--amber,#b57d17);margin-top:8px}\
 .cpd-state{font-size:11.5px;color:#9aa6b2;margin-top:8px}\
 .cpd-viewer-label{margin-top:14px;font-size:12.5px;font-weight:600;color:var(--muted,#657585)}\
-.cpd-viewer{margin-top:7px;max-width:600px;padding:12px 14px;border:1px solid #ccd5dd;border-radius:5px;background:#f5f7f9;box-shadow:inset 0 1px 3px rgba(28,44,58,.07)}\
+.cpd-viewer{margin-top:7px;max-width:100%;padding:12px 14px;border:1px solid #ccd5dd;border-radius:5px;background:#f5f7f9;box-shadow:inset 0 1px 3px rgba(28,44,58,.07)}\
 .cpd-viewer pre{margin:0;background:transparent;border:0;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:13px;line-height:1.7;color:#26323c;white-space:pre-wrap;word-break:break-all}\
-.cpd-ta{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:13px;line-height:1.6;width:100%;max-width:600px;min-height:132px;padding:9px 11px;background:#fff;border:1px solid var(--line,#d7dde3);border-radius:6px;resize:vertical;color:var(--text,#222a31)}\
+.cpd-ta{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:13px;line-height:1.6;width:100%;max-width:900px;min-height:132px;padding:9px 11px;background:#fff;border:1px solid var(--line,#d7dde3);border-radius:6px;resize:vertical;color:var(--text,#222a31)}\
 .cpd-ta:focus{outline:none;border-color:var(--primary,#2274a5)}\
 .cpd-field{margin-top:12px}\
 .cpd-field>label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}\
-.cpd-input{width:100%;max-width:600px;padding:8px 10px;font-size:14px;border:1px solid var(--line,#d7dde3);border-radius:6px;background:#fff;color:var(--text,#222a31)}\
+.cpd-input{width:100%;max-width:900px;padding:8px 10px;font-size:14px;border:1px solid var(--line,#d7dde3);border-radius:6px;background:#fff;color:var(--text,#222a31)}\
 .cpd-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}\
 .cpd-actions-right{margin-top:22px;padding-top:14px;border-top:1px solid var(--line,#d7dde3);display:flex;justify-content:flex-end;gap:8px}\
 #cpd-toasts{position:fixed;right:18px;bottom:18px;z-index:600;display:flex;flex-direction:column;gap:10px;max-width:min(420px,calc(100vw - 36px))}\
@@ -43,6 +43,9 @@ var CSS = '\
 .cpd-pill.cpd-warn{background:rgba(150,100,20,.94)}\
 .cpd-pill.cpd-err{background:rgba(160,50,50,.94)}\
 .cpd-badge{font-size:11px;color:#2e9468;margin-left:6px}\
+.cpd-tab{font-family:inherit;font-size:13px;line-height:1.4;padding:9px 14px;border:0;border-bottom:2px solid transparent;background:transparent!important;cursor:pointer;color:inherit;margin-bottom:-1px;outline:none!important;box-shadow:none!important}\
+.cpd-tab:hover,.cpd-tab:focus,.cpd-tab:active{background:transparent!important;outline:none!important;box-shadow:none!important;border-top:0;border-left:0;border-right:0}\
+.cpd-tab.on{font-weight:700;border-bottom-color:#2274a5}\
 @media (max-width:640px){.cpd-ta{font-size:16px}.cpd-actions .cbi-button,.cpd-actions .btn{flex:1 1 30%}}\
 ';
 

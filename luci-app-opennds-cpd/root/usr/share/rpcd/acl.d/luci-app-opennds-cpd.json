@@ -6,11 +6,14 @@
       "uci": [ "opennds", "zone_blacklist", "zone_detect" ],
       "file": {
         "/usr/lib/opennds/opennds-cpd-api.sh": [ "exec" ],
-        "/usr/lib/opennds/zone_markers": [ "read" ],
+        "/usr/lib/opennds/zone_markers": [ "read", "stat" ],
         "/usr/lib/opennds/cpd/": [ "read", "list" ],
+        "/usr/lib/opennds/cpd/*": [ "read", "list" ],
         "/etc/config/opennds": [ "read" ],
         "/etc/config/zone_blacklist": [ "read" ],
-        "/etc/config/zone_detect": [ "read" ]
+        "/etc/config/zone_detect": [ "read" ],
+        "/tmp/zone_up/": [ "read", "list" ],
+        "/tmp/zone_up/*": [ "read", "list" ]
       }
     },
     "write": {
@@ -18,12 +21,14 @@
       "uci": [ "opennds", "zone_blacklist", "zone_detect" ],
       "file": {
         "/usr/lib/opennds/opennds-cpd-api.sh": [ "exec" ],
-        "/usr/lib/opennds/zone_markers": [ "write" ],
+        "/usr/lib/opennds/zone_markers": [ "write", "read", "stat" ],
         "/usr/lib/opennds/cpd/": [ "write", "list" ],
+        "/usr/lib/opennds/cpd/*": [ "write", "list" ],
         "/etc/config/opennds": [ "write" ],
         "/etc/config/zone_blacklist": [ "write" ],
         "/etc/config/zone_detect": [ "write" ],
-        "/tmp/zone_up/": [ "write", "list" ]
+        "/tmp/zone_up/": [ "write", "list", "read" ],
+        "/tmp/zone_up/*": [ "write", "list", "read" ]
       }
     }
   }

@@ -121,61 +121,34 @@ return view.extend({
 		function renderPortalTabs() {
 			portalBox.innerHTML = '';
 			var tabs = ['wireless', 'wired', 'blacklist'];
-			/* 与顶部页面切换同风格：无背景色，选中只加深色下划线 */
+			/* 与顶部页面切换同风格：无背景色，选中只加粗 + 下划线，不改变文字颜色 */
 			var tabRow = E('div', { 'role': 'tablist',
 				'style': 'display:flex;flex-wrap:wrap;border-bottom:1px solid #e3e9ee;margin-top:16px' });
 			tabs.forEach(function (t) {
 				var on = state.tab === t;
 				tabRow.appendChild(E('button', {
 					'role': 'tab', 'type': 'button',
-					'style': 'font-family:inherit;font-size:13px;line-height:1.4;padding:9px 14px;border:0;' +
-						'background:transparent;cursor:pointer;' +
-						'color:' + (on ? '#1a5c85' : '#657585') + ';' +
-						'font-weight:' + (on ? '600' : '400') + ';' +
-						'border-bottom:2px solid ' + (on ? '#2274a5' : 'transparent') + ';' +
-						'margin-bottom:-1px',
+					'class': 'cpd-tab' + (on ? ' on' : ''),
 					'aria-selected': on ? 'true' : 'false',
 					'click': function () { state.tab = t; renderPortalTabs(); }
 				}, TAB_NAMES[t]));
 			});
 
 			var cur = portalInfo(state.tab);
-			var opts = [E('option', { value: '', 'title': 'default.sh' }, _('默认门户'))];
-			(cur.items || []).forEach(function (n) {
-				opts.push(E('option', { value: n, 'title': n }, shortName(n)));
-			});
-			var sel = E('select', {
-				'class': 'cpd-input',
-				'style': 'max-width:420px;min-width:200px;height:36px;padding:0 8px;line-height:34px'
-			}, opts);
-			sel.value = cur.sel || '';
-			sel.addEventListener('change', function () {
-				var v = this.value;
-				CPD.api('settings', 'portal_save', [state.tab, v || 'default']).then(function (j) {
-					if (!j.ok) {
-						CPD.toast(j.error || _('切换门户失败'), 'err');
-						renderPortalTabs();
-						return;
-					}
-					cur.sel = v;
-					CPD.toast(v ? _('当前门户已切换为 %s').format(v)
-						: _('当前门户已切换为默认门户'), 'ok');
-					renderPortalTabs();
-				}).catch(function (e) {
-					CPD.toast((e && e.error) || _('切换门户失败'), 'err');
-					renderPortalTabs();
-				});
-			});
-
+			/* 门户不再做「选择」：该类型下只允许存在一个门户（文件或文件夹），
+			 * 后传的覆盖先传的，这里只显示当前生效的那一个 */
+			var curName = cur.sel || (cur.items && cur.items.length ? cur.items[0] : '');
 			var field = E('div', {
 				'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap'
 			}, [
-				E('label', { 'style': 'font-size:13px;font-weight:600' }, _('门户选择')),
-				sel,
+				E('span', { 'style': 'font-size:13px;font-weight:600' }, _('当前门户')),
+				E('span', {
+					'style': 'font-family:ui-monospace,Consolas,monospace;font-size:13px'
+				}, curName || _('内置 default.sh')),
 				E('span', {
 					'style': 'font-size:11.5px;color:#7a8794;' +
 						'font-family:ui-monospace,Consolas,monospace'
-				}, _('门户目录：%s').format(portalPath(state.tab)))
+				}, _('目录：%s').format(portalPath(state.tab)))
 			]);
 
 			var tools = E('div', {
@@ -185,7 +158,7 @@ return view.extend({
 				E('button', { 'class': 'cbi-button', 'click': pickFolder }, _('上传文件夹')),
 				E('button', {
 					'class': 'cbi-button cbi-button-negative',
-					'disabled': cur.sel ? null : '',
+					'disabled': curName ? null : '',
 					'click': askClean
 				}, _('清理'))
 			]);
@@ -196,7 +169,7 @@ return view.extend({
 					field,
 					tools,
 					E('p', { 'class': 'cpd-note', 'style': 'margin-top:12px' },
-						_('上传的门户保留原文件名，直接出现在「门户选择」里；上传后该类型只保留这一个门户，原有门户会被替换。'))
+						_('每种类型只保留一个默认门户：上传脚本或文件夹都会替换掉上一次上传的内容（内置 default.sh 不受影响）。'))
 				])
 			]));
 		}
@@ -206,10 +179,6 @@ return view.extend({
 			if (!n || /[/\\|]/.test(n) || /[\x00-\x1f]/.test(n)) return false;
 			if (n.charAt(0) === '.') return false;
 			if (n !== n.replace(/^\s+|\s+$/g, '')) return false;
-			for (var i = 0; i < n.length; i++) {
-				var cc = n.charCodeAt(i);
-				if (cc < 128 && !/[A-Za-z0-9._\- ]/.test(n.charAt(i))) return false;
-			}
 			return true;
 		}
 
@@ -464,11 +433,11 @@ return view.extend({
 				var active = (it.name === state.device);
 				var card = E('button', {
 					'type': 'button',
+					'data-iface': it.name,
 					'style': 'text-align:left;padding:10px 12px;border:1px solid ' +
 						(active ? '#2274a5' : '#d7dde3') + ';border-radius:8px;background:' +
 						(active ? '#e7f1f8' : '#fff') + ';cursor:pointer;font-family:inherit',
-					'aria-pressed': active ? 'true' : 'false',
-					'click': function () { clickIface(it.name); }
+					'aria-pressed': active ? 'true' : 'false'
 				}, [
 					E('div', { 'style': 'font-family:ui-monospace,Consolas,monospace;font-size:14px' }, [
 						it.name,
@@ -480,6 +449,13 @@ return view.extend({
 				grid.appendChild(card);
 			});
 			ifaceBox.appendChild(grid);
+			/* 显式绑定，避免框架对 innerHTML/E 事件的差异导致点击无响应 */
+			grid.querySelectorAll('[data-iface]').forEach(function (b) {
+				b.addEventListener('click', function (ev) {
+					ev.preventDefault();
+					clickIface(b.getAttribute('data-iface'));
+				});
+			});
 		}
 
 		function clickIface(name) {
@@ -519,13 +495,32 @@ return view.extend({
 			return null;
 		}
 
+		/* 暂存到 /tmp/.uci（顶部「未保存的配置」计数由此产生），与应用写入的键保持一致 */
+		function stageAll() {
+			var fe = state.fupEnabled ? checkFup() : null;
+			if (fe) return Promise.reject({ error: fe });
+			var uv = state.fupEnabled && state.upAction === 'limit' ? state.upRate.trim() : '0';
+			var dv = state.fupEnabled && state.downAction === 'limit' ? state.downRate.trim() : '0';
+			return Promise.all([
+				CPD.stageUci('opennds', '@opennds[0]', 'fup_upload_throttle_rate', 'opt', uv),
+				CPD.stageUci('opennds', '@opennds[0]', 'fup_download_throttle_rate', 'opt', dv),
+				CPD.stageUci('opennds', '@opennds[0]', 'gatewayinterface', 'opt', state.device),
+				CPD.stageUci('zone_detect', 'main', 'fup_enabled', 'opt', state.fupEnabled ? '1' : '0')
+			]).then(function () {
+				state.snapshot = {
+					upAction: state.upAction, upRate: state.upRate,
+					downAction: state.downAction, downRate: state.downRate,
+					device: state.device
+				};
+			});
+		}
+
 		function handleSave() {
-			state.snapshot = {
-				upAction: state.upAction, upRate: state.upRate,
-				downAction: state.downAction, downRate: state.downRate,
-				device: state.device
-			};
-			CPD.toast(_('设置已保存（尚未生效，请点击应用）'), 'ok');
+			return stageAll().then(function () {
+				CPD.toast(_('设置已保存（尚未生效，请点击应用）'), 'ok');
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+			});
 		}
 
 		function notSaved() {
@@ -543,23 +538,27 @@ return view.extend({
 				CPD.toast(fe, 'warn');
 				return Promise.resolve();
 			}
-			return CPD.apiConfirmable('settings', 'apply', [
-				'up_action=' + state.upAction,
-				'up_rate=' + (state.fupEnabled ? state.upRate.trim() : ''),
-				'down_action=' + state.downAction,
-				'down_rate=' + (state.fupEnabled ? state.downRate.trim() : ''),
-				'iface=' + state.device,
-				'fup_enabled=' + (state.fupEnabled ? 1 : 0)
-			]).then(function (j) {
+			/* 先暂存（让 uci 增量与后续 commit 内容一致），再走后端应用 */
+			return stageAll().then(function () {
+				return CPD.apiConfirmable('settings', 'apply', [
+					'up_action=' + state.upAction,
+					'up_rate=' + (state.fupEnabled ? state.upRate.trim() : ''),
+					'down_action=' + state.downAction,
+					'down_rate=' + (state.fupEnabled ? state.downRate.trim() : ''),
+					'iface=' + state.device,
+					'fup_enabled=' + (state.fupEnabled ? 1 : 0)
+				]);
+			}).then(function (j) {
 				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
 					CPD.toast(_('设置已应用'), 'ok');
+					CPD.notifyChanges();
 					refresh();
 				} else {
 					CPD.toast(j.error || _('应用失败'), 'err');
 				}
 			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -591,17 +590,18 @@ return view.extend({
 
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			handleSave();
-			return Promise.resolve();
+			return handleSave();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();
 		};
 		this.handleReset = function () {
-			state.snapshot = null;
-			refresh();
-			CPD.toast(_('已恢复为当前生效的设置'), 'ok');
-			return Promise.resolve();
+			return CPD.revertStaged(['opennds', 'zone_detect']).then(function () {
+				refresh();
+				CPD.toast(_('已丢弃未应用的修改'), 'ok');
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
+			});
 		};
 
 		return body;

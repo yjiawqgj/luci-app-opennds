@@ -416,12 +416,11 @@ return view.extend({
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			stageExempt().then(function () {
+			return stageExempt().then(function () {
 				CPD.toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 			});
-			return Promise.resolve();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();

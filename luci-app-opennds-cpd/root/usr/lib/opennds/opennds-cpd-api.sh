@@ -765,13 +765,20 @@ ov_client_detail() { # $1=mac
 }
 
 ov_status() {
-	local running enabled engaged busy scope
+	local running enabled engaged busy scope theme_ok themespec lo
 	enabled=$(nds_enabled)
 	engaged=$(nds_engaged)
 	busy=$(busy_probe)
 	scope=$(uci_val 'zone_detect.main.session_scope' 'default')
 	running=0
 	ndsctl status >/dev/null 2>&1 && running=1
+	# 登录模式 3 = 自定义主题门户；脚本地址没指向本插件时给出提示（只提示，不自动改配置）
+	lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
+	themespec=$(uci_val 'opennds.@opennds[0].themespec_path' '')
+	theme_ok=1
+	if [ "$lo" = '3' ] && [ "$themespec" != '/usr/lib/opennds/theme_zone_detect.sh' ]; then
+		theme_ok=0
+	fi
 
 	ov_load_lists
 
@@ -853,11 +860,32 @@ EOF2
 		sep=','
 	done
 
-	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
+	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","themeOk":%s,"themespec":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
 		"$running" "$enabled" "$engaged" "$busy" "$(fup_enabled_val)" "$(json_escape "$scope")" \
+		"$theme_ok" "$(json_escape "$themespec")" \
 		"$n_online" "$n_auth" "$n_pre" "$n_tr" "$n_un" "$n_bl" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
 		"$(json_escape "$mif")" "$(json_escape "$mip")" "$aps"
+}
+
+# 用户点击「修复脚本地址」时才写：只改 themespec_path 一项，不动其它任何配置
+ov_set_themespec() {
+	local lo tp
+	lo=$(uci_get 'opennds.@opennds[0].login_option_enabled')
+	tp=$(uci_get 'opennds.@opennds[0].themespec_path')
+	[ "$lo" = '3' ] || out_err '当前登录模式不是 3，无需设置自定义主题脚本'
+	[ "$tp" = '/usr/lib/opennds/theme_zone_detect.sh' ] && {
+		printf '{"ok":1,"already":1}\n'
+		return 0
+	}
+	acquire_lock
+	uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh' ||
+		out_err '写入配置失败'
+	uci commit opennds || out_err '写入配置失败'
+	if nds_running; then
+		/etc/init.d/opennds restart 9>&- >/dev/null 2>&1
+	fi
+	printf '{"ok":1}\n'
 }
 
 ov_run_state() {
@@ -1083,23 +1111,18 @@ name_bytes() { # 字节数（长度一律按字节计）
 	printf '%s' "$1" | wc -c | tr -d ' '
 }
 
-# 门户文件/文件夹名：只允许 [A-Za-z0-9._-]、空格 与中文；拒绝 / \ | .. 前导. 控制字符 空名
+# 门户文件/文件夹名：只挡真正致命的字符（/ \ | 前导. 控制字符 空名），
+# 空格、中文、括号、方括号等常见字符全部放行
 # $1=名称 $2=最大字节数
 name_ok() {
-	local n="$1" rest
+	local n="$1"
 	[ -n "$n" ] || return 1
 	case "$n" in
-		.* | *..* | */* | *'\'* | *'|'*) return 1 ;;
+		'.' | '..' | .* | */* | *'\'* | *'|'*) return 1 ;;
 	esac
+	printf '%s' "$n" | grep -q '[[:cntrl:]]' && return 1
 	[ "$(name_bytes "$n")" -le "$2" ] 2>/dev/null || return 1
-	# 去掉允许的 ASCII 字符后，剩下的字节必须全部 >=0x80（UTF-8 中文）
-	rest=$(printf '%s' "$n" | tr -d 'A-Za-z0-9._\- ')
-	[ -z "$rest" ] && return 0
-	if printf '%s' "$rest" | od -An -tu1 2>/dev/null |
-		awk '{ for (i = 1; i <= NF; i++) if ($i < 128) exit 1 }'; then
-		return 0
-	fi
-	return 1
+	return 0
 }
 
 # 区域名（SSID / 接口名）当目录名用：只挡真正致命的字符（§2.5），
@@ -1821,16 +1844,23 @@ se_apply() {
 	esac
 	# 覆盖模式：清各条目的 sessiontimeout（改 0 不是删参数，§3）
 	if [ "$scope" = 'override' ]; then
-		local e new tmpf
+		local e new tmpf orig cnt
+		orig=$(list_of 'opennds.@opennds[0].preemptivemac')
 		tmpf=$(mktemp /tmp/nds-pm-XXXXXX 2>/dev/null) || tmpf="/tmp/nds-pm.$$"
 		: >"$tmpf"
-		for e in $(list_of 'opennds.@opennds[0].preemptivemac'); do
+		for e in $orig; do
 			if new=$(pm_override_entry "$e"); then
 				printf '%s\n' "$new" >>"$tmpf"
 			else
 				printf '%s\n' "$e" >>"$tmpf" # 无 mac= 的畸形条目原样保留
 			fi
 		done
+		# 安全阀：原名单非空而重建结果为空 = 读取异常，宁可不改也不能清空配置
+		cnt=$(grep -c . "$tmpf" 2>/dev/null)
+		[ -n "$orig" ] && [ "${cnt:-0}" -eq 0 ] && {
+			rm -f "$tmpf"
+			out_err '读取授权客户端列表失败，已取消写入（不会清空现有配置）'
+		}
 		# 整份重建名单：list 必须走 delete + add_list（uci set 会把多词值写成 option）
 		uci -q delete 'opennds.@opennds[0].preemptivemac' 2>/dev/null
 		while IFS= read -r e; do
@@ -2302,6 +2332,26 @@ bl_save_macs() { # 命名参数：add= remove= clear=0|1 [confirm_enable=1]
 		return 0
 	fi
 	printf '{"ok":1,"deauthed":0,"untrusted":0,"restarted":0}\n'
+}
+
+# 应用（框架「保存并应用」）：提交 zone_blacklist 暂存增量，同步运行时并重启一次
+bl_apply() {
+	guard_enable || return 0
+	acquire_lock
+	uci commit zone_blacklist || out_err '写入配置失败'
+	local m lm
+	for m in $(list_of 'zone_blacklist.main.mac'); do
+		[ -n "$m" ] || continue
+		lm=$(mac_lower "$m")
+		ndsctl_mac untrust "$lm"
+		remove_preauth_queue "$lm"
+		ndsctl_mac deauth "$lm"
+	done
+	if service_restart; then
+		printf '{"ok":1,"restarted":%s}\n' "$SR_RESTARTED"
+	else
+		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
+	fi
 }
 
 bl_save_portal() { # 命名参数：portal=<门户名>（default/空 = 默认门户，落盘是删除该 option）
@@ -4433,6 +4483,7 @@ case "$PAGE" in
 		set -- $ARGS
 		case "$SUB" in
 			status) ov_status ;;
+			set_themespec) ov_set_themespec ;;
 			run_state) ov_run_state ;;
 			set_run) ov_set_run "$1" ;;
 			restart) ov_restart ;;
@@ -4499,6 +4550,7 @@ case "$PAGE" in
 		case "$SUB" in
 			status) bl_status ;;
 			save_macs) bl_save_macs "$@" ;;
+			apply) bl_apply ;;
 			save_portal) bl_save_portal "$@" ;;
 			upload_begin) z_upload_begin "$1" ;;
 			upload_store) bl_upload_store "$1" "$2" ;;

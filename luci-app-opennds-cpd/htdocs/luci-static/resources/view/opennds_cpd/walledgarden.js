@@ -229,9 +229,9 @@ return view.extend({
 		function handleSave() {
 			if (editingBusy()) {
 				CPD.toast(_('请先完成或取消列表编辑'), 'warn');
-				return;
+				return Promise.reject({ silent: true });
 			}
-			stageWg().then(function () {
+			return stageWg().then(function () {
 				state.snapshot = {
 					manual: currentText(),
 					domains: currentAuto(),

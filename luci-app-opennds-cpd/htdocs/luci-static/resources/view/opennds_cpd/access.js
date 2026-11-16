@@ -278,10 +278,10 @@ return view.extend({
 		function handleSave() {
 			if (editingBusy()) {
 				toast(_('请先保存或取消正在编辑的规则'), 'warn');
-				return;
+				return Promise.reject({ silent: true });
 			}
-			if (!precheckPorts()) return;
-			stageAccess().then(function () {
+			if (!precheckPorts()) return Promise.reject({ silent: true });
+			return stageAccess().then(function () {
 				state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
 				toast(_('配置已保存（尚未生效，请点击应用）'), 'ok');
 			}, function (e) {
