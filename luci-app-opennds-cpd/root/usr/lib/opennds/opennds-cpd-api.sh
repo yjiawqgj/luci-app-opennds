@@ -4554,15 +4554,15 @@ sys_ensure_sec() { # $1=config $2=sid → stdout 输出可写 section 名
 				printf '%s' "$name"
 				return 0
 			fi
-			uci_w "$conf.cpd=$typ" || return 1
+			uci_w set "$conf.cpd=$typ" || return 1
 			printf 'cpd'
 			;;
 		*)
-			if uci -q get "$conf.$sid" >/dev/null 2>&1; then
+			if uci -q show "$conf.$sid" >/dev/null 2>&1; then
 				printf '%s' "$sid"
 				return 0
 			fi
-			uci_w "$conf.$sid=$(sys_sec_type "$conf")" || return 1
+			uci_w set "$conf.$sid=$(sys_sec_type "$conf")" || return 1
 			printf '%s' "$sid"
 			;;
 	esac
