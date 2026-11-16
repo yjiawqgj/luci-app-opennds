@@ -258,59 +258,6 @@ return view.extend({
 			confBar.style.display = '';
 		}
 
-		/* 配置写入自检：在临时配置上跑一遍 uci set/get/delete，
-		 * 只在排障时用，不碰 openNDS 的任何设置 */
-		/* ubus 侧（LuCI 顶部「未保存的配置」读的就是它）与后端 /tmp/.uci 的条目数对比，
-		 * 两边不一致说明增量写到的地方 ubus 看不到，顶部指示器就不会出现 */
-		function countUbusChanges() {
-			var LC = window.L;
-			if (!LC || typeof LC.require !== 'function') return Promise.resolve(null);
-			return LC.require('uci').then(function (uci) {
-				return uci.changes();
-			}).then(function (ch) {
-				var n = 0;
-				if (ch) for (var k in ch) if (ch.hasOwnProperty(k)) n += ch[k].length;
-				return n;
-			}).catch(function () { return null; });
-		}
-
-		function runSelfTest() {
-			CPD.api('sys', 'selftest').then(function (j) {
-				var rows = [];
-				if (!j || !j.ok) {
-					rows.push(_('自检失败：%s').format((j && j.error) || '—'));
-				} else {
-					rows.push(_('写入（uci set）：%s').format(j.set === 1 ? _('正常') : _('失败')));
-					if (j.setErr) rows.push(_('uci 报错：%s').format(j.setErr));
-					rows.push(_('回读（uci get）：%s').format(String(j.read) === '1'
-						? _('正常') : _('读不到刚写入的值')));
-					if (j.delErr) rows.push(_('删除时报错：%s').format(j.delErr));
-				}
-				rows.push(_('自检只在 /etc/config/cpd_probe 上操作，不修改 openNDS 配置。'));
-
-				return Promise.all([CPD.api('sys', 'changes_count').catch(function () { return null; }),
-					countUbusChanges()]).then(function (r) {
-					var be = (r[0] && r[0].count) || 0, fe = r[1];
-					var txt = _('未保存增量：LuCI 侧 %s 条 / 后端 %s 条')
-						.format(fe === null ? '—' : fe, be);
-					if (fe !== null && fe === 0 && be > 0)
-						txt += ' —— ' + _('两边不一致，顶部「未保存的配置」不会出现，请把这一行发给开发者');
-					rows.push(txt);
-					return rows;
-				});
-			}).then(function (rows) {
-				ui.showModal(_('配置写入自检'), E('div', {},
-					rows.map(function (t) {
-						return E('p', { 'style': 'margin:6px 0;font-size:13px;line-height:1.6' }, t);
-					})), [
-					E('div', { 'class': 'right' },
-						E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('关闭')))
-				]);
-			}).catch(function (e) {
-				CPD.notify(CPD.errText(e, _('自检失败')), 'err');
-			});
-		}
-
 		/* ---------- 主题脚本地址提示（登录模式 3 但脚本不是本插件的）
 		 * 只在页面提示，用户点按钮才写这一项，插件安装/加载绝不改配置 ---------- */
 		var themeBar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' });
@@ -365,15 +312,16 @@ return view.extend({
 				if (cl && cl.ok) {
 					state.clients = cl.clients || [];
 				}
-				renderStatus();
-				renderWarnbar();
-				scanRestore();
-				renderStats();
-				renderIface();
-				renderAps();
-				renderList();
-			}, function () {
-				CPD.toast(_('获取概览数据失败'), 'err');
+				/* 任何一段渲染抛异常都不能连累后面的区块：
+				 * 逐段兜住，出问题的那段留空并在控制台留痕，其余照常画出来 */
+				[renderStatus, renderWarnbar, renderStats, renderIface, renderAps, renderList]
+					.forEach(function (fn) {
+						try { fn(); } catch (e) {
+							if (window.console && console.error) console.error('[opennds-cpd] render', e);
+						}
+					});
+			}, function (e) {
+				CPD.toast(CPD.errText(e, _('获取概览数据失败')), 'err');
 			});
 		}
 
@@ -860,30 +808,70 @@ return view.extend({
 			});
 		}
 
+		/* 只暂存的动作：直接把结果名单交给 openwrt 的 uci 增量（与其它页面同一条通道），
+		 * 这样右上角一定会出现「未保存的配置: N」，点开就是原生 diff 弹窗 */
+		function stageAction(act, mac) {
+			var lm = String(mac || '').toLowerCase();
+			function low(x) { return String(x || '').toLowerCase(); }
+			function macOf(e) { return low(String(e).split(';')[0].replace(/^mac=/i, '')); }
+			if (act === 'unblock') {
+				return CPD.api('blacklist', 'status').then(function (j) {
+					var list = (j.macs || []).filter(function (m) { return low(m) !== lm; });
+					return CPD.stageUci('zone_blacklist', 'main', 'mac', 'list', list);
+				});
+			}
+			return CPD.api('exempt', 'status').then(function (j) {
+				var tr = (j.trusted || []).map(low);
+				var pre = (j.preempt || []).map(function (e) {
+					return { mac: macOf(e), raw: String(e) };
+				});
+				if (act === 'trust') {
+					tr = tr.filter(function (m) { return m !== lm; }).concat([lm]);
+					pre = pre.filter(function (e) { return e.mac !== lm; });
+				} else if (act === 'untrust') {
+					tr = tr.filter(function (m) { return m !== lm; });
+				} else if (act === 'preauth') {
+					tr = tr.filter(function (m) { return m !== lm; });
+					if (!pre.some(function (e) { return e.mac === lm; }))
+						pre = pre.concat([{ mac: lm, raw: 'mac=' + lm.toUpperCase() +
+							';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0' }]);
+				} else if (act === 'unpreauth') {
+					pre = pre.filter(function (e) { return e.mac !== lm; });
+				}
+				return CPD.stageUci('opennds', '@opennds[0]', 'trustedmac', 'list', tr)
+					.then(function () {
+						return CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list',
+							pre.map(function (e) { return e.raw; }));
+					});
+			});
+		}
+
 		function performAction(act, row) {
 			var h = row.host || row.mac;
 			var immediate = !!ACTION_IMMEDIATE[act];
-			/* 拉黑要重启 openNDS → 15 秒；其余很快 */
-			runOp(immediate && act === 'block' ? 15 : 5, function () {
+			if (!immediate) {
+				/* 只暂存：不弹任何横幅，右上角「未保存的配置」就是反馈 */
+				stageAction(act, row.mac).then(function () {
+					refresh();
+				}, function (e) {
+					CPD.notify(CPD.errText(e, _('记录失败')), 'err');
+				});
+				return;
+			}
+			/* 断开 / 拉黑：不受 openwrt 三个按钮控制，二次确认后立即生效 */
+			runOp(act === 'block' ? 15 : 5, function () {
 				return CPD.api('overview', 'client_action', [act, row.mac]);
 			}, {
 				onok: function (j) {
 					/* 无 DHCP 租约等 warnings：只显示 warn，不报成功 */
 					if (j.warnings && j.warnings.length) {
 						CPD.showWarnings(j.warnings);
-						if (immediate) refresh();
+						refresh();
 						return;
 					}
-					if (immediate) {
-						/* 立即生效：给完成态提示并刷新列表（断开的会从在线列表消失） */
-						CPD.clearNotice();
-						CPD.notify(ACTION_TOAST[act].format(h), act === 'block' ? 'warn' : 'ok');
-						refresh();
-					} else {
-						/* 只写增量：不刷新，让「还没生效」在界面上保持可见 */
-						CPD.statusBar(_('已记录：%s，点击页面底部的「保存并应用」后生效')
-							.format(ACTION_TOAST[act].format(h)));
-					}
+					CPD.clearNotice();
+					CPD.notify(ACTION_TOAST[act].format(h), act === 'block' ? 'warn' : 'ok');
+					refresh();
 				}
 			});
 		}
@@ -996,6 +984,27 @@ return view.extend({
 			CPD.toast(_('已取消编辑，未应用本次修改'));
 		}
 
+		/* 单客户端限额：改写 preemptivemac 里该 MAC 的条目（custom= 原样保留）。
+		 * 与其它页面共用同一条 uci 增量通道，保存后右上角出现「未保存的配置」。 */
+		function stageEditLimits(lm, v) {
+			function macOf(e) { return String(e).split(';')[0].replace(/^mac=/i, '').toLowerCase(); }
+			return CPD.api('exempt', 'status').then(function (j) {
+				var found = false;
+				var out = (j.preempt || []).map(function (e) {
+					if (macOf(e) !== lm) return String(e);
+					found = true;
+					var custom = '';
+					var m = /;custom=([\s\S]*)$/.exec(String(e));
+					if (m) custom = ';custom=' + m[1];
+					return 'mac=' + lm + ';sessiontimeout=' + v.sessiontimeout +
+						';uploadrate=' + v.uploadrate + ';downloadrate=' + v.downloadrate +
+						';uploadquota=' + v.uploadquota + ';downloadquota=' + v.downloadquota + custom;
+				});
+				if (!found) throw { error: _('该客户端不在授权名单里，无法设置单独限制') };
+				return CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list', out);
+			});
+		}
+
 		function saveEdit() {
 			if (!editRow) return;
 			var args = { mac: editRow.mac };
@@ -1014,22 +1023,15 @@ return view.extend({
 				}
 				args[ed.row.arg] = v;
 			}
-			var host = editRow.host || editRow.mac;
 			var mac = editRow.mac;
-			runOp(5, function () {
-				return CPD.api('overview', 'client_edit_stage', [mac,
-					'sessiontimeout=' + args.sessiontimeout,
-					'uploadrate=' + args.uploadrate,
-					'downloadrate=' + args.downloadrate,
-					'uploadquota=' + args.uploadquota,
-					'downloadquota=' + args.downloadquota]);
-			}, {
-				onok: function () {
-					closeEdit();
-					/* 编辑框下的「确定」= 退出编辑 + 写 uci 增量；
-					   不 commit、不重启 nds，一律等 openwrt 自带的「保存并应用」 */
-					CPD.statusBar(_('已记录「%s」的限制，点击页面底部的「保存并应用」后生效').format(host));
-				}
+			var lm = String(mac || '').toLowerCase();
+			stageEditLimits(lm, args).then(function () {
+				closeEdit();
+				/* 编辑框下的「确定」只写 uci 增量，不 commit、不重启；
+				   反馈就是右上角「未保存的配置」，不弹任何横幅 */
+				refresh();
+			}, function (e) {
+				CPD.notify(CPD.errText(e, _('记录失败')), 'err');
 			});
 		}
 
@@ -1196,17 +1198,6 @@ return view.extend({
 			])));
 		body.appendChild(clientsSec);
 
-		/* 配置写入自检入口：暂存/保存失败时点它，能看到 uci 到底报了什么 */
-		body.appendChild(E('div', { 'style': 'margin-top:20px' },
-			E('a', {
-				'href': '#',
-				'style': 'font-size:12px;color:#7a8794;text-decoration:none',
-				'click': function (ev) {
-					if (ev && ev.preventDefault) ev.preventDefault();
-					runSelfTest();
-				}
-			}, _('配置写入自检'))));
-
 		body.appendChild(lockMask);
 		body.appendChild(editMask);
 		body.appendChild(detailMask);
@@ -1218,38 +1209,17 @@ return view.extend({
 		this.handleSave = function () {
 			return Promise.resolve();
 		};
-		/* 保存并应用：把概览页暂存的客户端限制落盘 + 重启 nds */
+		/* 保存并应用：交给 openwrt 原生变更流程（commit + 重启由 post_apply 补） */
 		this.handleSaveApply = function () {
-			return new Promise(function (resolve) {
-				CPD.api('overview', 'apply').then(function (j) {
-					if (!j || !j.ok) {
-						CPD.notify((j && j.error) || _('应用失败'), 'err');
-						resolve();
-						return;
-					}
-					CPD.clearNotice();
-					CPD.nativeNotice(_('配置已应用'), 6000);
-					if (j.warnings && j.warnings.length) CPD.showWarnings(j.warnings);
-					/* 增量已落盘：让右上角「未保存的配置」立刻归零 */
-					CPD.notifyChanges();
-					refresh();
-					resolve();
-				}, function (e) {
-					CPD.notify(CPD.errText(e, _('应用失败')), 'err');
-					resolve();
-				});
+			return CPD.notifyChanges().then(function () {
+				return CPD.applyStaged();
+			}).catch(function (e) {
+				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		};
 		this.handleReset = function () {
-			/* 复位 = 丢弃本页暂存的增量（客户端限额 / 免认证 / 信任 / 黑名单）*/
-			return CPD.revertStaged(['opennds', 'zone_blacklist']).then(function () {
-				state.filter = 'online';
-				state.ap = null;
-				state.query = '';
-				if (searchInput) searchInput.value = '';
-				CPD.clearNotice();
-				refresh();
-			}, function (e) {
+			/* 复位 = 丢弃本会话未提交的增量 */
+			return CPD.revertStaged().catch(function (e) {
 				CPD.notify(CPD.errText(e, _('复位失败')), 'err');
 			});
 		};

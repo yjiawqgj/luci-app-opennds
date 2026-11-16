@@ -482,7 +482,7 @@ return view.extend({
 					state.device = name;
 					state.iface = name;
 					renderIfaces();
-					CPD.statusBar(_('网络接口已改为 %s，点击「保存并应用」后生效').format(name));
+					/* 不弹横幅：切完只是本地选择，底部「保存」才写配置 */
 				}
 			);
 		}
@@ -527,7 +527,7 @@ return view.extend({
 
 		function handleSave() {
 			return stageAll().then(function () {
-				CPD.nativeNotice(_('设置已保存'), 5000);
+				/* 不弹横幅：右上角「未保存的配置」就是反馈 */
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
@@ -548,31 +548,15 @@ return view.extend({
 				CPD.toast(fe, 'warn');
 				return Promise.resolve();
 			}
-			/* 先暂存（让 uci 增量与后续 commit 内容一致），再走后端应用 */
+			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
 			return stageAll().then(function () {
-				return CPD.apiConfirmable('settings', 'apply', [
-					'up_action=' + state.upAction,
-					'up_rate=' + (state.fupEnabled ? state.upRate.trim() : ''),
-					'down_action=' + state.downAction,
-					'down_rate=' + (state.fupEnabled ? state.downRate.trim() : ''),
-					'iface=' + state.device,
-					'fup_enabled=' + (state.fupEnabled ? 1 : 0)
-				]);
-			}).then(function (j) {
-				if (j.error === 'busy') { CPD.notify(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (j.ok) {
-					CPD.clearNotice();
-					CPD.notify(_('设置已应用'), 'ok');
-					CPD.notifyChanges();
-					refresh();
-				} else {
-					CPD.notify(j.error || _('应用失败'), 'err');
-				}
+				return CPD.applyStaged();
 			}).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
+		/* 读取设置：门户列表 / 公平使用 / 网络接口 */
 		function refresh() {
 			CPD.api('settings', 'status').then(function (j) {
 				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
@@ -607,9 +591,10 @@ return view.extend({
 			return handleApply();
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['opennds', 'zone_detect']).then(function () {
+			/* 原生 revert 会自己发 uci-reverted、清指示器并刷新页面，
+			 * 不必再弹一条转瞬即逝的提示 */
+			return CPD.revertStaged().then(function () {
 				refresh();
-				CPD.toast(_('已丢弃未应用的修改'), 'ok');
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('复位失败')), 'err');
 			});

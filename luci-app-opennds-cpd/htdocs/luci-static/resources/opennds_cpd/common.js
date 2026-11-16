@@ -102,17 +102,19 @@ var CPD = L.Class.extend({
 		return self.api(page, subcmd, args).then(function (j) {
 			if (j.error === 'need_confirm') {
 				return new Promise(function (resolve) {
-					ui.showModal(_('openNDS 已停用'), E('p', {}, _(
-						'openNDS 当前处于停用状态。继续应用将同时启用它并重启服务：所有设备会短暂断线，' +
-						'未认证的设备将被重新挡在门户外。确定继续？')), [
-						E('div', { 'class': 'right' }, [
+					self.modal(_('openNDS 已停用'), [
+						E('p', {}, _(
+							'openNDS 当前处于停用状态。继续应用将同时启用它并重启服务：所有设备会短暂断线，' +
+							'未认证的设备将被重新挡在门户外。确定继续？')),
+						E('div', {
+							'style': 'margin-top:18px;display:flex;justify-content:flex-end;gap:8px'
+						}, [
 							E('button', {
-								'class': 'cbi-button',
-								'click': ui.hideModal
+								'class': 'btn cbi-button',
+								'click': function () { ui.hideModal(); }
 							}, _('取消')),
-							' ',
 							E('button', {
-								'class': 'cbi-button cbi-button-positive',
+								'class': 'btn cbi-button cbi-button-positive',
 								'click': function () {
 									ui.hideModal();
 									resolve(self.api(page, subcmd, args.concat(['confirm_enable=1'])));
@@ -214,21 +216,34 @@ var CPD = L.Class.extend({
 		return true;
 	},
 
-	/* ---------- 二次确认弹窗 ---------- */
+	/* ---------- 弹窗 ----------
+	 * LuCI 24.10 起 ui.showModal(title, children, ...classes)：第三个参数是 CSS class，
+	 * 不再是按钮数组（23.05 及更早才是）。把按钮数组当第三个参数传进去会被当 class 名，
+	 * classList.add 直接抛异常 —— 弹窗根本不出现，看起来就是"点了没反应"。
+	 * 这里统一把正文与按钮装进同一个数组交给 showModal，新旧版本都能正确渲染。 */
+	modal: function (title, nodes) {
+		var list = Array.isArray(nodes) ? nodes.filter(function (n) { return n != null; }) : [nodes];
+		return ui.showModal(title, list);
+	},
+
+	/* 二次确认弹窗 */
 	confirm: function (title, text, okText, danger, onok) {
-		ui.showModal(title, E('p', {}, text), [
-			E('div', { 'class': 'right' }, [
-				E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('取消')),
-				' ',
-				E('button', {
-					'class': 'cbi-button ' + (danger ? 'cbi-button-negative' : 'cbi-button-positive'),
-					'click': function () {
-						ui.hideModal();
-						onok();
-					}
-				}, okText)
-			])
+		var row = E('div', {
+			'style': 'margin-top:18px;display:flex;justify-content:flex-end;gap:8px'
+		}, [
+			E('button', {
+				'class': 'btn cbi-button',
+				'click': function () { ui.hideModal(); }
+			}, _('取消')),
+			E('button', {
+				'class': 'btn cbi-button ' + (danger ? 'cbi-button-negative' : 'cbi-button-positive'),
+				'click': function () {
+					ui.hideModal();
+					onok();
+				}
+			}, okText)
 		]);
+		return ui.showModal(title, [E('p', {}, text), row]);
 	},
 
 	/* ---------- base64（UTF-8 安全） ---------- */
@@ -254,23 +269,20 @@ var CPD = L.Class.extend({
 		]);
 	},
 
-	/* ---------- OpenWRT 框架保存流程对接 ----------
-	 * 顶部「未保存的配置: N」指示器读的是 ubus uci changes，
-	 * 即 /tmp/.uci 里未 commit 的增量；uci-loaded 事件触发指示器刷新。
-	 * sys uci_stage 只写增量不 commit → 保存后指示器出现、复位可还原；
-	 * 后端 apply commit 时一并清掉增量 → 指示器归零。
+	/* ---------- 与 openwrt 原生「未保存的配置」对接 ----------
+	 * 关键事实（openwrt/rpcd uci.c）：ubus uci 的增量不是 /tmp/.uci，
+	 * 而是按会话隔离的 RPC_UCI_SAVEDIR_PREFIX<会话目录>；LuCI 前端的
+	 * uci.changes() 走的就是这条带会话的通道。shell 里直接 uci set 写的是
+	 * /tmp/.uci，两边不是同一个目录 —— 所以后端 staging 永远读不到，
+	 * 右上角指示器也不会出现。
+	 *
+	 * 因此暂存一律走 LuCI 自己的 uci 模块（uci.set → uci.save），
+	 * 这样：① uci.changes() 能读到 → 右上角出现「未保存的配置: N」；
+	 *       ② 点它弹的是 openwrt 原生「配置 / 更改」diff 弹窗（绿加红减）；
+	 *       ③ 弹窗里的「保存并应用」直接触发原生 commit + reload_config。
 	 */
 
-	/* 通知顶部刷新未保存配置指示器。
-	 * 增量由后端 shell 写进 /tmp/.uci（与 ubus uci 同一份文件），但 LuCI 前端
-	 * 只在自己 save() 或 uci-loaded 事件后才会重新统计，所以这里做三件事：
-	 *   ① 派 uci-loaded 事件（走 LuCI 自己的刷新链路）；
-	 *   ② 直接拉一次 uci.changes() 交给指示器渲染 —— 不依赖监听是否已注册；
-	 *   ③ 若 ubus 那边读不到（数目为 0）而后端 /tmp/.uci 确实有条目，
-	 *      就用后端计数兜底显示，保证「有暂存就一定看得见」。 */
-	/* openwrt 原生限时横幅（LuCI addTimeLimitedNotification）：
-	 * 出现在页面顶部、走 openwrt 原生样式，超时后自动消失。
-	 * 用于 openwrt「保存」「保存并应用」这类原生按钮的反馈。 */
+	/* openwrt 原生限时横幅（仅用于失败/提示类，不再用于"已保存"） */
 	nativeNotice: function (msg, timeout) {
 		var self = this;
 		var LC = window.L;
@@ -288,87 +300,142 @@ var CPD = L.Class.extend({
 		}).catch(function () { self.statusBar(msg); });
 	},
 
-	/* 刷新右上角「未保存的配置: N」指示器。
-	 * 走 LuCI 原生的 ui.changes 通道：它内部就是 uci.changes() → renderChangeIndicator()，
-	 * 所以只要 /tmp/.uci 里有增量，数字就会出现在和 openwrt 自带页面完全相同的位置。
-	 * 若 ubus 侧读到的数量为 0（说明两边的增量目录没对上），再用后端直接数 /tmp/.uci 兜底。 */
+	/* 让右上角指示器按真实增量重画（同时把 changes 存进 ui.changes，
+	 * 点指示器时 displayChanges() 才有数据可画 diff） */
 	notifyChanges: function () {
 		var self = this;
 		var LC = window.L;
-
-		/* 老版本 LuCI 靠这个事件触发刷新，带上不影响新版本 */
-		try { document.dispatchEvent(new CustomEvent('uci-loaded')); } catch (e) {}
-
 		if (!LC || typeof LC.require !== 'function')
-			return self.fallbackChangeCount(null);
-
-		return LC.require('uci').then(function (uci) {
-			return LC.require('ui').catch(function () { return null; }).then(function (ui) {
-				return uci.changes().then(function (ch) {
-					var n = 0, k;
-					if (ch) for (k in ch) if (ch.hasOwnProperty(k)) n += (ch[k] || []).length;
-					/* 优先用原生渲染器：数字、文案、点击查看变更清单都跟 openwrt 一致 */
-					if (ui && ui.changes && typeof ui.changes.renderChangeIndicator === 'function') {
-						ui.changes.renderChangeIndicator(ch || {});
-					} else if (ui && ui.changes && typeof ui.changes.setIndicator === 'function') {
+			return Promise.resolve();
+		return LC.require('ui').then(function (ui) {
+			if (ui && ui.changes && typeof ui.changes.init === 'function')
+				return ui.changes.init();
+			if (ui && ui.changes && typeof ui.changes.setIndicator === 'function')
+				return LC.require('uci').then(function (uci) {
+					return uci.changes().then(function (ch) {
+						var n = 0, k;
+						if (ch) for (k in ch) if (ch.hasOwnProperty(k)) n += (ch[k] || []).length;
 						ui.changes.setIndicator(n);
-					}
-					if (n === 0) return self.fallbackChangeCount(ui);
+					});
 				});
-			});
-		}).catch(function () {
-			return self.fallbackChangeCount(null);
-		});
-	},
-
-	/* 兜底：ubus 读不到增量时，用后端直接数 /tmp/.uci 的条目数 */
-	fallbackChangeCount: function (ui) {
-		return this.api('sys', 'changes_count', []).then(function (j) {
-			if (!j || !j.ok || !j.count) return;
-			if (!ui || typeof ui.showIndicator !== 'function') return;
-			ui.showIndicator('uci-changes', _('未保存的配置') + ': ' + j.count, null);
 		}).catch(function () {});
 	},
+
+	/* 兼容旧调用：后端直接数 /tmp/.uci，现在只作为诊断信息 */
+	fallbackChangeCount: function () { return Promise.resolve(); },
 
 	/* 错误对象 → 展示文本（fs.exec 的异常带 message，后端应答带 error） */
 	errText: function (e, fallback) {
 		return (e && e.error) || (e && e.message) || fallback || _('操作失败');
 	},
 
-	/* uci 暂存：typ='opt' 时 values 是标量（null=删除该键）；
-	 * typ='list' 时 values 是数组（空数组=清空该 list）。
-	 * 注意：uci 写 /tmp/.uci 增量要拿全局锁，多个进程同时写会互相打断，
-	 * 所以这里排成串行队列，一个写完再发下一个。 */
+	/* section 类型（新建节时用；与出厂模板一致） */
+	secType: function (conf) {
+		return (conf === 'zone_blacklist') ? 'main' : conf;
+	},
+
+	/* 确保 section 可写：存在就直接用，不存在就按类型建一个 */
+	ensureSection: function (uci, conf, sid) {
+		if (uci.get(conf, sid)) return true;
+		var m = /^@([A-Za-z0-9_]+)(\[\d+\])?$/.exec(sid);
+		if (m) {
+			var secs = uci.sections(conf, m[1]) || [];
+			if (secs.length) return true;
+			uci.add(conf, m[1]);
+			return !!uci.get(conf, sid);
+		}
+		uci.add(conf, this.secType(conf), sid);
+		return !!uci.get(conf, sid);
+	},
+
+	/* uci 暂存：typ='opt' 时 values 是标量（null/''=删除该键）；
+	 * typ='list' 时 values 是数组（空数组=清空该 list，等价于删掉这个 option）。
+	 * 串行队列：uci.save() 会整批下发本地状态，并发会互相覆盖。 */
 	stageUci: function (conf, sid, opt, typ, values) {
 		var self = this;
-		var args = [conf, sid, opt, typ];
-		if (typ === 'opt') {
-			if (values !== null && values !== undefined) args.push(String(values));
-		} else if (Array.isArray(values)) {
-			args = args.concat(values.map(function (v) { return String(v); }));
-		}
 		var prev = (self._stageQ || Promise.resolve()).catch(function () {});
 		self._stageQ = prev.then(function () {
-			return self.api('sys', 'uci_stage', args).then(function (j) {
-				if (!j || !j.ok) throw { error: (j && j.error) || _('暂存配置失败') };
-				self.notifyChanges();
-				return j;
-			});
+			return self.stageOne(conf, sid, opt, typ, values);
 		});
 		return self._stageQ;
 	},
 
-	/* 复位：丢弃指定配置的未提交增量（对应 openwrt 复位按钮语义） */
-	revertStaged: function (confs) {
+	stageOne: function (conf, sid, opt, typ, values) {
 		var self = this;
-		return Promise.all(confs.map(function (c) {
-			return self.api('sys', 'uci_revert', [c]);
-		})).then(function () {
-			self.notifyChanges();
+		var LC = window.L;
+		if (!LC || typeof LC.require !== 'function')
+			return Promise.reject({ error: _('当前页面环境不支持 uci 模块') });
+		return LC.require('uci').then(function (uci) {
+			return uci.load(conf).then(function () {
+				if (!self.ensureSection(uci, conf, sid))
+					throw { error: _('配置节不存在且无法新建：%s').format(conf + '.' + sid) };
+				/* uci.set 在节解析不到时会"静默什么都不做"，那样点了保存
+				 * 右上角不会出现任何增量 —— 这里显式拦下来，宁可报错也不装成功 */
+				if (typeof uci.resolveSID === 'function' && uci.resolveSID(conf, sid) == null)
+					throw { error: _('配置节不存在：%s').format(conf + '.' + sid) };
+				if (typ === 'opt') {
+					var v = (values === null || values === undefined) ? '' : String(values);
+					var cur = uci.get(conf, sid, opt);
+					var curS = (cur == null) ? '' : String(cur);
+					if (curS === v) return;      /* 没变就别造无效增量 */
+					uci.set(conf, sid, opt, v === '' ? null : v);
+				} else {
+					var arr = (values || []).map(function (x) { return String(x); });
+					var cv = uci.get(conf, sid, opt);
+					var ca = Array.isArray(cv) ? cv.map(String) : (cv == null ? [] : [String(cv)]);
+					if (ca.length === arr.length && ca.join('\n') === arr.join('\n'))
+						return;                  /* 名单没变，不写增量 */
+					/* 空数组在 rpcd 会被判 INVALID_ARGUMENT，用"删除该 option"表达清空 */
+					uci.set(conf, sid, opt, arr.length ? arr : null);
+				}
+				return uci.save();
+			});
+		}).then(function () {
+			return self.notifyChanges();
 		}, function (e) {
-			throw { error: self.errText(e, _('复位失败')) };
+			throw { error: self.errText(e, _('暂存配置失败')) };
+		});
+	},
+
+	/* 保存并应用：交给 openwrt 原生的变更应用流程
+	 * （commit + /sbin/reload_config，带原生「正在应用配置更改…」提示与页面刷新）。
+	 * openNDS 的 init 脚本没有注册 procd reload trigger，所以 commit 之后
+	 * 还要补一次服务重启 —— 由 uci-applied 事件里调后端 post_apply 完成。 */
+	applyStaged: function () {
+		var LC = window.L;
+		if (!LC || typeof LC.require !== 'function')
+			return Promise.reject({ error: _('当前页面环境不支持 uci 模块') });
+		return LC.require('ui').then(function (ui) {
+			if (!(ui && ui.changes && typeof ui.changes.apply === 'function'))
+				throw { error: _('当前 LuCI 版本不支持原生应用流程') };
+			ui.changes.apply(false);
+			return { ok: 1, native: 1 };
+		}, function (e) {
+			throw { error: this.errText(e, _('应用失败')) };
+		}.bind(this));
+	},
+
+	/* 复位：走原生 revert（丢弃本会话所有未提交增量） */
+	revertStaged: function () {
+		var LC = window.L;
+		if (!LC || typeof LC.require !== 'function')
+			return Promise.reject({ error: _('当前页面环境不支持 uci 模块') });
+		return LC.require('ui').then(function (ui) {
+			if (ui && ui.changes && typeof ui.changes.revert === 'function')
+				return ui.changes.revert();
+			throw { error: _('当前 LuCI 版本不支持原生复位') };
 		});
 	}
+});
+
+/* openwrt 原生「保存并应用」只做 commit + /sbin/reload_config；openNDS 的 init
+ * 脚本没有注册 procd reload trigger，所以 commit 不会让它重启。这里在原生
+ * 应用完成（uci-applied）时补一次运行时同步 + 服务重启：
+ * 只动运行时，不写任何配置，配置本身已由 openwrt 自己 commit。 */
+document.addEventListener('uci-applied', function () {
+	L.require('opennds_cpd.common').then(function (m) {
+		return m.api('sys', 'post_apply');
+	}).catch(function () {});
 });
 
 return CPD;

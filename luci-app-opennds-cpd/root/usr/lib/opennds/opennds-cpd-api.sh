@@ -428,24 +428,22 @@ ssid_via_uci() { # $1=接口名
 	return 1
 }
 
-# radio 是否未启用——以 openwrt 官方判定为准：
-# ① ubus network.wireless status：radio 运行时 up 为真 且 config.disabled 不为 true → 启用
-#    （无线总开关关掉、定时关闭等运行时禁用也能查出来）
-# ② ubus 不可用时退回 uci：wireless.<radio>.disabled=1 算未启用
+# radio 是否未启用——以 openwrt 官方判定为准，uci 优先、运行时兜底：
+# ① uci wireless.<radio>.disabled 为 1/on/true → 未启用
+#    （这是用户在 LuCI 里关无线时写下的值，比运行时状态权威；
+#     旧实现只在 ubus 读不到时才看它，于是"已经在 LuCI 里关掉的 wifi
+#     在卡片上仍然显示已启用"）
+# ② 运行时 ubus network.wireless status 里 radio 的 up 为假 → 也算未启用
+#    （无线总开关关闭、定时关闭这类没写进配置的运行时禁用）
 wifi_radio_off() { # $1=radio 名 → rc 0=未启用
-	local st up dis
-	if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
-		st=$(ubus call network.wireless status 2>/dev/null | jsonfilter -q -e "@.$1.up" -e "@.$1.config.disabled" 2>/dev/null)
-		up=$(printf '%s\n' "$st" | sed -n 1p)
-		dis=$(printf '%s\n' "$st" | sed -n 2p)
-		if [ -n "$up" ]; then
-			case "$up" in 1 | true) ;; *) return 0 ;; esac
-			case "$dis" in 1 | true) return 0 ;; esac
-			return 1
-		fi
-	fi
+	local dis up
 	dis=$(uci -q get "wireless.$1.disabled" 2>/dev/null)
-	[ "$dis" = '1' ] && return 0
+	case "$dis" in 1 | on | true) return 0 ;; esac
+	# ② 运行时没起来也算未启用（无线总开关关闭、定时关闭等）
+	if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+		up=$(ubus call network.wireless status 2>/dev/null | jsonfilter -q -e "@.$1.up" 2>/dev/null)
+		case "$up" in 0 | false) return 0 ;; esac
+	fi
 	return 1
 }
 
@@ -1430,7 +1428,7 @@ z_status() {
 		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
 		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
 		# 无线是否启用以 openwrt 官方判定为准：接口自身 disabled=1 算未启用；
-		# radio 级用 wifi_radio_off（ubus 运行时优先，uci 兜底）
+		# radio 级用 wifi_radio_off（uci disabled 优先，运行时 ubus 兜底）
 		dis_radio=0
 		if [ -n "$dev" ] && wifi_radio_off "$dev"; then
 			dis_radio=1
@@ -4721,6 +4719,86 @@ sys_selftest() {
 		"$(json_escape "$seterr")" "$(json_escape "$readv")" "$(json_escape "$rcerr")"
 }
 
+# 原生「保存并应用」commit 之后调用：只做运行时同步，一个字节的配置都不写
+# （配置已经由 openwrt 自己的 uci apply 提交完毕）。
+# ① 黑名单 MAC：摘信任、清预认证队列、踢下线
+# ② 区域识别模式：把已提交的区域配置部署成门户目录与标记文件
+# ③ 重启 openNDS，让新配置真正加载（它的 init 没有 procd reload trigger，
+#    reload_config 不会动它）
+sys_post_apply() {
+	local m lm scope deployed=0 zr
+	for m in $(list_of 'zone_blacklist.main.mac'); do
+		[ -n "$m" ] || continue
+		lm=$(mac_lower "$m")
+		ndsctl_mac untrust "$lm"
+		remove_preauth_queue "$lm"
+		ndsctl_mac deauth "$lm"
+	done
+
+	scope=$(uci -q get 'zone_detect.main.scope' 2>/dev/null)
+	if [ "$scope" = 'zone' ]; then
+		# 用子 shell 跑：z_apply 校验失败会 out_err 直接 exit，
+		# 不隔离的话会把 post_apply 一起带停、连 JSON 都吐不出来。
+		# 判据必须看 z_apply 回的 JSON，不能看退出码 —— out_err 是 exit 0，
+		# 光看退出码会把"什么都没做"当成部署成功。
+		if [ -n "$(uci -q get 'zone_detect.main.wireless' 2>/dev/null)" ]; then
+			zr=$( (z_apply wireless) 2>/dev/null )
+			case "$zr" in
+				*'"ok":1'*) deployed=1 ;;
+				*need_confirm*) log 'post_apply：openNDS 处于停用状态，跳过无线区域部署' ;;
+				*) log "post_apply：无线区域部署失败：$zr" ;;
+			esac
+		fi
+		if [ -n "$(uci -q get 'zone_detect.main.wired' 2>/dev/null)" ]; then
+			zr=$( (z_apply wired) 2>/dev/null )
+			case "$zr" in
+				*'"ok":1'*) deployed=1 ;;
+				*need_confirm*) log 'post_apply：openNDS 处于停用状态，跳有线区域部署' ;;
+				*) log "post_apply：有线区域部署失败：$zr" ;;
+			esac
+		fi
+	fi
+
+	kick_preemptive
+	# z_apply 内部已经重启过，别再来一次
+	[ "$deployed" = '1' ] && {
+		printf '{"ok":1,"restarted":1,"zone":1}\n'
+		return 0
+	}
+	if service_restart; then
+		printf '{"ok":1,"restarted":%s,"zone":0}\n' "$SR_RESTARTED"
+	else
+		printf '{"ok":0,"error":"配置已提交，但 openNDS 未能启动，请检查日志"}\n'
+	fi
+}
+
+# 设备原配置里的可信任客户端（随包提供，只读）与当前配置对比，返回缺的那几个。
+# 本函数绝不写任何配置：用户点「恢复」只是把它们并进页面名单，仍要自己保存。
+exempt_restore_scan() {
+	local f="${CPD_ROOT}/trustedmac.orig" m cur out='' sep='' n=0 lm
+	[ -f "$f" ] || {
+		printf '{"ok":1,"macs":[],"total":0}\n'
+		return 0
+	}
+	# mac_lower 用 printf 不带换行，必须自己补，否则多行会粘成一行
+	# 注意两点：mac_lower 不带换行（要自己补）；uci get 最后一行没有换行，
+	# `while read` 会读不到它，必须写 `|| [ -n "$m" ]`
+	cur=$(list_of 'opennds.@opennds[0].trustedmac' | while IFS= read -r m || [ -n "$m" ]; do
+		[ -n "$m" ] && printf '%s\n' "$(mac_lower "$m")"
+	done)
+	while IFS= read -r m; do
+		m=$(printf '%s' "$m" | tr -d ' \t\r')
+		[ -n "$m" ] || continue
+		case "$m" in \#*) continue ;; esac
+		lm=$(mac_lower "$m")
+		printf '%s\n' "$cur" | grep -Fxq "$lm" && continue
+		out="$out$sep\"$(json_escape "$lm")\""
+		sep=','
+		n=$((n + 1))
+	done <"$f"
+	printf '{"ok":1,"macs":[%s],"total":%s}\n' "$out" "$n"
+}
+
 # ============================================================
 # 主分发
 # ============================================================
@@ -4793,6 +4871,7 @@ case "$PAGE" in
 		case "$SUB" in
 			status) ex_status ;;
 			info) ex_info ;;
+			restore_scan) exempt_restore_scan ;;
 			save) ex_save "$@" ;;
 			*) out_err "exempt：未知子命令 $SUB" ;;
 		esac
@@ -4869,6 +4948,7 @@ case "$PAGE" in
 			uci_revert) [ $# -ge 1 ] || out_err 'uci_revert 需要 config 参数'; sys_uci_revert "$1" ;;
 			changes_count) sys_changes_count ;;
 			selftest) sys_selftest ;;
+			post_apply) sys_post_apply ;;
 			*) out_err "sys：未知子命令 $SUB" ;;
 		esac
 		;;

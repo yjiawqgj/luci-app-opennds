@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$*" in
+"dev phy0-ap0 info") echo "	ssid Guest WiFi" ;;
+"dev") printf '\tInterface phy0-ap0\n' ;;
+*) : ;;
+esac

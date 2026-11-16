@@ -1,0 +1,3 @@
+#!/bin/sh
+# flock 桩：永远抢到锁
+exit 0

@@ -5,6 +5,8 @@ on:
     branches: [ main, master ]
     paths:
       - 'luci-app-opennds-cpd/**'
+      - 'tests/**'
+      - '_selfcheck.py'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -13,8 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 编译前必须先过离线自检：静态检查（未定义函数 / showModal 用法 / 横幅残留）
+  # + 后端沙箱用例。不过就直接失败，省得又编出一个"能装但点了没反应"的包。
+  selfcheck:
+    name: 离线自检
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Static check + sandbox tests
+        run: sh tests/run.sh
+
   ipk:
     name: .ipk (OpenWrt 24.10 SDK)
+    needs: selfcheck
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -68,6 +83,7 @@ jobs:
 
   apk:
     name: .apk (OpenWrt snapshot SDK)
+    needs: selfcheck
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

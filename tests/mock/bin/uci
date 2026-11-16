@@ -1,0 +1,159 @@
+#!/bin/sh
+# uci 桩（带增量暂存）：模拟真实 uci 的 set→delta、revert 丢弃、commit 合并
+R="${MOCK_UCI_ROOT:-/tmp/ndstest/uci}"
+D="${MOCK_UCI_DELTA:-/tmp/ndstest/uci_delta}"
+q=0
+[ "$1" = "-q" ] && { q=1; shift; }
+cmd="$1"; shift
+
+uci_usage() {
+	echo "Usage: uci [<options>] <command> [<arguments>]" >&2
+	echo "Commands: batch export import changes commit add add_list del_list show get set delete rename revert reorder" >&2
+}
+
+rel_for() {
+	case "$1" in
+		*.*.*)
+			c="${1%%.*}"; rest="${1#*.}"; s="${rest%%.*}"; o="${rest#*.}"
+			printf '%s/%s/%s' "$c" "$s" "$o" ;;
+		*) printf '' ;;
+	esac
+}
+
+read_val() { # $1=rel → 输出值；空文件=暂存删除
+	if [ -f "$D/$1" ]; then
+		[ -s "$D/$1" ] && { cat "$D/$1"; return 0; }
+		return 1
+	fi
+	[ -f "$R/$1" ] && { cat "$R/$1"; return 0; }
+	return 1
+}
+
+case "$cmd" in
+	get)
+		rel=$(rel_for "$1"); [ -n "$rel" ] || exit 1
+		read_val "$rel" || exit 1
+		;;
+	set)
+		[ $# -eq 1 ] || { uci_usage; exit 255; }
+		kv="$1"; name="${kv%%=*}"; v="${kv#*=}"
+		case "$1" in *=*) ;; *) uci_usage; exit 255 ;; esac
+		case "$name" in
+			*.*.*) rel=$(rel_for "$name") ;;
+			*.*)
+				# 建 section：conf.sec=type → 增量里记 .type
+				c="${name%%.*}"; s2="${name#*.}"
+				rel="$c/$s2/.type"
+				;;
+			*) rel='' ;;
+		esac
+		[ -n "$rel" ] || exit 1
+		mkdir -p "$D/$(dirname "$rel")" && printf '%s' "$v" > "$D/$rel"
+		;;
+	delete)
+		[ $# -eq 1 ] || { uci_usage; exit 255; }
+		rel=$(rel_for "$1"); [ -n "$rel" ] || exit 0
+		mkdir -p "$D/$(dirname "$rel")" 2>/dev/null
+		: > "$D/$rel"
+		;;
+	add_list)
+		# 真实 uci 语法：add_list conf.sec.opt=value（单参数）；参数个数不对 → 打 usage、退出 255
+		[ $# -eq 1 ] || { uci_usage; exit 255; }
+		case "$1" in
+			*=*) val="${1#*=}"; rel=$(rel_for "${1%%=*}") ;;
+			*) uci_usage; exit 255 ;;
+		esac
+		[ -n "$rel" ] || exit 1
+		mkdir -p "$D/$(dirname "$rel")"
+		if [ ! -f "$D/$rel" ]; then
+			if [ -f "$R/$rel" ]; then cp "$R/$rel" "$D/$rel"; else : > "$D/$rel"; fi
+		fi
+		if [ -s "$D/$rel" ]; then printf '\n%s' "$val" >> "$D/$rel"; else printf '%s' "$val" > "$D/$rel"; fi
+		;;
+	del_list)
+		[ $# -eq 1 ] || { uci_usage; exit 255; }
+		case "$1" in
+			*=*) val="${1#*=}"; rel=$(rel_for "${1%%=*}") ;;
+			*) uci_usage; exit 255 ;;
+		esac
+		[ -n "$rel" ] || exit 0
+		mkdir -p "$D/$(dirname "$rel")" 2>/dev/null
+		if [ ! -f "$D/$rel" ]; then
+			if [ -f "$R/$rel" ]; then cp "$R/$rel" "$D/$rel"; else exit 0; fi
+		fi
+		grep -Fxv -- "$val" "$D/$rel" > "$D/$rel.t" 2>/dev/null
+		mv "$D/$rel.t" "$D/$rel"
+		;;
+	show)
+		case "$1" in
+			*.*.*)
+				rel=$(rel_for "$1")
+				if v=$(read_val "$rel"); then printf "%s='%s'\n" "$1" "$v"; fi
+				;;
+			*.*)
+				c="${1%%.*}"; s="${1#*.}"
+				found=0
+				for base in "$D/$c/$s" "$R/$c/$s"; do
+					[ -d "$base" ] || continue
+					for o in "$base"/*; do
+						[ -f "$o" ] || continue
+						on="${o##*/}"
+						rel="$c/$s/$on"
+						v=$(read_val "$rel") || continue
+						found=1
+						while IFS= read -r l || [ -n "$l" ]; do printf "%s.%s.%s='%s'\n" "$c" "$s" "$on" "$l"; done <<V
+$v
+V
+					done
+				done
+				[ "$found" = '1' ] || exit 1
+				;;
+			*)
+				[ -d "$R/$1" ] || exit 1
+				for sd in "$R/$1"/* "$D/$1"/*; do
+					[ -d "$sd" ] || continue
+					sn="${sd##*/}"
+					[ -f "$sd/.type" ] && printf "%s.%s=%s\n" "$1" "$sn" "$(cat "$sd/.type")"
+					for o in "$sd"/*; do
+						[ -f "$o" ] || continue
+						on="${o##*/}"
+						case "$on" in .type) continue ;; esac
+						rel="$1/$sn/$on"
+						v=$(read_val "$rel") || continue
+						while IFS= read -r l || [ -n "$l" ]; do printf "%s.%s.%s='%s'\n" "$1" "$sn" "$on" "$l"; done <<V
+$v
+V
+					done
+				done
+				;;
+		esac
+		;;
+	commit)
+		[ -d "$D" ] || exit 0
+		# 不用 find -print0 / read -d：dash 与部分 busybox ash 都不支持，
+		# 这里的路径都是用例自己拼的，不会有空格
+		( cd "$D" && find . -type f 2>/dev/null ) |
+			while IFS= read -r f; do
+				[ -n "$f" ] || continue
+				rel="${f#./}"
+				case "$rel" in
+					*/.type)
+						mkdir -p "$R/${rel%/.type}"
+						cp "$D/$rel" "$R/$rel" 2>/dev/null
+						continue
+						;;
+				esac
+				if [ -s "$D/$rel" ]; then
+					mkdir -p "$R/$(dirname "$rel")" && cp "$D/$rel" "$R/$rel"
+				else
+					rm -f "$R/$rel"
+				fi
+			done
+		rm -rf "$D"
+		;;
+	revert)
+		rm -rf "$D"
+		;;
+	*) : ;;
+esac
+exit 0

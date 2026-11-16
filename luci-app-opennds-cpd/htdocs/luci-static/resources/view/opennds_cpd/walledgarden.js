@@ -235,7 +235,7 @@ return view.extend({
 					domains: currentAuto(),
 					ports: currentPorts()
 				};
-				CPD.nativeNotice(_('配置已保存'), 5000);
+				/* 不弹横幅：右上角「未保存的配置」就是反馈 */
 			}, function (e) {
 				if (e && e.silent) return;
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
@@ -247,29 +247,11 @@ return view.extend({
 				CPD.notify(_('请先完成或取消列表编辑'), 'warn');
 				return Promise.resolve();
 			}
-			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
+			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
 			return stageWg().then(function () {
-				return CPD.apiConfirmable('walledgarden', 'apply', [
-					'manual_b64=' + CPD.b64encode(currentText()),
-					'domains_b64=' + CPD.b64encode(currentAuto()),
-					'ports=' + currentPorts()
-				]);
-			}).then(function (j) {
-				if (j && j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (j.ok) {
-					CPD.clearNotice();
-					CPD.nativeNotice(_('配置已应用'), 6000);
-					CPD.showWarnings(j.warnings);
-					CPD.notifyChanges();
-					refresh();
-				} else if (j.errors) {
-					CPD.showErrors(j.errors);
-				} else {
-					CPD.toast(j.error || _('应用失败'), 'err');
-				}
+				return CPD.applyStaged();
 			}).catch(function (e) {
-				if (e && e.silent) return;
-				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
+				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
@@ -298,7 +280,7 @@ return view.extend({
 			return handleApply();
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['opennds']).then(function () {
+			return CPD.revertStaged().then(function () {
 				refresh();
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('复位失败')), 'err');

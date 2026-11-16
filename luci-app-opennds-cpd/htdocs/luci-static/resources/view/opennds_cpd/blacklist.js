@@ -132,7 +132,6 @@ return view.extend({
 			var lines = (ta ? ta.value : '').replace(/\r\n/g, '\n').split('\n')
 				.map(function (l) { return l.trim(); })
 				.filter(function (l) { return l; });
-			if (!lines.length) return { error: _('请先填写客户端 MAC 地址') };
 			var seen = {}, out = [];
 			for (var i = 0; i < lines.length; i++) {
 				if (!macOk(lines[i])) return { error: _('非法MAC: %s').format(lines[i]) };
@@ -167,20 +166,6 @@ return view.extend({
 			return Promise.resolve();
 		}
 
-		/* 应用 = 提交 zone_blacklist 增量 + 运行时同步 + 重启 */
-		function applyNow() {
-			return CPD.apiConfirmable('blacklist', 'apply').then(function (j) {
-				if (j.error === 'busy') { toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j.ok) { toast(j.error || _('应用失败'), 'err'); return; }
-				CPD.notifyChanges();
-				CPD.clearNotice();
-				toast(_('黑名单已应用'), 'ok');
-				return refreshSilently();
-			}).catch(function (e) {
-				toast(CPD.errText(e, _('应用失败')), 'err');
-			});
-		}
-
 		/* ---------- 门户 ---------- */
 		/* 下拉最长 10 个字符，全名放 title 悬停可见 */
 		function shortName(n) {
@@ -204,9 +189,6 @@ return view.extend({
 			sel.addEventListener('change', function () {
 				var v = this.value;
 				state.portal = (v === 'default') ? '' : v;
-				CPD.statusBar(v === 'default'
-					? _('门户已改为默认，点击页面底部的「保存并应用」后生效')
-					: _('门户已改为 %s，点击页面底部的「保存并应用」后生效').format(v));
 			});
 			portalBox.appendChild(E('div', { 'class': 'cpd-field' }, [
 				E('label', {}, _('门户选择')),
@@ -241,7 +223,6 @@ return view.extend({
 						if (!j.ok) throw { error: j.error || '上传失败' };
 						/* 上传即选中：只改本页状态，配置由底部 openwrt 按钮写入 */
 						state.portal = name;
-						CPD.statusBar(_('已上传 %s，点击页面底部的「保存并应用」后生效').format(name));
 						refreshSilently();
 					}).catch(function (e) {
 						CPD.notify(CPD.errText(e, _('上传失败')), 'err');
@@ -266,7 +247,7 @@ return view.extend({
 					]);
 				})
 				: [E('p', { 'class': 'cpd-note' }, _('暂无已上传脚本'))];
-			ui.showModal(_('已上传脚本'), E('div', { 'style': 'max-width:460px' }, list));
+			CPD.modal(_('已上传脚本'), E('div', { 'style': 'max-width:460px' }, list));
 		}
 
 		function askDelete(p) {
@@ -293,23 +274,21 @@ return view.extend({
 
 		/* ---------- LuCI 框架底部按钮：保存 = 暂存，保存并应用 = 提交 ---------- */
 		this.handleSave = function () {
-			return stageMacs(state.macs).then(function () {
-				CPD.nativeNotice(_('黑名单已保存'), 5000);
-			}, function (e) {
+			/* 不弹横幅：右上角「未保存的配置: N」就是保存成功的反馈 */
+			return stageMacs(state.macs).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		};
 		this.handleSaveApply = function () {
 			return stageMacs(state.macs).then(function () {
-				return applyNow();
-			}, function (e) {
-				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
+				return CPD.applyStaged();
+			}).catch(function (e) {
+				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['zone_blacklist']).then(function () {
+			return CPD.revertStaged().then(function () {
 				state.editing = false;
-				CPD.clearNotice();
 				return refreshSilently();
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('复位失败')), 'err');

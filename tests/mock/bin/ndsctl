@@ -1,0 +1,6 @@
+#!/bin/sh
+[ -n "$NDSCTL_LOG" ] && echo "$1 $2" >> "$NDSCTL_LOG"
+case "$1" in
+	status) echo "openNDS daemon v10.0.0"; exit 0 ;;
+esac
+exit 0

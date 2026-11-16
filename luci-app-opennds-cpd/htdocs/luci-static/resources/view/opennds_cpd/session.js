@@ -33,10 +33,6 @@ return view.extend({
 			{ key: 'ci', title: _('检查间隔'), label: _('默认时间为15（秒）'), ph: '15（秒）', min: 1 }
 		];
 
-		function formValues() {
-			return [inputs.st.value, inputs.ait.value, inputs.pit.value, inputs.ci.value];
-		}
-
 		function formScope() {
 			return scopeSel.value;
 		}
@@ -85,54 +81,115 @@ return view.extend({
 		}
 
 		/* ---------- 保存 / 应用 ---------- */
+		function formValues() {
+			return [inputs.st.value, inputs.ait.value, inputs.pit.value, inputs.ci.value]
+				.map(function (v) { return String(v == null ? '' : v).trim(); });
+		}
+
 		function snapshotString() {
-			return 'sessiontimeout=' + formValues()[0] +
-				';authidletimeout=' + formValues()[1] +
-				';preauthidletimeout=' + formValues()[2] +
-				';checkinterval=' + formValues()[3] +
+			var v = formValues();
+			return 'sessiontimeout=' + v[0] +
+				';authidletimeout=' + v[1] +
+				';preauthidletimeout=' + v[2] +
+				';checkinterval=' + v[3] +
 				';scope=' + formScope();
 		}
 
+		var FIELD_NAMES = [_('会话超时'), _('空闲超时'), _('未认证超时'), _('检查间隔')];
+
+		/* 与后端 se_validate 口径一致：非负整数；检查间隔 ≥ 1 */
+		function validateForm() {
+			var v = formValues();
+			for (var i = 0; i < v.length; i++) {
+				if (v[i] === '') continue;      /* 空 = 不写这个键，保持原值 */
+				if (!/^[0-9]+$/.test(v[i])) {
+					CPD.notify(_('%s 必须是非负整数（0 表示不限制）').format(FIELD_NAMES[i]), 'warn');
+					if (inputs[['st', 'ait', 'pit', 'ci'][i]]) inputs[['st', 'ait', 'pit', 'ci'][i]].focus();
+					return false;
+				}
+				if (i === 3 && Number(v[i]) < 1) {
+					CPD.notify(_('检查间隔必须是不小于 1 的整数'), 'warn');
+					inputs.ci.focus();
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/* 覆盖模式：把每条授权客户端的 sessiontimeout 归零，其余字段原样保留
+		 * （对齐后端 pm_override_entry；没有 mac= 的畸形条目原样留着） */
+		function rebuildPreempt(list) {
+			return (list || []).map(function (e) {
+				var s = String(e), mac = '', ur = '0', dr = '0', uq = '0', dq = '0', custom = '';
+				s.split(';').forEach(function (p) {
+					var i = p.indexOf('=');
+					if (i < 0) return;
+					var k = p.slice(0, i), v = p.slice(i + 1);
+					if (k === 'mac') mac = v;
+					else if (k === 'uploadrate' && v !== '') ur = v;
+					else if (k === 'downloadrate' && v !== '') dr = v;
+					else if (k === 'uploadquota' && v !== '') uq = v;
+					else if (k === 'downloadquota' && v !== '') dq = v;
+					else if (k === 'custom') custom = p;
+				});
+				if (!mac) return s;
+				return 'mac=' + mac + ';sessiontimeout=0;uploadrate=' + ur +
+					';downloadrate=' + dr + ';uploadquota=' + uq + ';downloadquota=' + dq +
+					(custom ? ';' + custom : '');
+			});
+		}
+
+		/* 暂存：既写页面自己的缓存（session_snapshot，用于「尚未应用」提示），
+		 * 也把真正生效的 opennds 键一起写进本会话的增量 —— 这样右上角
+		 * 「未保存的配置」里看到的就是 uci set opennds.@opennds[0].xxx=…，
+		 * 点「保存并应用」由 openwrt 自己 commit，不用插件再补一遍。
+		 * 注意：增量只存在会话目录里，不 commit 就绝不落盘，断电重启也不会被动生效。 */
 		function stageSnapshot() {
-			return CPD.stageUci('zone_detect', 'main', 'session_snapshot', 'opt',
-				snapshotString()).then(function () {
+			if (!validateForm()) return Promise.reject({ silent: true });
+			var v = formValues();
+			var scope = formScope();
+			var jobs = [
+				CPD.stageUci('zone_detect', 'main', 'session_snapshot', 'opt', snapshotString()),
+				CPD.stageUci('zone_detect', 'main', 'session_scope', 'opt', scope)
+			];
+			[['sessiontimeout', v[0]], ['authidletimeout', v[1]],
+				['preauthidletimeout', v[2]], ['checkinterval', v[3]]].forEach(function (p) {
+				if (p[1] === '') return;        /* 空值不写：绝不把已有键改成空串 */
+				jobs.push(CPD.stageUci('opennds', '@opennds[0]', p[0], 'opt', p[1]));
+			});
+			if (scope === 'override') {
+				jobs.push(CPD.api('exempt', 'status').then(function (j) {
+					return CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list',
+						rebuildPreempt(j.preempt || []));
+				}));
+			}
+			return Promise.all(jobs).then(function () {
 				state.saved = {
-					sessiontimeout: formValues()[0],
-					authidletimeout: formValues()[1],
-					preauthidletimeout: formValues()[2],
-					checkinterval: formValues()[3],
-					scope: formScope()
+					sessiontimeout: v[0], authidletimeout: v[1],
+					preauthidletimeout: v[2], checkinterval: v[3],
+					scope: scope
 				};
 			});
 		}
 
 		function handleSave() {
 			return stageSnapshot().then(function () {
-				CPD.nativeNotice(_('配置已保存'), 5000);
+				/* 不弹横幅：右上角「未保存的配置」就是反馈 */
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
 
 		function handleApply() {
-			/* 保存并应用：先把当前表单落成 uci 暂存，再由后端写入 openNDS 并重启 */
-			stageSnapshot().then(function () {
-				return CPD.apiConfirmable('session', 'apply');
-			}).then(function (j) {
-				if (j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (j.ok) {
-					CPD.toast(_('配置应用完成'), 'ok');
-					CPD.showWarnings(j.warnings);
-					CPD.notifyChanges();
-					refresh(true);
-				} else {
-					CPD.toast(j.error || _('应用失败'), 'err');
-				}
+			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
+			return stageSnapshot().then(function () {
+				return CPD.applyStaged();
 			}).catch(function (e) {
-				CPD.toast(CPD.errText(e, _('应用失败')), 'err');
+				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
 		}
 
+		/* 读取会话参数；后端有"已保存待应用"快照时按快照显示 */
 		function refresh() {
 			CPD.api('session', 'get').then(function (j) {
 				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
@@ -154,7 +211,6 @@ return view.extend({
 					state.scope = j.scope || 'default';
 				}
 				state.pending = j.pending;
-				/* 快照引用始终来自后端：pending=1 时它就是"已保存待应用"的那份 */
 				state.saved = j.saved || null;
 				renderAll();
 			}).catch(function (e) {
@@ -165,14 +221,13 @@ return view.extend({
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			handleSave();
-			return Promise.resolve();
+			return handleSave();
 		};
 		this.handleSaveApply = function () {
 			return handleApply();
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['zone_detect']).then(function () {
+			return CPD.revertStaged().then(function () {
 				refresh();
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('复位失败')), 'err');

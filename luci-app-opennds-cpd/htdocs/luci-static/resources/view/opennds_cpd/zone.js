@@ -308,8 +308,12 @@ return view.extend({
 			}
 		}
 
+		/* 全局模式：openNDS 自带的登录方式，不做区域识别 */
 		function handleDefaultSave() {
-			CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'global').then(function () {
+			return Promise.all([
+				CPD.stageUci('opennds', '@opennds[0]', 'login_option_enabled', 'opt', '1'),
+				CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'global')
+			]).then(function () {
 				state.scope = 'global';
 				state.snapshot = uiSnapshot();
 				renderAll();
@@ -319,18 +323,10 @@ return view.extend({
 		}
 
 		function handleDefaultApply() {
-			CPD.apiConfirmable('zone', 'apply', ['global']).then(function (j) {
-				if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
-				if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
-				state.scope = 'global';
-				state.snapshot = uiSnapshot();
-				CPD.clearNotice();
-				CPD.nativeNotice(_('配置已应用'), 6000);
-				CPD.notifyChanges();
-				loadStatus();
-			}, function (e) {
-				CPD.toast((e && e.error) || _('应用失败'), 'err');
+			return handleDefaultSave().then(function () {
+				return CPD.applyStaged();
+			}).catch(function (e) {
+				if (e && e.error) CPD.toast(e.error, 'err');
 			});
 		}
 
@@ -490,6 +486,12 @@ return view.extend({
 		function wirelessSave(silent) {
 			var jobs = [
 				CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'zone'),
+				/* 区域模式真正生效的两个 opennds 键也一起暂存：
+				 * 右上角「未保存的配置」里就能直接看到它们，
+				 * 由 openwrt 原生 commit 落盘（z_apply 之后再写同样的值，属于幂等） */
+				CPD.stageUci('opennds', '@opennds[0]', 'login_option_enabled', 'opt', '3'),
+				CPD.stageUci('opennds', '@opennds[0]', 'themespec_path', 'opt',
+					'/usr/lib/opennds/theme_zone_detect.sh'),
 				CPD.stageUci('zone_detect', 'main', 'wireless', 'list',
 					uniqueSsids().map(function (s) {
 						return s + '|' + (state.zoneDraft[s] || '');
@@ -499,30 +501,10 @@ return view.extend({
 				state.scope = 'zone';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				if (!silent) CPD.statusBar(_('已保存，点击页面底部的「保存并应用」后生效'));
+				/* 不弹横幅：右上角「未保存的配置: N」就是保存的反馈 */
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 				throw e; /* 保存失败时中止后续应用 */
-			});
-		}
-
-		function wirelessApply() {
-			/* 先把当前选择落成 uci 暂存（应用按缓存里的已保存配置执行） */
-			return wirelessSave(true).then(function () {
-				return CPD.apiConfirmable('zone', 'apply', ['wireless']).then(function (j) {
-					if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-					if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
-					if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
-					CPD.showWarnings(j.warnings);
-					state.scope = 'zone';
-					state.snapshot = uiSnapshot();
-					CPD.clearNotice();
-				CPD.nativeNotice(_('配置已应用'), 6000);
-					CPD.notifyChanges();
-					loadStatus();
-				}, function (e) {
-					CPD.toast((e && e.error) || _('应用失败'), 'err');
-				});
 			});
 		}
 
@@ -609,37 +591,23 @@ return view.extend({
 		function wiredSave(silent) {
 			if (!state.wired || !state.wired.iface) return Promise.resolve();
 			return CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'zone').then(function () {
+				/* 与无线面板同理：区域模式的两个 opennds 键一起暂存，diff 里看得见 */
+				return Promise.all([
+					CPD.stageUci('opennds', '@opennds[0]', 'login_option_enabled', 'opt', '3'),
+					CPD.stageUci('opennds', '@opennds[0]', 'themespec_path', 'opt',
+						'/usr/lib/opennds/theme_zone_detect.sh')
+				]);
+			}).then(function () {
 				return CPD.stageUci('zone_detect', 'main', 'wired', 'list',
 					[state.wired.iface + '|' + (state.wiredDraft || '')]);
 			}).then(function () {
 				state.scope = 'zone';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				if (!silent) CPD.statusBar(_('已保存，点击页面底部的「保存并应用」后生效'));
+				/* 不弹横幅：右上角「未保存的配置: N」就是保存的反馈 */
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 				throw e; /* 保存失败时中止后续应用 */
-			});
-		}
-
-		function wiredApply() {
-			if (!state.wired || !state.wired.iface) return Promise.resolve();
-			/* 先把当前选择落成 uci 暂存（应用按缓存里的已保存配置执行） */
-			return wiredSave(true).then(function () {
-				return CPD.apiConfirmable('zone', 'apply', ['wired']).then(function (j) {
-					if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-					if (!j || !j.ok) { CPD.toast((j && j.error) || _('应用失败'), 'err'); return; }
-					if (j.enabled_by_apply === 1) CPD.toast(_('openNDS 已同时启用'), 'warn');
-					CPD.showWarnings(j.warnings);
-					state.scope = 'zone';
-					state.snapshot = uiSnapshot();
-					CPD.clearNotice();
-				CPD.nativeNotice(_('配置已应用'), 6000);
-					CPD.notifyChanges();
-					loadStatus();
-				}, function (e) {
-					CPD.toast((e && e.error) || _('应用失败'), 'err');
-				});
 			});
 		}
 
@@ -1037,22 +1005,25 @@ return view.extend({
 
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
-			if (state.scopeSel !== 'zone') { handleDefaultSave(); return Promise.resolve(); }
+			if (state.scopeSel !== 'zone') { return handleDefaultSave(); }
+			/* 只暂存：右上角出现「未保存的配置」，点开就是原生 diff 弹窗 */
 			return Promise.resolve()
-				.then(function () { return wirelessSave(); })
-				.then(function () { return wiredSave(); })
+				.then(function () { return wirelessSave(true); })
+				.then(function () { return wiredSave(true); })
 				.catch(function () { /* 失败提示已在内部给出 */ });
 		};
 		this.handleSaveApply = function () {
-			if (state.scopeSel !== 'zone') { handleDefaultApply(); return Promise.resolve(); }
-			/* wirelessApply / wiredApply 内部会先暂存再应用，不用在外面重复暂存 */
+			if (state.scopeSel !== 'zone') { return handleDefaultApply(); }
 			return Promise.resolve()
-				.then(function () { return wirelessApply(); })
-				.then(function () { return wiredApply(); })
-				.catch(function () { /* 失败提示已在内部给出 */ });
+				.then(function () { return wirelessSave(true); })
+				.then(function () { return wiredSave(true); })
+				.then(function () { return CPD.applyStaged(); })
+				.catch(function (e) {
+					if (e && e.error) CPD.toast(e.error, 'err');
+				});
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['zone_detect']).then(function () {
+			return CPD.revertStaged().then(function () {
 				state.zoneDraft = {};
 				state.wiredDraft = null;
 				loadStatus();

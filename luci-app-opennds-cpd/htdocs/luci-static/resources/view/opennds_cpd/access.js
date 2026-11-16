@@ -281,7 +281,7 @@ return view.extend({
 			if (!precheckPorts()) return Promise.reject({ silent: true });
 			return stageAccess().then(function () {
 				state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
-				CPD.nativeNotice(_('规则已保存'), 5000);
+				/* 不弹横幅：右上角「未保存的配置」就是反馈 */
 			}, function (e) {
 				if (e && e.silent) return;
 				toast(CPD.errText(e, _('保存失败')), 'err');
@@ -294,33 +294,9 @@ return view.extend({
 				return Promise.resolve();
 			}
 			if (!precheckPorts()) return Promise.resolve();
-			/* 保存并应用：先落 uci 暂存，再由后端写入并重启 */
+			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
 			return stageAccess().then(function () {
-				return CPD.apiConfirmable('access', 'apply', [
-					'manual_b64=' + CPD.b64encode(state.manual),
-					'auto_b64=' + CPD.b64encode(state.domains),
-					'ports=' + state.ports
-				]);
-			}).then(function (j) {
-				if (j && j.error === 'busy') {
-					toast(_('等待上一步完成，请稍候重试'), 'warn');
-					return;
-				}
-				if (j && j.error === 'port_only') {
-					toast(_('只填端口不写域名无法保存：没有域名，拦截列表为空，规则不会生效'), 'warn');
-					return;
-				}
-				if (j && j.ok) {
-					CPD.clearNotice();
-					CPD.nativeNotice(_('配置已应用'), 6000);
-					CPD.showWarnings(j.warnings);
-					CPD.notifyChanges();
-					refresh();
-				} else if (j && j.errors) {
-					CPD.showErrors(j.errors);
-				} else {
-					toast((j && j.error) || _('应用失败'), 'err');
-				}
+				return CPD.applyStaged();
 			}).catch(function (e) {
 				if (e && e.silent) return;
 				toast(CPD.errText(e, _('应用失败')), 'err');
@@ -352,7 +328,7 @@ return view.extend({
 			return handleApply();
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['opennds']).then(function () {
+			return CPD.revertStaged().then(function () {
 				refresh();
 			}, function (e) {
 				toast(CPD.errText(e, _('复位失败')), 'err');

@@ -27,7 +27,8 @@ return view.extend({
 			editing: { trusted: false, preempt: false },
 			open: { trusted: false, preempt: false },
 			perPage: '10',
-			page: { trusted: 1, preempt: 1 }
+			page: { trusted: 1, preempt: 1 },
+			restore: []     /* 设备原配置里有、当前配置里没有的可信任 MAC */
 		};
 		var body = E('div', { 'class': 'cpd-page' });
 
@@ -64,15 +65,30 @@ return view.extend({
 				? _('允许指定客户端跳过门户认证，自动获得预先授权，同时保留 openNDS 对客户端的流量统计、配额、速度和会话时长管理。')
 				: _('允许指定客户端绕过 openNDS 的正常认证和客户端流量管理机制，获得无条件访问权限。')));
 
+			if (!isPre && state.restore.length) {
+				var bar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
+					E('span', {}, _('检测到原有配置里有 %s 个可信任客户端现在不在名单里。').format(state.restore.length)),
+					E('button', {
+						'class': 'cbi-button',
+						'click': function () {
+							var have = {};
+							state.trusted.forEach(function (m) { have[m] = 1; });
+							state.restore.forEach(function (m) { if (!have[m]) state.trusted.push(m); });
+							renderAll();
+							/* 只并进本地名单，仍要用户自己点保存并核对 diff */
+							CPD.notify(_('已加入名单，请点「保存」后在右上角核对变更'), 'info');
+						}
+					}, _('恢复这 %s 个').format(state.restore.length))
+				]);
+				sec.appendChild(bar);
+			}
+
 			if (isPre) {
 				var tgl = E('button', {
 					'class': 'cbi-button ' + (state.preemptEnabled ? 'cbi-button-positive' : ''),
 					'click': function () {
 						state.preemptEnabled = state.preemptEnabled ? 0 : 1;
 						renderAll();
-						CPD.statusBar(state.preemptEnabled
-							? _('授权客户端已启用，点击页面底部的「保存并应用」后生效')
-							: _('授权客户端已关闭（配置保留），点击「保存并应用」后生效'));
 					}
 				}, state.preemptEnabled ? _('已启用') : _('已关闭'));
 				sec.appendChild(E('div', { 'style': 'margin-top:10px;display:flex;align-items:center;gap:10px' }, [
@@ -375,22 +391,9 @@ return view.extend({
 			if (dp.rem.length) args.push('preempt_remove=' + dp.rem.join(','));
 			if (!state.preempt.length && state.preempt0.length) args.push('preempt_clear=1');
 			args.push('preempt_enabled=' + state.preemptEnabled);
-			/* 保存并应用：先把当前名单落成 uci 暂存，再交给后端差量执行 */
+			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
 			return stageExempt().then(function () {
-				return CPD.apiConfirmable('exempt', 'save', args);
-			}).then(function (j) {
-				if (j.error === 'busy') { CPD.notify(_('等待上一步完成，请稍候重试'), 'warn'); return; }
-				if (j.error === 'duplicate' && j.duplicates) {
-					ui.addNotification(null, E('p', {},
-						_('同时出现在信任列表和授权列表，一个客户端只能属于一个列表，请删除其中一个后再应用。')),
-						'error');
-					return;
-				}
-				if (!j.ok) { CPD.notify(j.error || _('应用失败'), 'err'); return; }
-				CPD.clearNotice();
-				CPD.nativeNotice(_('配置已应用'), 6000);
-				CPD.notifyChanges();
-				refresh();
+				return CPD.applyStaged();
 			}).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
 			});
@@ -406,17 +409,28 @@ return view.extend({
 				state.preempt0 = state.preempt.slice();
 				state.pe0 = state.preemptEnabled;
 				state.editing = { trusted: false, preempt: false };
+				scanRestore();
 				loadInfo();
 			}).catch(function (e) {
 				CPD.toast((e && e.error) || _('读取状态失败'), 'err');
 			});
 		}
 
+		/* 设备原配置里的可信任名单（随包提供）与当前配置对比，只读不写 */
+		function scanRestore() {
+			CPD.api('exempt', 'restore_scan').then(function (j) {
+				var list = (j && j.ok) ? (j.macs || []) : [];
+				var changed = (list.length !== state.restore.length);
+				state.restore = list;
+				if (changed) renderAll();
+			}).catch(function () {});
+		}
+
 		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
 			return stageExempt().then(function () {
-				CPD.nativeNotice(_('名单已保存'), 5000);
+				/* 不弹横幅：右上角「未保存的配置: N」就是保存成功的反馈 */
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
@@ -425,8 +439,7 @@ return view.extend({
 			return handleApply();
 		};
 		this.handleReset = function () {
-			return CPD.revertStaged(['opennds']).then(function () {
-				CPD.clearNotice();
+			return CPD.revertStaged().then(function () {
 				refresh();
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('复位失败')), 'err');

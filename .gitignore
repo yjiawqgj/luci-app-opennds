@@ -1,4 +1,5 @@
 _archive/
+dist/
 *.tmp
 .shots/
 汇总/_bak_*/
