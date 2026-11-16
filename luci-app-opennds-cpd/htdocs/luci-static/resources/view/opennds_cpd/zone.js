@@ -313,7 +313,6 @@ return view.extend({
 				state.scope = 'global';
 				state.snapshot = uiSnapshot();
 				renderAll();
-				CPD.statusBar(_('已保存，点击页面底部的「保存并应用」后生效'));
 			}, function (e) {
 				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 			});
@@ -327,7 +326,7 @@ return view.extend({
 				state.scope = 'global';
 				state.snapshot = uiSnapshot();
 				CPD.clearNotice();
-				CPD.notify(_('配置已应用'), 'ok');
+				CPD.nativeNotice(_('配置已应用'), 6000);
 				CPD.notifyChanges();
 				loadStatus();
 			}, function (e) {
@@ -357,7 +356,8 @@ return view.extend({
 				var pill = c.disabled
 					? '<span class="zd-pill off">' + _('未启用') + '</span>'
 					: '<span class="zd-pill on">' + _('已启用') + '</span>';
-				var iface = c.device || '—';
+				/* 接口名用 openNDS 官方识别方式：运行时接口名（phy0-ap0 / wlan0），radio 名只作兜底 */
+			var iface = c.runtime || c.device || '—';
 				var d = state.zoneDraft[c.ssid] || '';
 				var sub2 = d ? '<span class="zd-wc-sub">' +
 					esc(_('认证脚本：%s').format(shortName(d))) + '</span>' : '';
@@ -517,7 +517,7 @@ return view.extend({
 					state.scope = 'zone';
 					state.snapshot = uiSnapshot();
 					CPD.clearNotice();
-				CPD.notify(_('配置已应用'), 'ok');
+				CPD.nativeNotice(_('配置已应用'), 6000);
 					CPD.notifyChanges();
 					loadStatus();
 				}, function (e) {
@@ -634,7 +634,7 @@ return view.extend({
 					state.scope = 'zone';
 					state.snapshot = uiSnapshot();
 					CPD.clearNotice();
-				CPD.notify(_('配置已应用'), 'ok');
+				CPD.nativeNotice(_('配置已应用'), 6000);
 					CPD.notifyChanges();
 					loadStatus();
 				}, function (e) {

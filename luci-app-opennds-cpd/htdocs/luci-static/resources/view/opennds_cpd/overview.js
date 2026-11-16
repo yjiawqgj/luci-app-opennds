@@ -239,7 +239,6 @@ return view.extend({
 				warnbar.style.display = 'none';
 			}
 			renderThemeBar();
-			renderRestoreBar();
 			renderConfBar();
 		}
 
@@ -257,61 +256,6 @@ return view.extend({
 				_('openNDS 配置文件无法解析，读取与写入都会失败：%s。请先在 SSH 里修复 /etc/config/opennds（uci show opennds 可看到具体行号）。')
 					.format(state.confErr)));
 			confBar.style.display = '';
-		}
-
-		/* ---------- 信任客户端恢复 ----------
-		 * 只读扫描本机的旧配置副本（不写任何东西），
-		 * 配置里 trustedmac 为空而备份里有记录时，给一个「恢复」按钮。
-		 */
-		var restoreBar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' });
-		var restoreInfo = null, restoreScanned = false;
-
-		function scanRestore() {
-			if (restoreScanned) {
-				renderRestoreBar();
-				return;
-			}
-			restoreScanned = true;
-			CPD.api('sys', 'restore_scan').then(function (j) {
-				restoreInfo = (j && j.ok) ? (j.candidates || []) : [];
-				renderRestoreBar();
-			}).catch(function () {});
-		}
-
-		function renderRestoreBar() {
-			if (!restoreBar) return;
-			var cur = (restoreInfo && restoreInfo.length) ? restoreInfo[0] : null;
-			var have = (state.counts && state.counts.trusted) || 0;
-			if (!cur || have > 0) {
-				restoreBar.style.display = 'none';
-				return;
-			}
-			restoreBar.innerHTML = '';
-			restoreBar.appendChild(E('span', {},
-				_('配置里没有信任客户端，但在 %s 里找到 %s 个历史记录。')
-					.format(cur.path, String(cur.count))));
-			restoreBar.appendChild(E('button', {
-				'class': 'cbi-button',
-				'style': 'margin-left:10px',
-				'click': function () { doRestore(cur); }
-			}, _('恢复')));
-			restoreBar.style.display = '';
-		}
-
-		function doRestore(cur) {
-			CPD.api('sys', 'restore_apply', [cur.path]).then(function (j) {
-				if (!j || !j.ok) {
-					CPD.notify((j && j.error) || _('恢复失败'), 'err');
-					return;
-				}
-				CPD.statusBar(_('已恢复 %s 个信任客户端，点击页面底部的「保存并应用」后生效').format(j.added));
-				state.counts.trusted = j.added;
-				restoreInfo = null;
-				renderRestoreBar();
-				refresh();
-			}, function (e) {
-				CPD.notify(CPD.errText(e, _('恢复失败')), 'err');
-			});
 		}
 
 		/* 配置写入自检：在临时配置上跑一遍 uci set/get/delete，
@@ -1208,7 +1152,6 @@ return view.extend({
 		body.appendChild(warnbar);
 		body.appendChild(themeBar);
 		body.appendChild(confBar);
-		body.appendChild(restoreBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [
 			E('h3', {}, _('状态')),
@@ -1285,7 +1228,7 @@ return view.extend({
 						return;
 					}
 					CPD.clearNotice();
-					CPD.notify(_('配置已应用'), 'ok');
+					CPD.nativeNotice(_('配置已应用'), 6000);
 					if (j.warnings && j.warnings.length) CPD.showWarnings(j.warnings);
 					/* 增量已落盘：让右上角「未保存的配置」立刻归零 */
 					CPD.notifyChanges();

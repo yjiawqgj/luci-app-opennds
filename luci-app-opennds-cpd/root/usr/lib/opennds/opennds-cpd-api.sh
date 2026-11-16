@@ -428,6 +428,27 @@ ssid_via_uci() { # $1=接口名
 	return 1
 }
 
+# radio 是否未启用——以 openwrt 官方判定为准：
+# ① ubus network.wireless status：radio 运行时 up 为真 且 config.disabled 不为 true → 启用
+#    （无线总开关关掉、定时关闭等运行时禁用也能查出来）
+# ② ubus 不可用时退回 uci：wireless.<radio>.disabled=1 算未启用
+wifi_radio_off() { # $1=radio 名 → rc 0=未启用
+	local st up dis
+	if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+		st=$(ubus call network.wireless status 2>/dev/null | jsonfilter -q -e "@.$1.up" -e "@.$1.config.disabled" 2>/dev/null)
+		up=$(printf '%s\n' "$st" | sed -n 1p)
+		dis=$(printf '%s\n' "$st" | sed -n 2p)
+		if [ -n "$up" ]; then
+			case "$up" in 1 | true) ;; *) return 0 ;; esac
+			case "$dis" in 1 | true) return 0 ;; esac
+			return 1
+		fi
+	fi
+	dis=$(uci -q get "wireless.$1.disabled" 2>/dev/null)
+	[ "$dis" = '1' ] && return 0
+	return 1
+}
+
 # 该 section 是它 radio 内第几个启用的 AP section（1-based；找不到回 0）
 ap_section_index() { # $1=section id $2=device
 	local want="$1" dev="$2" secids sec d m dis n=0
@@ -864,8 +885,7 @@ EOF2
 		[ "$dis" = '1' ] && continue
 		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
 		if [ -n "$dev" ]; then
-			rd=$(uci -q get "wireless.$dev.disabled" 2>/dev/null)
-			[ "$rd" = '1' ] && continue
+			wifi_radio_off "$dev" && continue
 		fi
 		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
 		idx=$(ap_section_index "$sec" "$dev")
@@ -983,7 +1003,7 @@ ov_client_action() { # $1=action $2=mac
 			ov_load_lists
 			e=$(entry_for_mac "$PM_LIST" "$lm")
 			if [ -n "$e" ]; then
-				uci del_list 'opennds.@opennds[0].preemptivemac' "$e" 2>/dev/null
+				uci del_list 'opennds.@opennds[0].preemptivemac'="$e" 2>/dev/null
 				uci commit opennds || out_err '写入配置失败'
 				remove_preauth_queue "$lm"
 			fi
@@ -1002,13 +1022,13 @@ ov_client_action() { # $1=action $2=mac
 			fi
 			ov_load_lists
 			# ① 黑名单追加并立刻落盘（theme_zone_detect.sh 读的就是 /etc/config）
-			mac_in_bl "$lm" || { uci add_list "zone_blacklist.$bsc.mac" "$lm" || out_err '写入配置失败'; }
+			mac_in_bl "$lm" || { uci add_list "zone_blacklist.$bsc.mac"="$lm" || out_err '写入配置失败'; }
 			uci commit zone_blacklist || out_err '写入配置失败'
 			# ② 摘两份名单并立刻落盘
 			if uci -q show 'opennds.@opennds[0]' >/dev/null 2>&1; then
 				e=$(entry_for_mac "$PM_LIST" "$lm")
-				[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac' "$e" 2>/dev/null
-				mac_in_tr "$lm" && uci del_list 'opennds.@opennds[0].trustedmac' "$lm" 2>/dev/null
+				[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac'="$e" 2>/dev/null
+				mac_in_tr "$lm" && uci del_list 'opennds.@opennds[0].trustedmac'="$lm" 2>/dev/null
 				uci commit opennds
 			fi
 			# ③ 撤信任 + 清预认证队列 + 踢下线
@@ -1039,8 +1059,7 @@ ov_client_action() { # $1=action $2=mac
 				return 0
 			}
 			# 6 参数写全（缺字段会继承上一条客户端的值）；MAC 一律小写
-			uci_w add_list "$ond.preemptivemac" \
-				"mac=$lm;sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0" ||
+			uci_w add_list "$ond.preemptivemac=mac=$lm;sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0" ||
 				sys_stage_fail
 			# 没有 DHCP 租约 → 预认证拿不到 IP，应用后也不会生效
 			if ! grep -qw "$lm" /tmp/dhcp.leases 2>/dev/null; then
@@ -1053,27 +1072,27 @@ ov_client_action() { # $1=action $2=mac
 			ov_load_lists
 			e=$(entry_for_mac "$PM_LIST" "$lm")
 			if [ -n "$e" ]; then
-				uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail
+				uci_w del_list "$ond.preemptivemac"="$e" || sys_stage_fail
 			fi
 			printf '{"ok":1,"staged":1}\n'
 			;;
 		trust)
 			ov_load_lists
 			e=$(entry_for_mac "$PM_LIST" "$lm")
-			mac_in_tr "$lm" || { uci_w add_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
+			mac_in_tr "$lm" || { uci_w add_list "$ond.trustedmac"="$lm" || sys_stage_fail; }
 			# 两份名单必须互斥：顺手摘掉 preemptivemac 条目
-			[ -n "$e" ] && { uci_w del_list "$ond.preemptivemac" "$e" || sys_stage_fail; }
+			[ -n "$e" ] && { uci_w del_list "$ond.preemptivemac"="$e" || sys_stage_fail; }
 			printf '{"ok":1,"staged":1}\n'
 			;;
 		untrust)
 			ov_load_lists
-			mac_in_tr "$lm" && { uci_w del_list "$ond.trustedmac" "$lm" || sys_stage_fail; }
+			mac_in_tr "$lm" && { uci_w del_list "$ond.trustedmac"="$lm" || sys_stage_fail; }
 			printf '{"ok":1,"staged":1}\n'
 			;;
 		unblock)
 			ov_load_lists
 			if mac_in_bl "$lm" && uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
-				uci_w del_list 'zone_blacklist.main.mac' "$lm" || sys_stage_fail
+				uci_w del_list 'zone_blacklist.main.mac'="$lm" || sys_stage_fail
 			fi
 			printf '{"ok":1,"staged":1}\n'
 			;;
@@ -1136,9 +1155,9 @@ ov_client_edit() { # $1=stage|apply $2=mac $3…=k=v（5 项）
 	local new
 	new="mac=$lm;sessiontimeout=$st;uploadrate=$ur;downloadrate=$dr;uploadquota=$uq;downloadquota=$dq$custom"
 	if [ -n "$old" ]; then
-		uci_w del_list "$sec.preemptivemac" "$old" || sys_stage_fail
+		uci_w del_list "$sec.preemptivemac"="$old" || sys_stage_fail
 	fi
-	uci_w add_list "$sec.preemptivemac" "$new" || sys_stage_fail
+	uci_w add_list "$sec.preemptivemac"="$new" || sys_stage_fail
 
 	# 编辑框下的「确定」只写增量：不 commit、不重启，
 	# 配置真正落盘与 nds 重启一律等 openwrt 自带的「保存并应用」。
@@ -1410,18 +1429,22 @@ z_status() {
 		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
 		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
 		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
-		# 无线是否启用以 openwrt 无线配置为准：接口自身 disabled=1，
-		# 或它所属的 radio（wifi-device）disabled=1，都算未启用
-		rad=''
+		# 无线是否启用以 openwrt 官方判定为准：接口自身 disabled=1 算未启用；
+		# radio 级用 wifi_radio_off（ubus 运行时优先，uci 兜底）
 		dis_radio=0
-		if [ -n "$dev" ]; then
-			rad=$(uci -q get "wireless.$dev.disabled" 2>/dev/null)
-			[ "$rad" = '1' ] && dis_radio=1
+		if [ -n "$dev" ] && wifi_radio_off "$dev"; then
+			dis_radio=1
 		fi
 		if [ "$dis" = '1' ] || [ "$dis_radio" = '1' ]; then
 			disf=1
 		else
 			disf=0
+		fi
+		# 运行时接口名（iw dev / /sys/class/net 的 phyX-apX，openNDS 官方识别用的就是它）
+		rtif=''
+		if [ "$disf" = '0' ]; then
+			idx=$(ap_section_index "$sec" "$dev")
+			rtif=$(ap_runtime_if "$dev" "$ssid" "$idx")
 		fi
 		dup=0
 		if [ -n "$ssid" ]; then
@@ -1430,7 +1453,7 @@ z_status() {
 		fi
 		sv=$(z_saved_json wireless "$ssid")
 		cur=$(z_saved_of wireless "$ssid" 2>/dev/null || true)
-		cards="$cards$sep{\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"device\":\"$(json_escape "$dev")\",\"disabled\":$disf,\"radioDisabled\":$dis_radio,\"dup\":$dup,\"saved\":$sv,\"current\":\"$(json_escape "$cur")\"}"
+		cards="$cards$sep{\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"device\":\"$(json_escape "$dev")\",\"disabled\":$disf,\"radioDisabled\":$dis_radio,\"runtime\":\"$(json_escape "$rtif")\",\"dup\":$dup,\"saved\":$sv,\"current\":\"$(json_escape "$cur")\"}"
 		sep=','
 		n=$((n + 1))
 	done
@@ -1600,7 +1623,7 @@ z_upload_delete() { # $1=type $2=zone $3=门户名（原名）
 			ss="${p%%|*}"
 			st="${p#*|}"
 			[ "$ss" = "$zone" ] && st=''
-			uci_w add_list "zone_detect.$real.$type" "$ss|$st" || sys_stage_fail
+			uci_w add_list "zone_detect.$real.$type"="$ss|$st" || sys_stage_fail
 		done <<EOF4
 $pairs
 EOF4
@@ -1646,7 +1669,7 @@ $pair"
 			# 对参数整体一条一条进（SSID 含空格，不能按空白切分）
 			while IFS= read -r pair; do
 				[ -n "$pair" ] || continue
-				uci add_list "zone_detect.main.$list" "$pair"
+				uci add_list "zone_detect.main.$list"="$pair"
 			done <<EOF3
 $good
 EOF3
@@ -1972,7 +1995,7 @@ se_apply() {
 		uci -q delete 'opennds.@opennds[0].preemptivemac' 2>/dev/null
 		while IFS= read -r e; do
 			[ -n "$e" ] || continue
-			uci add_list 'opennds.@opennds[0].preemptivemac' "$e"
+			uci add_list 'opennds.@opennds[0].preemptivemac'="$e"
 		done <<EOF3
 $(cat "$tmpf")
 EOF3
@@ -2230,7 +2253,7 @@ ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_r
 	# trusted 名单
 	for t in $t_rem; do
 		for v in $tlist; do
-			[ "$(mac_lower "$v")" = "$t" ] && uci del_list 'opennds.@opennds[0].trustedmac' "$v"
+			[ "$(mac_lower "$v")" = "$t" ] && uci del_list 'opennds.@opennds[0].trustedmac'="$v"
 		done
 		n_removed=$((n_removed + 1))
 	done
@@ -2238,7 +2261,7 @@ ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_r
 		case " $tlist " in
 			*" $t "* | *" $(mac_upper "$t") "*) ;;
 			*)
-				uci add_list 'opennds.@opennds[0].trustedmac' "$t"
+				uci add_list 'opennds.@opennds[0].trustedmac'="$t"
 				n_added=$((n_added + 1))
 				;;
 		esac
@@ -2254,14 +2277,14 @@ ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_r
 					ndsctl_mac deauth "$(mac_lower "$m")"
 					;;
 			esac
-			uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
+			uci del_list 'opennds.@opennds[0].preemptivemac'="$e"
 			n_removed=$((n_removed + 1))
 		done
 	else
 		for lm in $p_rem; do
 			e=$(ex_entry_for_mac "$pentries" "$lm")
 			if [ -n "$e" ]; then
-				uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
+				uci del_list 'opennds.@opennds[0].preemptivemac'="$e"
 				n_removed=$((n_removed + 1))
 			fi
 			# 删队列文件 + deauth（sessiontimeout=0 = 跟随全局，不 deauth 就一直在线）
@@ -2271,8 +2294,7 @@ ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_r
 		for lm in $p_add; do
 			e=$(ex_entry_for_mac "$pentries" "$lm")
 			if [ -z "$e" ]; then
-				uci add_list 'opennds.@opennds[0].preemptivemac' \
-					"mac=$lm;sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0"
+				uci add_list 'opennds.@opennds[0].preemptivemac=mac='"$lm"';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0'
 				n_added=$((n_added + 1))
 			fi
 		done
@@ -2399,7 +2421,7 @@ bl_save_macs() { # 命名参数：add= remove= clear=0|1 [confirm_enable=1]
 			for v in $(list_of 'zone_blacklist.main.mac'); do
 				[ -n "$v" ] || continue
 				[ "$(mac_lower "$v")" = "$lm" ] &&
-					uci del_list 'zone_blacklist.main.mac' "$v"
+					uci del_list 'zone_blacklist.main.mac'="$v"
 			done
 		done
 	fi
@@ -2407,17 +2429,17 @@ bl_save_macs() { # 命名参数：add= remove= clear=0|1 [confirm_enable=1]
 		case "$cur" in
 			*" $lm "*) continue ;; # 已在名单里不算新增（§5：不重启）
 		esac
-		uci add_list 'zone_blacklist.main.mac' "$lm"
+		uci add_list 'zone_blacklist.main.mac'="$lm"
 		n_new=$((n_new + 1))
 		NEW="$NEW$lm
 "
 		# ② 摘两份名单（优先级高于黑名单，不摘会继续被自动放行）
 		for v in $(list_of 'opennds.@opennds[0].trustedmac'); do
 			[ "$(mac_lower "$v")" = "$lm" ] &&
-				uci del_list 'opennds.@opennds[0].trustedmac' "$v"
+				uci del_list 'opennds.@opennds[0].trustedmac'="$v"
 		done
 		e=$(ex_entry_for_mac "$(list_of 'opennds.@opennds[0].preemptivemac')" "$lm")
-		[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac' "$e"
+		[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac'="$e"
 	done
 	uci commit zone_blacklist
 	uci commit opennds
@@ -2977,7 +2999,7 @@ rt_apply() { # $@ 含 text_b64=... passthrough=0|1 [confirm_enable=1]
 	uci -q delete 'opennds.@opennds[0].users_to_router' 2>/dev/null
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].users_to_router' "$r" || { fail=1; fail_at 'users_to_router 写入'; }
+		uci add_list 'opennds.@opennds[0].users_to_router'="$r" || { fail=1; fail_at 'users_to_router 写入'; }
 	done <<EOF2
 $RT_RULES
 EOF2
@@ -3506,18 +3528,18 @@ wg_apply() { # $@: manual_b64 domains_b64 ports [confirm_enable=1]
 	uci -q delete 'opennds.@opennds[0].walledgarden_port_list' 2>/dev/null
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].preauthenticated_users' "$r" || { fail=1; fail_at 'preauthenticated_users 写入'; }
+		uci add_list 'opennds.@opennds[0].preauthenticated_users'="$r" || { fail=1; fail_at 'preauthenticated_users 写入'; }
 	done <<EOF2
 $WG_RULES
 EOF2
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].walledgarden_fqdn_list' "$r" || { fail=1; fail_at 'walledgarden_fqdn_list 写入'; }
+		uci add_list 'opennds.@opennds[0].walledgarden_fqdn_list'="$r" || { fail=1; fail_at 'walledgarden_fqdn_list 写入'; }
 	done <<EOF2
 $WG_FQDNS
 EOF2
 	for r in $WG_PORTS; do
-		uci add_list 'opennds.@opennds[0].walledgarden_port_list' "$r" || { fail=1; fail_at 'walledgarden_port_list 写入'; }
+		uci add_list 'opennds.@opennds[0].walledgarden_port_list'="$r" || { fail=1; fail_at 'walledgarden_port_list 写入'; }
 	done
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
@@ -4076,7 +4098,7 @@ ac_apply() { # $@: manual_b64 auto_b64 ports [confirm_enable=1]
 	# 1) 新 block 条目在前（决策 #14：链内顺序 = list 顺序，先写的在上）
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].authenticated_users' "$r" || { fail=1; fail_at 'authenticated_users(block) 写入'; }
+		uci add_list 'opennds.@opennds[0].authenticated_users'="$r" || { fail=1; fail_at 'authenticated_users(block) 写入'; }
 	done <<EOF2
 $WG_RULES
 EOF2
@@ -4087,7 +4109,7 @@ EOF2
 			case "$r" in
 				block*) continue ;;
 			esac
-			uci add_list 'opennds.@opennds[0].authenticated_users' "$r" || { fail=1; fail_at 'authenticated_users(allow) 写入'; }
+			uci add_list 'opennds.@opennds[0].authenticated_users'="$r" || { fail=1; fail_at 'authenticated_users(allow) 写入'; }
 		done <<EOF2
 $existing
 EOF2
@@ -4096,12 +4118,12 @@ EOF2
 	uci -q delete 'opennds.@opennds[0].blocklist_port_list' 2>/dev/null
 	while IFS= read -r r; do
 		[ -n "$r" ] || continue
-		uci add_list 'opennds.@opennds[0].blocklist_fqdn_list' "$r" || { fail=1; fail_at 'blocklist_fqdn_list 写入'; }
+		uci add_list 'opennds.@opennds[0].blocklist_fqdn_list'="$r" || { fail=1; fail_at 'blocklist_fqdn_list 写入'; }
 	done <<EOF2
 $WG_FQDNS
 EOF2
 	for r in $WG_PORTS; do
-		uci add_list 'opennds.@opennds[0].blocklist_port_list' "$r" || { fail=1; fail_at 'blocklist_port_list 写入'; }
+		uci add_list 'opennds.@opennds[0].blocklist_port_list'="$r" || { fail=1; fail_at 'blocklist_port_list 写入'; }
 	done
 	if [ "$(nds_enabled)" = '0' ] && [ "$CONFIRM_ENABLE" = '1' ]; then
 		uci set 'opennds.@opennds[0].enabled'=1
@@ -4665,7 +4687,7 @@ sys_uci_stage() { # $1=config $2=section $3=option $4=opt|list [值…]
 			uci_w -q delete "$conf.$sid.$opt" || :
 			local v
 			for v in "$@"; do
-				uci_w add_list "$conf.$sid.$opt" "$v" || sys_stage_fail
+				uci_w add_list "$conf.$sid.$opt"="$v" || sys_stage_fail
 			done
 			;;
 	esac
@@ -4697,55 +4719,6 @@ sys_selftest() {
 	printf '{"ok":1,"set":%s,"setErr":"%s","read":"%s","delErr":"%s"}\n' \
 		"$([ "$rc" -eq 0 ] && printf 1 || printf 0)" \
 		"$(json_escape "$seterr")" "$(json_escape "$readv")" "$(json_escape "$rcerr")"
-}
-
-# ---------- 信任客户端恢复：从本机上可能存在的配置副本里找回 trustedmac ----------
-NDS_BAK_LIST="${NDS_BAK_LIST:-/etc/config/opennds.bak /etc/config/opennds.orig /etc/config/opennds-opkg /etc/config/opennds.bak.1 /rom/etc/config/opennds /tmp/zone-router/opennds.bak}"
-
-bak_list_macs() { # $1=文件 → 输出该文件里 trustedmac 的 MAC（每行一个，大写）
-	[ -f "$1" ] || return 0
-	grep -E '^[[:space:]]*list[[:space:]]+trustedmac' "$1" 2>/dev/null |
-		sed -e 's/^.*trustedmac[[:space:]]*//' |
-		tr -d '\047"' |
-		grep -Eio '([0-9a-f]{2}:){5}[0-9a-f]{2}' |
-		tr 'a-z' 'A-Z'
-}
-
-sys_restore_scan() {
-	local f macs n items='' sep='' cur
-	cur=$(list_of 'opennds.@opennds[0].trustedmac')
-	for f in $NDS_BAK_LIST; do
-		[ -f "$f" ] || continue
-		macs=$(bak_list_macs "$f" | sort -u)
-		n=$(printf '%s\n' "$macs" | grep -c .)
-		[ "${n:-0}" -gt 0 ] || continue
-		items="$items$sep{\"path\":\"$(json_escape "$f")\",\"count\":$n,\"macs\":\"$(json_escape "$(printf '%s' "$macs" | tr '\n' ' ')")\"}"
-		sep=','
-	done
-	printf '{"ok":1,"current":%s,"candidates":[%s]}\n' \
-		"$(printf '%s\n' $cur | grep -c .)" "$items"
-}
-
-sys_restore_apply() { # $1=备份文件路径 → 把该文件的 trustedmac 写入 uci 增量
-	local f="$1" macs m added=0
-	case " $NDS_BAK_LIST " in
-		*" $f "*) ;;
-		*) out_err '备份路径不在允许范围内' ;;
-	esac
-	[ -f "$f" ] || out_err '备份文件不存在'
-	macs=$(bak_list_macs "$f" | sort -u)
-	[ -n "$macs" ] || out_err '该备份里没有可恢复的信任客户端'
-	LAST_UCI_ERR=''
-	local real
-	real=$(sys_ensure_sec opennds '@opennds[0]') ||
-		out_err '暂存配置失败：找不到 opennds 配置节'
-	uci_w -q delete "opennds.$real.trustedmac" || :
-	for m in $macs; do
-		uci_w add_list "opennds.$real.trustedmac" "$m" || sys_stage_fail
-		added=$((added + 1))
-	done
-	# 只写增量：真正落盘与重启 nds 等 openwrt 的「保存并应用」
-	printf '{"ok":1,"staged":1,"added":%s}\n' "$added"
 }
 
 # ============================================================
@@ -4896,8 +4869,6 @@ case "$PAGE" in
 			uci_revert) [ $# -ge 1 ] || out_err 'uci_revert 需要 config 参数'; sys_uci_revert "$1" ;;
 			changes_count) sys_changes_count ;;
 			selftest) sys_selftest ;;
-			restore_scan) sys_restore_scan ;;
-			restore_apply) [ $# -ge 1 ] || out_err 'restore_apply 需要备份路径'; sys_restore_apply "$1" ;;
 			*) out_err "sys：未知子命令 $SUB" ;;
 		esac
 		;;

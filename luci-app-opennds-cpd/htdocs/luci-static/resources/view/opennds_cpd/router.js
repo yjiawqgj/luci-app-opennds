@@ -130,7 +130,6 @@ return view.extend({
 			state.draft = '';
 			var ta = document.querySelector('.cpd-ta');
 			if (ta) ta.value = '';
-			CPD.statusBar(_('编辑内容已清空'));
 		}
 
 		function saveEdit(ta) {
@@ -187,7 +186,7 @@ return view.extend({
 				if (j && j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
 					CPD.clearNotice();
-					CPD.notify(_('配置已应用'), 'ok');
+					CPD.nativeNotice(_('配置已应用'), 6000);
 					CPD.showWarnings(j.warnings);
 					CPD.notifyChanges();
 					refresh();
@@ -220,7 +219,7 @@ return view.extend({
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
 			return stageRouter().then(function () {
-				CPD.statusBar(_('开放端口列表已保存，点击页面底部的「保存并应用」后生效'));
+				CPD.nativeNotice(_('开放端口列表已保存'), 5000);
 			}, function (e) {
 				if (e && e.silent) return;
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');

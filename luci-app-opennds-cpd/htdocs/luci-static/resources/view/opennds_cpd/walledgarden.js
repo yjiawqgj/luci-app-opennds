@@ -181,12 +181,10 @@ return view.extend({
 				state.manual = value;
 				state.manualEditing = false;
 				renderManual();
-				CPD.statusBar(_('规则列表已更新，点击页面底部的「保存并应用」后生效'));
 			} else {
 				state.domains = value;
 				state.autoEditing = false;
 				renderAuto();
-				CPD.statusBar(_('域名列表已更新，点击页面底部的「保存并应用」后生效'));
 			}
 		}
 
@@ -237,7 +235,7 @@ return view.extend({
 					domains: currentAuto(),
 					ports: currentPorts()
 				};
-				CPD.statusBar(_('配置已保存，点击页面底部的「保存并应用」后生效'));
+				CPD.nativeNotice(_('配置已保存'), 5000);
 			}, function (e) {
 				if (e && e.silent) return;
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
@@ -260,7 +258,7 @@ return view.extend({
 				if (j && j.error === 'busy') { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
 				if (j.ok) {
 					CPD.clearNotice();
-					CPD.notify(_('配置已应用'), 'ok');
+					CPD.nativeNotice(_('配置已应用'), 6000);
 					CPD.showWarnings(j.warnings);
 					CPD.notifyChanges();
 					refresh();

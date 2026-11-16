@@ -164,7 +164,6 @@ return view.extend({
 			state.macs = p.list;
 			state.editing = false;
 			renderMacs();
-			CPD.statusBar(_('黑名单已更新，点击页面底部的「保存并应用」后生效'));
 			return Promise.resolve();
 		}
 
@@ -295,7 +294,7 @@ return view.extend({
 		/* ---------- LuCI 框架底部按钮：保存 = 暂存，保存并应用 = 提交 ---------- */
 		this.handleSave = function () {
 			return stageMacs(state.macs).then(function () {
-				CPD.statusBar(_('黑名单已保存，点击页面底部的「保存并应用」后生效'));
+				CPD.nativeNotice(_('黑名单已保存'), 5000);
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});

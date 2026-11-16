@@ -268,6 +268,26 @@ var CPD = L.Class.extend({
 	 *   ② 直接拉一次 uci.changes() 交给指示器渲染 —— 不依赖监听是否已注册；
 	 *   ③ 若 ubus 那边读不到（数目为 0）而后端 /tmp/.uci 确实有条目，
 	 *      就用后端计数兜底显示，保证「有暂存就一定看得见」。 */
+	/* openwrt 原生限时横幅（LuCI addTimeLimitedNotification）：
+	 * 出现在页面顶部、走 openwrt 原生样式，超时后自动消失。
+	 * 用于 openwrt「保存」「保存并应用」这类原生按钮的反馈。 */
+	nativeNotice: function (msg, timeout) {
+		var self = this;
+		var LC = window.L;
+		if (!LC || typeof LC.require !== 'function') return self.statusBar(msg);
+		return LC.require('ui').then(function (ui) {
+			var p = document.createElement('p');
+			p.textContent = msg;
+			if (ui && typeof ui.addTimeLimitedNotification === 'function') {
+				ui.addTimeLimitedNotification(null, p, timeout || 6000, 'info');
+			} else if (ui && typeof ui.addNotification === 'function') {
+				ui.addNotification(null, p, 'info');
+			} else {
+				self.statusBar(msg);
+			}
+		}).catch(function () { self.statusBar(msg); });
+	},
+
 	/* 刷新右上角「未保存的配置: N」指示器。
 	 * 走 LuCI 原生的 ui.changes 通道：它内部就是 uci.changes() → renderChangeIndicator()，
 	 * 所以只要 /tmp/.uci 里有增量，数字就会出现在和 openwrt 自带页面完全相同的位置。

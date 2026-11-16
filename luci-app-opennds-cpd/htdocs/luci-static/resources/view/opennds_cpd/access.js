@@ -213,7 +213,6 @@ return view.extend({
 			state.manual = lines.join('\n');
 			state.manualEditing = false;
 			renderManual();
-			CPD.statusBar(_('手动限制规则已更新，点击页面底部的「保存并应用」后生效'));
 		}
 
 		function saveAuto(ta) {
@@ -230,7 +229,6 @@ return view.extend({
 			state.domains = lines.join('\n');
 			state.autoEditing = false;
 			renderAuto();
-			CPD.statusBar(_('自动阻止规则已更新，点击页面底部的「保存并应用」后生效'));
 		}
 
 		function editingBusy() {
@@ -283,7 +281,7 @@ return view.extend({
 			if (!precheckPorts()) return Promise.reject({ silent: true });
 			return stageAccess().then(function () {
 				state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
-				CPD.statusBar(_('规则已保存，点击页面底部的「保存并应用」后生效'));
+				CPD.nativeNotice(_('规则已保存'), 5000);
 			}, function (e) {
 				if (e && e.silent) return;
 				toast(CPD.errText(e, _('保存失败')), 'err');
@@ -314,7 +312,7 @@ return view.extend({
 				}
 				if (j && j.ok) {
 					CPD.clearNotice();
-					toast(_('配置已应用'), 'ok');
+					CPD.nativeNotice(_('配置已应用'), 6000);
 					CPD.showWarnings(j.warnings);
 					CPD.notifyChanges();
 					refresh();

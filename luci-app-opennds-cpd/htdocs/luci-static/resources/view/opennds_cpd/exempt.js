@@ -303,7 +303,7 @@ return view.extend({
 			 * 配置由页面底部的 openwrt「保存 / 保存并应用」写入 */
 			state.editing[which] = false;
 			renderAll();
-			CPD.statusBar(_('名单已更新，点击页面底部的「保存并应用」后生效'));
+			/* 静默退出编辑态：不弹任何横幅 */
 		}
 
 		/* 把当前名单与开关落成 uci 暂存（顶部出现「未保存的配置」） */
@@ -331,7 +331,7 @@ return view.extend({
 						state.preempt = state.preempt.filter(function (e) { return macOf(e) !== mac; });
 					}
 					renderAll();
-					CPD.statusBar(_('名单已更新，点击页面底部的「保存并应用」后生效'));
+					/* 静默：删除只改内存，等 openwrt「保存 / 保存并应用」 */
 				}
 			);
 		}
@@ -388,7 +388,7 @@ return view.extend({
 				}
 				if (!j.ok) { CPD.notify(j.error || _('应用失败'), 'err'); return; }
 				CPD.clearNotice();
-				CPD.notify(_('配置已应用'), 'ok');
+				CPD.nativeNotice(_('配置已应用'), 6000);
 				CPD.notifyChanges();
 				refresh();
 			}).catch(function (e) {
@@ -416,7 +416,7 @@ return view.extend({
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
 			return stageExempt().then(function () {
-				CPD.statusBar(_('名单已保存，点击页面底部的「保存并应用」后生效'));
+				CPD.nativeNotice(_('名单已保存'), 5000);
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});

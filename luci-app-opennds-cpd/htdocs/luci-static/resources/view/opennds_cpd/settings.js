@@ -527,7 +527,7 @@ return view.extend({
 
 		function handleSave() {
 			return stageAll().then(function () {
-				CPD.statusBar(_('设置已保存，点击页面底部的「保存并应用」后生效'));
+				CPD.nativeNotice(_('设置已保存'), 5000);
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
