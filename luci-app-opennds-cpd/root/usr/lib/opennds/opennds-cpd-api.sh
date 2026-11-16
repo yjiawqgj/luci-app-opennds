@@ -4335,10 +4335,9 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 		mv "$tmp" "$dir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
 		[ -d "$dir/$name" ] || out_err '门户文件夹入库失败（目标不是文件夹）'
 		[ -f "$dir/$name/theme.sh" ] || out_err '门户文件夹里没有 theme.sh'
-		# 让 SFTP / 其它账号也能进目录、读文件
+		# 让 SFTP / 其它账号也能进目录、读文件（a+rX：目录补 x，普通文件只加读）
 		chmod 755 "$dir/$name" 2>/dev/null
-		find "$dir/$name" -type d -exec chmod 755 {} + 2>/dev/null
-		find "$dir/$name" -type f -exec chmod 644 {} + 2>/dev/null
+		chmod -R a+rX "$dir/$name" 2>/dev/null
 		chmod 755 "$dir/$name/theme.sh" 2>/dev/null
 	fi
 	# 清临时目录（id 已白名单校验，路径限定在 ZONE_UP 下）
