@@ -36,6 +36,10 @@ return view.extend({
 			var m = (entry.split(';')[0] || '').replace(/^mac=/i, '');
 			return m.toLowerCase();
 		}
+		function restoreDismissed() {
+			try { return window.localStorage.getItem('cpd-restore-dismiss') === '1'; }
+			catch (e) { return false; }
+		}
 		function macOk(s) {
 			return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(s);
 		}
@@ -74,11 +78,22 @@ return view.extend({
 							var have = {};
 							state.trusted.forEach(function (m) { have[m] = 1; });
 							state.restore.forEach(function (m) { if (!have[m]) state.trusted.push(m); });
+							/* 恢复是一次性动作：并进名单后这条提示就该消失，
+							 * 否则它会一直挂在页面上，看着像没生效。 */
+							state.restore = [];
 							renderAll();
 							/* 只并进本地名单，仍要用户自己点保存并核对 diff */
 							CPD.notify(_('已加入名单，请点「保存」后在右上角核对变更'), 'info');
 						}
-					}, _('恢复这 %s 个').format(state.restore.length))
+					}, _('恢复这 %s 个').format(state.restore.length)),
+					E('button', {
+						'class': 'cbi-button',
+						'click': function () {
+							try { window.localStorage.setItem('cpd-restore-dismiss', '1'); } catch (e) {}
+							state.restore = [];
+							renderAll();
+						}
+					}, _('不再提示'))
 				]);
 				sec.appendChild(bar);
 			}
@@ -418,6 +433,7 @@ return view.extend({
 
 		/* 设备原配置里的可信任名单（随包提供）与当前配置对比，只读不写 */
 		function scanRestore() {
+			if (restoreDismissed()) { state.restore = []; return; }
 			CPD.api('exempt', 'restore_scan').then(function (j) {
 				var list = (j && j.ok) ? (j.macs || []) : [];
 				var changed = (list.length !== state.restore.length);

@@ -21,7 +21,8 @@ return view.extend({
 			macs: [],      /* 已保存（配置里的）小写 MAC */
 			portal: '',    /* 空串 = 默认门户 */
 			portals: [],   /* [{name, kind}] */
-			editing: false
+			editing: false,
+			ta: null       /* 展开中的编辑框，保存时以它为准 */
 		};
 		var body = E('div', { 'class': 'cpd-page' });
 		var macPanel, portalBox, fileInput;
@@ -70,7 +71,8 @@ return view.extend({
 			/* 上传/删除后局部刷新数据，不整页重绘（保住编辑态与下拉选择） */
 			return CPD.api('blacklist', 'status').then(function (j) {
 				if (!j.ok) return;
-				state.macs = j.macs || [];
+				/* 出厂配置里是 `list mac ''`（空占位），不能把它当成一条记录显示出来 */
+				state.macs = (j.macs || []).filter(function (m) { return macOk(m); });
 				state.portal = j.portal || '';
 				state.portals = j.portals || [];
 				if (!state.editing) renderMacs();
@@ -81,15 +83,19 @@ return view.extend({
 		/* ---------- MAC 名单 ---------- */
 		function renderMacs() {
 			macPanel.innerHTML = '';
+			state.ta = null;
 			macPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', { 'class': 'cbi-button', 'click': startAdd }, _('编辑'))
 			]));
 			if (state.editing) {
 				var ta = E('textarea', {
 					'class': 'cpd-ta', 'rows': '5', 'spellcheck': 'false',
-					'placeholder': _('每行一个 MAC，例如 D8:3A:DD:41:6F:22')
+					/* 不放具体 MAC 示例：之前那个灰色示例值被当成"插件预置的
+					 * 一条记录"，用户会以为首次安装就该有一条。 */
+					'placeholder': _('每行一个 MAC 地址，留空表示没有任何记录')
 				});
 				ta.value = state.macs.map(function (m) { return m.toUpperCase(); }).join('\n');
+				state.ta = ta;
 				macPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
@@ -154,6 +160,21 @@ return view.extend({
 					return CPD.stageUci('zone_blacklist', 'main', 'portal', 'opt',
 						state.portal || null);
 				});
+		}
+
+		/* 保存时以「编辑框此刻的内容」为准。点了「编辑」就直接按底部保存是很
+		 * 自然的操作，之前那样会拿着旧的 state.macs 去写，用户看到的修改就
+		 * 永远进不了配置。 */
+		function currentMacs() {
+			if (state.editing && state.ta) {
+				var p = parseMacs(state.ta);
+				if (p.error) throw { error: p.error };
+				state.macs = p.list;
+				state.editing = false;
+				renderMacs();
+				return p.list;
+			}
+			return state.macs;
 		}
 
 		/* 编辑框下的「确定」：只做校验并退出编辑态，不写配置 */
@@ -275,12 +296,18 @@ return view.extend({
 		/* ---------- LuCI 框架底部按钮：保存 = 暂存，保存并应用 = 提交 ---------- */
 		this.handleSave = function () {
 			/* 不弹横幅：右上角「未保存的配置: N」就是保存成功的反馈 */
-			return stageMacs(state.macs).catch(function (e) {
+			var list;
+			try { list = currentMacs(); }
+			catch (e) { CPD.notify(CPD.errText(e, _('保存失败')), 'err'); return Promise.resolve(); }
+			return stageMacs(list).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		};
 		this.handleSaveApply = function () {
-			return stageMacs(state.macs).then(function () {
+			var list;
+			try { list = currentMacs(); }
+			catch (e) { CPD.notify(CPD.errText(e, _('应用失败')), 'err'); return Promise.resolve(); }
+			return stageMacs(list).then(function () {
 				return CPD.applyStaged();
 			}).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('应用失败')), 'err');

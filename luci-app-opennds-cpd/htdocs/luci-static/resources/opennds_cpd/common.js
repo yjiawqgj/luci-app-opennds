@@ -324,8 +324,10 @@ var CPD = L.Class.extend({
 	/* 兼容旧调用：后端直接数 /tmp/.uci，现在只作为诊断信息 */
 	fallbackChangeCount: function () { return Promise.resolve(); },
 
-	/* 错误对象 → 展示文本（fs.exec 的异常带 message，后端应答带 error） */
+	/* 错误对象 → 展示文本（fs.exec 的异常带 message，后端应答带 error，
+	 * rpc 失败时可能只有一个状态码数字 —— 数字也要说人话，不能吞成"操作失败"） */
 	errText: function (e, fallback) {
+		if (typeof e === 'number') return _('请求失败（错误码 %d）').format(e);
 		return (e && e.error) || (e && e.message) || fallback || _('操作失败');
 	},
 
@@ -365,6 +367,7 @@ var CPD = L.Class.extend({
 		var LC = window.L;
 		if (!LC || typeof LC.require !== 'function')
 			return Promise.reject({ error: _('当前页面环境不支持 uci 模块') });
+		var wrote = false;
 		return LC.require('uci').then(function (uci) {
 			return uci.load(conf).then(function () {
 				if (!self.ensureSection(uci, conf, sid))
@@ -388,7 +391,21 @@ var CPD = L.Class.extend({
 					/* 空数组在 rpcd 会被判 INVALID_ARGUMENT，用"删除该 option"表达清空 */
 					uci.set(conf, sid, opt, arr.length ? arr : null);
 				}
+				wrote = true;
 				return uci.save();
+			}).then(function () {
+				if (!wrote) return null;
+				/* 写后自检：rpcd 的 uci changes 读的就是「未保存的配置」那个
+				 * 会话增量目录，是唯一权威口径。里面没有这个配置，说明刚才的
+				 * set/save 被静默吞掉了（权限不足、节名解析错、后端报错被
+				 * Promise 链吃掉）—— 这种情况必须报出来，不能装成保存成功。 */
+				return uci.changes().then(function (ch) {
+					if (ch && ch[conf]) return null;
+					throw {
+						error: _('配置未能写入：%s.%s.%s（会话增量里没有这条记录）')
+							.format(conf, sid, opt)
+					};
+				});
 			});
 		}).then(function () {
 			return self.notifyChanges();

@@ -309,21 +309,23 @@ return view.extend({
 		}
 
 		/* 全局模式：openNDS 自带的登录方式，不做区域识别 */
-		function handleDefaultSave() {
+		function handleDefaultSave(quiet) {
 			return Promise.all([
 				CPD.stageUci('opennds', '@opennds[0]', 'login_option_enabled', 'opt', '1'),
 				CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'global')
 			]).then(function () {
 				state.scope = 'global';
+				state.loginOptionEnabled = '1';
 				state.snapshot = uiSnapshot();
 				renderAll();
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				if (!quiet) CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				throw e;   /* 必须中断：否则「保存并应用」会接着提交上一次的旧增量 */
 			});
 		}
 
 		function handleDefaultApply() {
-			return handleDefaultSave().then(function () {
+			return handleDefaultSave(true).then(function () {
 				return CPD.applyStaged();
 			}).catch(function (e) {
 				if (e && e.error) CPD.toast(e.error, 'err');
@@ -499,11 +501,12 @@ return view.extend({
 			];
 			return Promise.all(jobs).then(function () {
 				state.scope = 'zone';
+				state.loginOptionEnabled = '3';
 				state.snapshot = uiSnapshot();
 				renderAll();
 				/* 不弹横幅：右上角「未保存的配置: N」就是保存的反馈 */
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				if (!silent) CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 				throw e; /* 保存失败时中止后续应用 */
 			});
 		}
@@ -602,11 +605,12 @@ return view.extend({
 					[state.wired.iface + '|' + (state.wiredDraft || '')]);
 			}).then(function () {
 				state.scope = 'zone';
+				state.loginOptionEnabled = '3';
 				state.snapshot = uiSnapshot();
 				renderAll();
 				/* 不弹横幅：右上角「未保存的配置: N」就是保存的反馈 */
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('保存失败')), 'err');
+				if (!silent) CPD.toast(CPD.errText(e, _('保存失败')), 'err');
 				throw e; /* 保存失败时中止后续应用 */
 			});
 		}
@@ -1004,16 +1008,32 @@ return view.extend({
 		loadStatus();
 
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
+		/* 模式以「下拉框此刻的值」为准，不用纯内存状态：
+		 * 只要 state 与 DOM 有半拍不同步，就会出现"选了全局却按区域保存"
+		 * （区域分支会把 login_option_enabled 写回 3，全局选择看着像被吞了）。 */
+		function currentScope() {
+			var v = scopeSel.value;
+			if (v !== 'global' && v !== 'zone')
+				v = (state.loginOptionEnabled === '3') ? 'zone' : 'global';
+			if (state.scopeSel !== v) {
+				state.scopeSel = v;
+				renderAll();   /* 按纠正后的模式重画一次，别清掉用户选中的卡片 */
+			}
+			return v;
+		}
+
 		this.handleSave = function () {
-			if (state.scopeSel !== 'zone') { return handleDefaultSave(); }
+			if (currentScope() !== 'zone') { return handleDefaultSave(); }
 			/* 只暂存：右上角出现「未保存的配置」，点开就是原生 diff 弹窗 */
 			return Promise.resolve()
 				.then(function () { return wirelessSave(true); })
 				.then(function () { return wiredSave(true); })
-				.catch(function () { /* 失败提示已在内部给出 */ });
+				.catch(function (e) {
+					if (e && e.error) CPD.toast(e.error, 'err');
+				});
 		};
 		this.handleSaveApply = function () {
-			if (state.scopeSel !== 'zone') { return handleDefaultApply(); }
+			if (currentScope() !== 'zone') { return handleDefaultApply(); }
 			return Promise.resolve()
 				.then(function () { return wirelessSave(true); })
 				.then(function () { return wiredSave(true); })

@@ -24,6 +24,8 @@ return view.extend({
 			blMode: 'nftset',
 			manualEditing: false,
 			autoEditing: false,
+			taManual: null,
+			taAuto: null,
 			snapshot: null
 		};
 		var body = E('div', { 'class': 'cpd-page' });
@@ -111,6 +113,7 @@ return view.extend({
 
 		function renderManual() {
 			manualPanel.innerHTML = '';
+			state.taManual = null;
 			manualPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
 					'class': 'cbi-button',
@@ -124,6 +127,7 @@ return view.extend({
 					'placeholder': 'tcp/udp 443 example.com\n80 192.168.1.20'
 				});
 				ta.value = state.manual;
+				state.taManual = ta;
 				manualPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
@@ -146,6 +150,7 @@ return view.extend({
 
 		function renderAuto() {
 			autoPanel.innerHTML = '';
+			state.taAuto = null;
 			autoPanel.appendChild(E('div', { 'style': 'margin-top:12px' }, [
 				E('button', {
 					'class': 'cbi-button',
@@ -159,6 +164,7 @@ return view.extend({
 					'placeholder': 'example.com\nwww.example.com'
 				});
 				ta.value = state.domains;
+				state.taAuto = ta;
 				autoPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 					E('label', {}, _('域名')),
 					ta,
@@ -178,8 +184,19 @@ return view.extend({
 						E('pre', { 'aria-live': 'polite' }, state.domains))
 				]));
 			}
-			portsInput = E('input', { 'class': 'cpd-input', 'type': 'text', 'placeholder': '80,443' });
+			portsInput = E('input', {
+				'class': 'cpd-input', 'type': 'text', 'placeholder': '80,443',
+				'inputmode': 'numeric'
+			});
 			portsInput.value = state.ports;
+			/* 必须实时回写：之前这个框只显示不回写，用户在框里填的端口永远
+			 * 进不了 state.ports，保存后配置里就只有域名没有端口。 */
+			portsInput.addEventListener('input', function () {
+				state.ports = portsInput.value;
+			});
+			portsInput.addEventListener('change', function () {
+				state.ports = portsInput.value;
+			});
 			autoPanel.appendChild(E('div', { 'class': 'cpd-field' }, [
 				E('label', {}, _('端口')),
 				E('div', { 'class': 'cpd-note', 'style': 'margin-bottom:5px' },
@@ -207,12 +224,13 @@ return view.extend({
 				var err = checkManualLine(lines[i]);
 				if (err) {
 					toast(_('第 %s 行：').format(i + 1) + err, 'warn');
-					return; /* 不落状态 */
+					return false; /* 不落状态 */
 				}
 			}
 			state.manual = lines.join('\n');
 			state.manualEditing = false;
 			renderManual();
+			return true;
 		}
 
 		function saveAuto(ta) {
@@ -223,16 +241,21 @@ return view.extend({
 				var err = checkDomainLine(lines[i]);
 				if (err) {
 					toast(_('第 %s 行：').format(i + 1) + err, 'warn');
-					return; /* 不落状态 */
+					return false; /* 不落状态 */
 				}
 			}
 			state.domains = lines.join('\n');
 			state.autoEditing = false;
 			renderAuto();
+			return true;
 		}
 
-		function editingBusy() {
-			return state.manualEditing || state.autoEditing;
+		/* 编辑框开着就直接点底部保存，是很自然的操作：先把编辑框收进来 */
+		function syncEditors() {
+			if (state.manualEditing && !saveManual(state.taManual)) return false;
+			if (state.autoEditing && !saveAuto(state.taAuto)) return false;
+			if (portsInput) state.ports = portsInput.value;
+			return true;
 		}
 
 		/* ---------- 保存 / 应用 ---------- */
@@ -274,11 +297,8 @@ return view.extend({
 		}
 
 		function handleSave() {
-			if (editingBusy()) {
-				toast(_('请先完成或取消正在编辑的规则'), 'warn');
-				return Promise.reject({ silent: true });
-			}
-			if (!precheckPorts()) return Promise.reject({ silent: true });
+			if (!syncEditors()) return Promise.resolve();
+			if (!precheckPorts()) return Promise.resolve();
 			return stageAccess().then(function () {
 				state.snapshot = { manual: state.manual, domains: state.domains, ports: state.ports };
 				/* 不弹横幅：右上角「未保存的配置」就是反馈 */
@@ -289,10 +309,7 @@ return view.extend({
 		}
 
 		function handleApply() {
-			if (editingBusy()) {
-				toast(_('请先完成或取消正在编辑的规则'), 'warn');
-				return Promise.resolve();
-			}
+			if (!syncEditors()) return Promise.resolve();
 			if (!precheckPorts()) return Promise.resolve();
 			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
 			return stageAccess().then(function () {

@@ -86,15 +86,6 @@ return view.extend({
 				.map(function (v) { return String(v == null ? '' : v).trim(); });
 		}
 
-		function snapshotString() {
-			var v = formValues();
-			return 'sessiontimeout=' + v[0] +
-				';authidletimeout=' + v[1] +
-				';preauthidletimeout=' + v[2] +
-				';checkinterval=' + v[3] +
-				';scope=' + formScope();
-		}
-
 		var FIELD_NAMES = [_('会话超时'), _('空闲超时'), _('未认证超时'), _('检查间隔')];
 
 		/* 与后端 se_validate 口径一致：非负整数；检查间隔 ≥ 1 */
@@ -139,17 +130,17 @@ return view.extend({
 			});
 		}
 
-		/* 暂存：既写页面自己的缓存（session_snapshot，用于「尚未应用」提示），
-		 * 也把真正生效的 opennds 键一起写进本会话的增量 —— 这样右上角
+		/* 暂存：把真正生效的 opennds 键写进本会话的增量，右上角
 		 * 「未保存的配置」里看到的就是 uci set opennds.@opennds[0].xxx=…，
-		 * 点「保存并应用」由 openwrt 自己 commit，不用插件再补一遍。
-		 * 注意：增量只存在会话目录里，不 commit 就绝不落盘，断电重启也不会被动生效。 */
+		 * 点「保存并应用」由 openwrt 自己 commit。
+		 * 不再写 zone_detect 的 session_snapshot 缓存：那套「待应用快照」在
+		 * 暂存/应用全部交给原生流程之后已经没有意义，只会让页面永远显示
+		 * 一条「上次保存的配置尚未应用」的黄条。 */
 		function stageSnapshot() {
 			if (!validateForm()) return Promise.reject({ silent: true });
 			var v = formValues();
 			var scope = formScope();
 			var jobs = [
-				CPD.stageUci('zone_detect', 'main', 'session_snapshot', 'opt', snapshotString()),
 				CPD.stageUci('zone_detect', 'main', 'session_scope', 'opt', scope)
 			];
 			[['sessiontimeout', v[0]], ['authidletimeout', v[1]],
@@ -189,29 +180,18 @@ return view.extend({
 			});
 		}
 
-		/* 读取会话参数；后端有"已保存待应用"快照时按快照显示 */
+		/* 读取会话参数：始终按配置里的实际值显示。
+		 * 草稿/待应用的差别由右上角「未保存的配置」表达，页面里不再重复提示。 */
 		function refresh() {
 			CPD.api('session', 'get').then(function (j) {
 				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
-				var useSnapshot = (j.pending === 1 && j.saved);
 				var v = j.values || {};
-				if (useSnapshot) {
-					var s = j.saved;
-					state.st = s.sessiontimeout || '';
-					state.ait = s.authidletimeout || '';
-					state.pit = s.preauthidletimeout || '';
-					state.ci = s.checkinterval || '';
-					state.scope = s.scope || 'default';
-					CPD.toast(_('上次保存的配置尚未应用，点「应用」后生效'), 'warn');
-				} else {
-					state.st = v.sessiontimeout || '';
-					state.ait = v.authidletimeout || '';
-					state.pit = v.preauthidletimeout || '';
-					state.ci = v.checkinterval || '';
-					state.scope = j.scope || 'default';
-				}
+				state.st = v.sessiontimeout || '';
+				state.ait = v.authidletimeout || '';
+				state.pit = v.preauthidletimeout || '';
+				state.ci = v.checkinterval || '';
+				state.scope = j.scope || 'default';
 				state.pending = j.pending;
-				state.saved = j.saved || null;
 				renderAll();
 			}).catch(function (e) {
 				CPD.toast((e && e.error) || _('读取状态失败'), 'err');

@@ -438,9 +438,13 @@ ssid_via_uci() { # $1=接口名
 wifi_radio_off() { # $1=radio 名 → rc 0=未启用
 	local dis up
 	dis=$(uci -q get "wireless.$1.disabled" 2>/dev/null)
-	case "$dis" in 1 | on | true) return 0 ;; esac
+	case "$dis" in 1 | on | true | yes) return 0 ;; esac
 	# ② 运行时没起来也算未启用（无线总开关关闭、定时关闭等）
-	if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+	#    CPD_WS 是 z_status 预先取好的 network.wireless status，避免每个接口各调一次 ubus
+	if [ -n "$CPD_WS" ]; then
+		up=$(printf '%s' "$CPD_WS" | jsonfilter -q -e "@.$1.up" 2>/dev/null)
+		case "$up" in 0 | false) return 0 ;; esac
+	elif command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
 		up=$(ubus call network.wireless status 2>/dev/null | jsonfilter -q -e "@.$1.up" 2>/dev/null)
 		case "$up" in 0 | false) return 0 ;; esac
 	fi
@@ -1396,12 +1400,18 @@ z_unmatched_scan() { # → "type<TAB>name" 行
 }
 
 z_status() {
-	local lo engaged enabled busy scope mif mip wsv wcur sv cur
+	local lo engaged enabled busy scope mif mip wsv wcur sv cur ws=''
 	lo=$(uci_get 'opennds.@opennds[0].login_option_enabled')
 	engaged=$(nds_engaged)
 	enabled=$(nds_enabled)
 	busy=$(busy_probe)
 	scope=$(uci_val 'zone_detect.main.scope' '')
+	# 无线运行时视图只取一次，下面逐个 section 判断用（比每个接口各调一次 ubus 省）
+	CPD_WS=''
+	if command -v ubus >/dev/null 2>&1; then
+		CPD_WS=$(ubus call network.wireless status 2>/dev/null)
+	fi
+	ws="$CPD_WS"
 	mif=$(managed_iface)
 	[ -n "$mif" ] && {
 		mip=$(iface_ip "$mif")
@@ -1427,16 +1437,24 @@ z_status() {
 		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
 		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
 		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
-		# 无线是否启用以 openwrt 官方判定为准：接口自身 disabled=1 算未启用；
-		# radio 级用 wifi_radio_off（uci disabled 优先，运行时 ubus 兜底）
+		# 启用判定取三路信号的并集（任一为「关」就按未启用显示）：
+		# ① 接口自身 disabled —— 不能只认 '1'，on/true/yes 同样是关
+		# ② 所属 radio 被关（wifi_radio_off：uci disabled 优先，运行时 up 兜底）
+		# ③ ubus 运行时视图里该 section 的 config.disabled=true
+		#    （有的固件/操作路径只改运行时视图而不落 uci，漏了这条就会
+		#     出现"已经关掉的 Wi-Fi 卡片仍显示已启用"）
+		disf=0
+		case "$dis" in 1 | on | true | yes) disf=1 ;; esac
 		dis_radio=0
 		if [ -n "$dev" ] && wifi_radio_off "$dev"; then
 			dis_radio=1
-		fi
-		if [ "$dis" = '1' ] || [ "$dis_radio" = '1' ]; then
 			disf=1
-		else
-			disf=0
+		fi
+		if [ "$disf" = '0' ] && [ -n "$ws" ] && [ -n "$dev" ]; then
+			case "$(printf '%s' "$ws" |
+				jsonfilter -e "@.$dev.interfaces[@.section=\"$sec\"].config.disabled" 2>/dev/null)" in
+				true | 1) disf=1 ;;
+			esac
 		fi
 		# 运行时接口名（iw dev / /sys/class/net 的 phyX-apX，openNDS 官方识别用的就是它）
 		rtif=''

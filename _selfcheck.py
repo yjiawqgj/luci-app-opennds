@@ -317,6 +317,11 @@ if os.path.isdir(VIEW_DIR):
             if not re.search(r'this\.%s\s*=\s*function' % h, src):
                 errors.append('view/%s: 没挂 this.%s，底部「保存」按钮点了不会有任何反应'
                               % (f, h))
+        # 有暂存就必须有应用：只 stageUci 不 applyStaged 的页面，点「保存并应用」
+        # 之后配置永远不会 commit，表现出来就是"保存了但配置文件没变"。
+        if 'CPD.stageUci(' in src and 'CPD.applyStaged(' not in src:
+            errors.append('view/%s: 用了 CPD.stageUci 却没有 CPD.applyStaged —— '
+                          '「保存并应用」不会提交，配置永远不会落盘' % f)
 else:
     errors.append('缺少 view/opennds_cpd 目录')
 

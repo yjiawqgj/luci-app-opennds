@@ -115,7 +115,9 @@ return view.extend({
 				return;
 			}
 			state.editing = true;
-			state.draft = ''; /* 编辑框不预填已有配置，配置内容在下方列表展示 */
+			/* 编辑框必须带出已有内容：这个框是「整块替换」语义，
+			 * 空着进来再点确定，等于把原有端口/规则全删掉。 */
+			state.draft = state.saved;
 			renderPanel();
 		}
 
@@ -155,12 +157,28 @@ return view.extend({
 		}
 
 		/* ---------- 暂存 / 应用 ---------- */
+		/* 编辑框开着就直接按底部按钮，是很自然的操作：这时以编辑框内容为准，
+		 * 不再用旧的 state.saved（那样用户刚加的端口会被静默丢弃）。 */
+		function currentText() {
+			if (state.editing) {
+				var ta = document.querySelector('.cpd-ta');
+				if (ta) state.draft = ta.value;
+				return state.draft;
+			}
+			return state.saved;
+		}
+
 		function stageRouter() {
-			return CPD.api('router', 'validate', ['text_b64=' + CPD.b64encode(state.saved)])
+			var text = currentText().replace(/\r\n/g, '\n');
+			return CPD.api('router', 'validate', ['text_b64=' + CPD.b64encode(text)])
 				.then(function (j) {
 					if (j.error === 'busy') throw { error: 'busy' };
 					if (!j.ok && j.errors) { CPD.showErrors(j.errors); throw { silent: true }; }
 					if (!j.ok) throw { error: j.error || _('校验失败') };
+					state.saved = text.split('\n').map(function (l) { return l.trim(); })
+						.filter(function (l) { return l; }).join('\n');
+					state.draft = state.saved;
+					if (state.editing) { state.editing = false; renderPanel(); }
 					return Promise.all([
 						CPD.stageUci('opennds', '@opennds[0]', 'users_to_router', 'list', j.rules || []),
 						CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough', 'opt',
@@ -170,10 +188,6 @@ return view.extend({
 		}
 
 		function handleApply() {
-			if (state.editing) {
-				CPD.notify(_('请先完成或取消端口编辑'), 'warn');
-				return Promise.resolve();
-			}
 			/* 保存并应用：先落 uci 增量，再走 openwrt 原生 commit 流程 */
 			return stageRouter().then(function () {
 				return CPD.applyStaged();
