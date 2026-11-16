@@ -9,8 +9,13 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
 rc=0
 
+PY=python3
+command -v python3 >/dev/null 2>&1 || PY=python
+
+chmod +x "$HERE/mock/bin/"* 2>/dev/null
+
 echo "################ 1/2 静态自检 ################"
-python3 "$REPO/_selfcheck.py" || rc=1
+"$PY" "$REPO/_selfcheck.py" || rc=1
 
 echo
 echo "################ 2/2 后端沙箱用例 ################"

@@ -24,8 +24,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Static check + sandbox tests
-        run: sh tests/run.sh
+      # 拆成两步：哪一步红了一眼就能看出是静态检查还是后端用例
+      - name: 静态自检
+        run: |
+          (python3 _selfcheck.py || python _selfcheck.py)
+          node --version
+
+      - name: 后端沙箱用例
+        run: |
+          chmod +x tests/mock/bin/* tests/*.sh
+          rc=0
+          for t in tests/t[0-9]*_*.sh; do
+            echo "======== $t ========"
+            sh "$t" || rc=1
+          done
+          exit $rc
 
   ipk:
     name: .ipk (OpenWrt 24.10 SDK)

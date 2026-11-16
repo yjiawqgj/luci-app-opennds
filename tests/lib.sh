@@ -21,6 +21,9 @@ tmp_setup() { # $1=用例名
 	trap 'rm -rf "$S" 2>/dev/null' EXIT INT TERM
 	API="$S/api.sh"
 	cp "$API_SRC" "$API" || exit 1
+	# 桩必须可执行：Windows 上 checkout 出来的文件常丢 exec 位，
+	# CI 里则依赖 git 记录的 100755 —— 这里兜一次，两边都不会挂
+	chmod +x "$HERE/mock/bin/"* 2>/dev/null
 	export PATH="$HERE/mock/bin:$PATH"
 	export CPD_ROOT="$S/cpd"
 	export ZONE_UP="$S/up"
