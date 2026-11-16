@@ -847,9 +847,10 @@ return view.extend({
 							if (state.zoneDraft[s] === name) state.zoneDraft[s] = '';
 						});
 						if (state.wiredDraft === name) state.wiredDraft = '';
-						CPD.toast(_('已删除脚本 %s').format(name), 'ok');
-						closeScriptsModal();
+						CPD.notify(_('已删除脚本 %s').format(name), 'ok');
+						/* 弹窗保持打开并就地刷新列表，让删除结果立刻可见 */
 						loadUploaded(ctx.type, ctx.zone).then(function () {
+							openScriptsModal();
 							loadStatus();
 						});
 					}, function (e) {
