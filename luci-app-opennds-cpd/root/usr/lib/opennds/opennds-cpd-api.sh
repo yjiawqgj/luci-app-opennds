@@ -165,7 +165,7 @@ managed_iface() { # 先 uci，取不到再从 ndsctl status 的 Managed interfac
 		printf '%s' "$v"
 		return 0
 	fi
-	v=$(ndsctl status 2>/dev/null |
+	v=$(ndsctl_run status |
 		awk '/^Managed interface:/ {split($2, a, " "); print a[1]; exit}')
 	if [ -n "$v" ]; then
 		printf '%s' "$v"
@@ -248,9 +248,11 @@ ndsctl_mac() { # $1=子命令 $2=小写 mac
 
 # 就绪判据：pidof 有值 且 ndsctl status 能成功，最多 15 秒（30 次 × 0.5 秒）
 wait_ready() {
+	# 总预算约 13 秒（6 次 × 单次限时 2 秒 + 间隔），别把 20 秒的 RPC 超时撑爆
 	local i=0
-	while [ "$i" -lt 30 ]; do
-		if [ -n "$(pidof opennds 2>/dev/null)" ] && ndsctl status >/dev/null 2>&1; then
+	while [ "$i" -lt 6 ]; do
+		if [ -n "$(pidof opennds 2>/dev/null)" ] &&
+			NDSCTL_TIMEOUT=2 ndsctl_run status >/dev/null 2>&1; then
 			return 0
 		fi
 		sleep 0.5 2>/dev/null || sleep 1
@@ -268,6 +270,20 @@ nds_running() { # openNDS 进程在跑 → 0
 		[ "$c" = 'opennds' ] && return 0
 	done
 	return 1
+}
+
+# ndsctl 限时执行：openNDS 忙（刚启动/在生成门户资源）时，ndsctl 可能长时间
+# 拿不到应答。不限时的话一次轮询里的多次 ndsctl 调用会把整个请求拖过 LuCI
+# 的 RPC 超时（官方 rpc.js 默认 20 秒），页面上表现为连续的
+# 「XHR request timed out」红色横幅。有 timeout 命令就限时执行
+# （默认 8 秒；就绪探测用 NDSCTL_TIMEOUT=2 的短限时）。
+ndsctl_run() {
+	local t="${NDSCTL_TIMEOUT:-8}"
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$t" ndsctl "$@" 2>/dev/null
+	else
+		ndsctl "$@" 2>/dev/null
+	fi
 }
 
 # SR_RESTARTED=1 表示本次真的重启了；0 表示 openNDS 未运行、只写配置没拉起。
@@ -377,7 +393,7 @@ in_t {
 '
 
 parse_clients() {
-	ndsctl json 2>/dev/null | awk "$NDSCTL_JSON_AWK"
+	ndsctl_run json | awk "$NDSCTL_JSON_AWK"
 }
 
 # ============================================================
@@ -657,9 +673,26 @@ ov_limits_json() {
 	printf '"overQuotaDownloadRate":{"enabled":%s,"value":"%s"}}' "$(lim_en "$fup_d")" "$fup_d"
 }
 
+# 租约文件：与官方 libopennds.sh 的 dhcp_check() 同源 ——
+# openNDS 配置里有 dhcp_leases_file 就用它，否则依次找 dnsmasq 的三个默认位置
+dhcp_leases_file() {
+	local v f
+	v=$(uci_val 'opennds.@opennds[0].dhcp_leases_file' '')
+	if [ -n "$v" ]; then
+		printf '%s' "$v"
+		return 0
+	fi
+	for f in /tmp/dhcp.leases /var/lib/misc/dnsmasq.leases /var/db/dnsmasq.leases; do
+		[ -f "$f" ] && { printf '%s' "$f"; return 0; }
+	done
+	printf '/tmp/dhcp.leases'
+	return 0
+}
+
 ov_host_for() { # $1=小写 mac（租约是小写）
+	# dnsmasq 租约行格式：<到期时间> <MAC> <IP> <主机名> <clientid>，取第 4 段
 	awk -v m="$1" 'tolower($2) == m && $4 != "" && $4 != "*" {print $4; exit}' \
-		/tmp/dhcp.leases 2>/dev/null
+		"$(dhcp_leases_file)" 2>/dev/null
 }
 
 # 客户端行；$1=state $2=ip $3=iface(首段) $4=小写mac $5=dl_kb $6=ul_kb $7=ss $8=se
@@ -702,7 +735,7 @@ ov_clients() {
 	local running enabled parsed rows="" n=0 sep=""
 	enabled=$(nds_enabled)
 	running=0
-	ndsctl status >/dev/null 2>&1 && running=1
+	nds_running && running=1
 
 	ov_load_lists
 
@@ -751,7 +784,7 @@ ov_client_detail() { # $1=mac
 	local lm running parsed srow
 	lm=$(mac_lower "$mac")
 	running=0
-	ndsctl status >/dev/null 2>&1 && running=1
+	nds_running && running=1
 	ov_load_lists
 
 	local state='' ip='' cif='' dkb=0 ukb=0 ss='' se='' la=''
@@ -822,7 +855,7 @@ ov_status() {
 	busy=$(busy_probe)
 	scope=$(uci_val 'zone_detect.main.session_scope' 'default')
 	running=0
-	ndsctl status >/dev/null 2>&1 && running=1
+	nds_running && running=1
 	ov_load_lists
 
 	local n_bl=0 lm
@@ -925,7 +958,7 @@ ov_run_state() {
 	local running enabled
 	enabled=$(nds_enabled)
 	running=0
-	ndsctl status >/dev/null 2>&1 && running=1
+	nds_running && running=1
 	printf '{"ok":1,"running":%s,"enabled":%s}\n' "$running" "$enabled"
 }
 
@@ -951,18 +984,34 @@ ov_set_run() { # $1=0|1
 	else
 		/etc/init.d/opennds stop 9>&- >/dev/null 2>&1
 	fi
-	# 返回执行后的真实状态；停用没停掉（进程还在）就如实回 running=1
-	local running=0 i=0 tries=1
-	[ "$want" = '0' ] && tries=10
-	while [ "$i" -lt "$tries" ]; do
-		if [ -n "$(pidof opennds 2>/dev/null)" ] && ndsctl status >/dev/null 2>&1; then
+	# 返回执行后的真实状态。init.d start/stop 都是 procd 异步动作、立即返回，
+	# openNDS 真正可服务（ndsctl 能应答）要几秒。启动分支必须等就绪再回：
+	# 之前只查一次就回，用户每次点「启动」都会先看到
+	# 「操作未完全生效，请查看 openNDS 日志」的红色横幅，过一会轮询才变绿。
+	local running=0 i=0
+	if [ "$want" = '1' ]; then
+		# 启动等就绪：总预算约 13 秒（6 次 × 单次限时 2 秒 + 间隔），
+		# 正常几秒内就绪立刻返回
+		while [ "$i" -lt 6 ]; do
+			if nds_running && NDSCTL_TIMEOUT=2 ndsctl_run status >/dev/null 2>&1; then
+				running=1
+				break
+			fi
+			sleep 0.5 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+		# 限时到了但进程确实在跑：如实回「运行中」，
+		# 统计/客户端列表等就绪后由页面轮询补齐
+		nds_running && running=1
+	else
+		# 停止等进程退出（最多约 5 秒），退了就是真的停了
+		while [ "$i" -lt 10 ]; do
+			nds_running || { running=0; break; }
 			running=1
-			break
-		fi
-		[ "$want" = '1' ] && break
-		sleep 0.5 2>/dev/null || sleep 1
-		i=$((i + 1))
-	done
+			sleep 0.5 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+	fi
 	printf '{"ok":1,"running":%s,"enabled":%s}\n' "$running" "$(nds_enabled)"
 }
 
@@ -2122,7 +2171,7 @@ ex_status() {
 
 ex_info() {
 	local running=0 parsed srow
-	ndsctl status >/dev/null 2>&1 && running=1
+	nds_running && running=1
 	local out='' sep='' seen='|'
 	if [ "$running" = '1' ]; then
 		local mac lm ip cif zone host
@@ -2141,7 +2190,8 @@ ex_info() {
 $srow
 EOF2
 	fi
-	# 名单里配了但不在线的：ip -4 neigh 兜底补 IP（zone 未知）
+	# 名单里配了但不在线的：ip -4 neigh 兜底补 IP（zone 未知）；
+	# 主机名照官方 dhcp_check 从 DHCP 租约查 —— 租约与 openNDS 是否在跑无关
 	local tlist pentries lm
 	tlist=$(list_of 'opennds.@opennds[0].trustedmac')
 	pentries=$(list_of 'opennds.@opennds[0].preemptivemac')
@@ -2150,10 +2200,11 @@ EOF2
 		case "$seen" in
 			*"|$lm|"*) continue ;;
 		esac
-		local nip
+		local nip hosto
 		nip=$(ip -4 neigh show 2>/dev/null |
 			awk -v m="$lm" 'tolower($4) == "lladdr" && tolower($5) == m {print $1; exit}')
-		out="$out$sep\"$(json_escape "$lm")\":{\"host\":\"\",\"ip\":\"$(json_escape "$nip")\",\"zone\":\"\",\"online\":0}"
+		hosto=$(ov_host_for "$lm")
+		out="$out$sep\"$(json_escape "$lm")\":{\"host\":\"$(json_escape "$hosto")\",\"ip\":\"$(json_escape "$nip")\",\"zone\":\"\",\"online\":0}"
 		sep=','
 		seen="$seen$lm|"
 	done
@@ -2372,6 +2423,7 @@ ndsctl_mac_rc() { # $1=子命令 $2=小写 mac
 
 bl_status() {
 	local enabled m macj='' sep='' mm
+	ensure_opennds_conf >/dev/null 2>&1 || true
 	enabled=$(nds_enabled)
 	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		[ -n "$m" ] || continue # 空值等脏数据过滤掉
@@ -4608,10 +4660,34 @@ sys_post_apply() {
 # ============================================================
 ZONE_BLACKLIST_CONF="${ZONE_BLACKLIST_CONF:-/etc/config/zone_blacklist}"
 
+# 确保 /etc/config/opennds 存在且有一个 opennds 类型节。
+# 官方 opennds 包自带这个文件（opennds.conf 模板，节名就是 `config opennds`），
+# 极简安装可能没有它 —— 前端 uci 暂存第一步 uci/load 读的就是这个文件，
+# 缺了会报「RPC call to uci/get failed with ubus code 4: 未找到资源」。
+# 缺文件/缺节时补一个空节并 commit（rpcd 的 uci/get 只认已提交内容）。
+# 输出可写 section 名（'@opennds[0]' 或新建的 'cpd'），失败返回非 0。
+ensure_opennds_conf() {
+	local sid='@opennds[0]'
+	if [ ! -f "$OPENNDS_CONF" ]; then
+		touch "$OPENNDS_CONF" 2>/dev/null || return 1
+	fi
+	if uci -q show "opennds.$sid" >/dev/null 2>&1; then
+		printf '%s' "$sid"
+		return 0
+	fi
+	if ! uci_w set 'opennds.cpd=opennds'; then
+		return 1
+	fi
+	uci commit opennds 2>/dev/null
+	log "已补建缺失的 openNDS 配置节（$OPENNDS_CONF）"
+	printf 'cpd'
+	return 0
+}
+
 bl_migrate_legacy() {
 	[ -f "$ZONE_BLACKLIST_CONF" ] || return 0
 	local m any=0 osc cur
-	osc=$(sys_ensure_sec opennds '@opennds[0]') || return 0
+	osc=$(ensure_opennds_conf) || return 0
 	cur=" $(list_of "opennds.$osc.blockedmac") "
 	for m in $(list_of 'zone_blacklist.main.mac'); do
 		mac_valid "$m" || continue

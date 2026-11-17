@@ -170,6 +170,20 @@ var CPD = L.Class.extend({
 	toast: function (msg, kind) { return this.notify(msg, kind); },
 	toastCenter: function (msg, kind) { return this.notify(msg, kind); },
 
+	/* 轮询类失败专用：单条通知栏、同一原因不重复弹、恢复后可被 clearNotice 清掉。
+	 * 轮询每 10 秒失败一次若走 addNotification，红色横幅会一条条往上摞。 */
+	notifyOnce: function (msg, kind) {
+		var self = this;
+		if (self._notifyOnceMsg === msg) return true;
+		self._notifyOnceMsg = msg;
+		return self.statusBar(msg, kind);
+	},
+	/* 成功恢复后清掉单条通知栏（仅供轮询路径调用） */
+	clearOnce: function () {
+		this._notifyOnceMsg = '';
+		return this.clearNotice();
+	},
+
 	/* 页面顶部通知栏（单条）：100 秒倒计时，可手动关闭 */
 	statusBar: function (msg, kind) {
 		var self = this;
@@ -393,6 +407,13 @@ var CPD = L.Class.extend({
 				}
 				wrote = true;
 				return uci.save();
+			}, function (e) {
+				/* uci/load 失败（配置文件不存在等）时，官方 uci.js 会把这个
+				 * rejected Promise 缓存进 loaded 表，不清掉后面每次都失败。
+				 * 后端 bl_status/status 会在读配置前自动补建缺失的
+				 * /etc/config/opennds；这里给出人话错误并清缓存。 */
+				try { uci.unload(conf); } catch (e2) {}
+				throw { error: _('配置文件 %s 不存在或无法读取，无法写入该配置').format(conf) };
 			}).then(function () {
 				if (!wrote) return null;
 				/* 写后自检：rpcd 的 uci changes 读的就是「未保存的配置」那个

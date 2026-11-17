@@ -257,12 +257,22 @@ return view.extend({
 			confBar.style.display = '';
 		}
 
-		/* ---------- 数据拉取与 10 秒轮询 ---------- */
+		/* ---------- 数据拉取与 10 秒轮询 ----------
+		 * openNDS 忙（刚启动/生成门户资源）时后端可能慢或超时。两条规矩：
+		 * ① 上一轮没回来就不发下一轮（否则请求会越积越多）；
+		 * ② 失败只占一条通知栏、同一原因不重复弹 —— 之前每 10 秒失败一次
+		 *    就 addNotification 一条，页面上会出现一摞「XHR request timed out」。 */
+		var refreshing = false;
+
 		function refresh() {
+			if (refreshing) return Promise.resolve();
+			refreshing = true;
 			return Promise.all([
 				CPD.api('overview', 'status'),
 				CPD.api('overview', 'clients')
 			]).then(function (rs) {
+				refreshing = false;
+				CPD.clearOnce();
 				var st = rs[0], cl = rs[1];
 				if (st && st.ok) {
 					state.running = st.running === 1;
@@ -288,7 +298,9 @@ return view.extend({
 						}
 					});
 			}, function (e) {
-				CPD.toast(CPD.errText(e, _('获取概览数据失败')), 'err');
+				refreshing = false;
+				/* 同一原因只占一条通知栏，恢复后自动清掉 */
+				CPD.notifyOnce(CPD.errText(e, _('获取概览数据失败')), 'err');
 			});
 		}
 
@@ -324,7 +336,8 @@ return view.extend({
 		}
 
 		function doSetRun(want) {
-			runOp(15, function () {
+			/* 后端启动要等 openNDS 就绪（最长约 10 秒）+ init.d 开销，锁要留够 */
+			runOp(30, function () {
 				return CPD.api('overview', 'set_run', [want]);
 			}, {
 				onok: function (j) {

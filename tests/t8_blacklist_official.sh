@@ -59,7 +59,17 @@ grep -qx 'block' "$sec_dir/macmechanism" &&
 [ ! -f "$ZONE_BLACKLIST_CONF" ] &&
 	echo "  OK   旧文件已删除" || { echo "  FAIL 旧文件还在"; fail=1; }
 
-echo "== B5 blacklist 只有 status 子命令（门户 API 已删） =="
+echo "== B5 /etc/config/opennds 缺失 → status 自动补建官方配置节 =="
+rm -f "$OPENNDS_CONF"
+rm -rf "$MOCK_UCI_ROOT/opennds" "$MOCK_UCI_DELTA" 2>/dev/null
+out=$(call blacklist status)
+ck "返回 ok" '"ok":1' "$out"
+[ -f "$OPENNDS_CONF" ] &&
+	echo "  OK   配置文件已补建" || { echo "  FAIL 配置文件没补建"; fail=1; }
+[ -d "$MOCK_UCI_ROOT/opennds" ] &&
+	echo "  OK   opennds 节已补建" || { echo "  FAIL opennds 节没补建"; fail=1; }
+
+echo "== B6 blacklist 只有 status 子命令（门户 API 已删） =="
 out=$(call blacklist save_macs add=aa:bb:cc:dd:ee:09)
 ck "save_macs 已不存在" '"ok":0' "$out"
 out=$(call blacklist save_portal portal=x)

@@ -25,6 +25,8 @@ tmp_setup() { # $1=用例名
 	# CI 里则依赖 git 记录的 100755 —— 这里兜一次，两边都不会挂
 	chmod +x "$HERE/mock/bin/"* 2>/dev/null
 	export PATH="$HERE/mock/bin:$PATH"
+	# pidof 桩的开关：默认 opennds 在跑（与旧 ndsctl status 必成功语义一致）
+	export NDS_RUNNING="${NDS_RUNNING:-1}"
 	export CPD_ROOT="$S/cpd"
 	export ZONE_UP="$S/up"
 	export MOCK_UCI_ROOT="$S/uci"
@@ -35,7 +37,6 @@ tmp_setup() { # $1=用例名
 	mkdir -p "$CPD_ROOT" "$ZONE_UP" "$MOCK_UCI_ROOT" "$S/etc"
 	printf 'config opennds\n\toption enabled 0\n' >"$OPENNDS_CONF"
 	printf 'config main\n' >"$ZONE_DETECT_CONFIG"
-	printf 'config main\n' >"$ZONE_BLACKLIST_CONFIG"
 }
 
 call() { sh "$API" "$@" 2>/dev/null; }

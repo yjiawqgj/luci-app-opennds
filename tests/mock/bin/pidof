@@ -1,0 +1,8 @@
+#!/bin/sh
+# pidof 桩：NDS_RUNNING=1（默认）→ opennds 在跑；0 → 找不到进程。
+# 运行判定已改为进程权威（nds_running），用例用这个开关控制两种状态。
+if [ "${NDS_RUNNING:-1}" = '1' ]; then
+	echo 1234
+	exit 0
+fi
+exit 1
