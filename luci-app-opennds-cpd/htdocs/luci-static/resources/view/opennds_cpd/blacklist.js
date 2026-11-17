@@ -231,6 +231,12 @@ return view.extend({
 					CPD.notify(_('不能上传名为 default.sh 的脚本，兜底门户就是它本身'), 'warn');
 					return;
 				}
+				/* 同名挡在门口：本页不做改名映射，覆盖会让用户以为多了一个门户 */
+				var dup = state.portals.some(function (p) { return p.name === name; });
+				if (dup) {
+					CPD.notify(_('已存在同名脚本，请改名后再上传'), 'warn');
+					return;
+				}
 				var reader = new FileReader();
 				reader.onload = function () {
 					var id = 't' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
