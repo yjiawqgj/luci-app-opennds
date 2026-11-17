@@ -24,6 +24,7 @@ return view.extend({
 			preempt0: [],
 			pe0: 1,
 			info: {},         /* MAC → {host,ip,zone,online} */
+			blocked: [],      /* 黑名单 MAC（小写）：一个客户端只能属于一个名单 */
 			editing: { trusted: false, preempt: false },
 			open: { trusted: false, preempt: false },
 			perPage: '10',
@@ -58,10 +59,10 @@ return view.extend({
 		function renderBlock(which) {
 			var isPre = which === 'preempt';
 			var sec = CPD.section(
-				isPre ? _('授权客户端') : _('信任客户端'),
-				isPre ? 'Pre-emptive Clients' : 'Trusted Clients');
+				isPre ? _('自动认证') : _('信任客户端'),
+				isPre ? 'Auto Authentication' : 'Trusted Clients');
 			sec.appendChild(E('p', { 'class': 'cpd-note' }, isPre
-				? _('允许指定客户端跳过门户认证，自动获得预先授权，同时保留 openNDS 对客户端的流量统计、配额、速度和会话时长管理。')
+				? _('允许指定客户端跳过门户认证，自动通过认证，同时保留 openNDS 对客户端的流量统计、配额、速度和会话时长管理。')
 				: _('允许指定客户端绕过 openNDS 的正常认证和客户端流量管理机制，获得无条件访问权限。')));
 
 			if (isPre) {
@@ -136,7 +137,7 @@ return view.extend({
 					}
 				}, open ? _('收起列表') : _('展开列表')),
 				E('span', { 'class': 'cpd-note' },
-					(isPre ? _('授权客户端列表') : _('信任客户端列表')) + ' · ' + _('共 %s 条').format(macs.length))
+					(isPre ? _('自动认证列表') : _('信任客户端列表')) + ' · ' + _('共 %s 条').format(macs.length))
 			]);
 			wrap.appendChild(head);
 			if (!open) return;
@@ -345,6 +346,21 @@ return view.extend({
 				var m = macOf(e);
 				if (tset[m]) dups[m] = 1;
 			});
+			/* 黑名单优先：被拉黑的客户端不能同时出现在这两个名单里 */
+			var bset = {};
+			state.blocked.forEach(function (m) { bset[m] = 1; });
+			var bl = [];
+			state.trusted.concat(state.preempt.map(macOf)).forEach(function (m) {
+				if (bset[m] && bl.indexOf(m) < 0) bl.push(m);
+			});
+			if (bl.length) {
+				var bshown = bl.slice(0, 3).join('、') +
+					(bl.length > 3 ? _('等 %s 条').format(bl.length) : '');
+				ui.addNotification(null, E('p', {},
+					_('%s 在黑名单里，一个客户端只能属于一个列表，请先在「客户端黑名单」页解除拉黑。').format(bshown)), 'error');
+				return Promise.resolve();
+			}
+
 			var dlist = Object.keys(dups);
 			if (dlist.length) {
 				var shown = dlist.slice(0, 3).map(function (m) { return '`' + m + '`'; }).join('、') +
@@ -384,6 +400,7 @@ return view.extend({
 				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
 				state.trusted = j.trusted || [];
 				state.preempt = j.preempt || [];
+				state.blocked = (j.blocked || []).map(function (m) { return String(m).toLowerCase(); });
 				state.preemptEnabled = (j.preempt_enabled === 0) ? 0 : 1;
 				state.trusted0 = state.trusted.slice();
 				state.preempt0 = state.preempt.slice();

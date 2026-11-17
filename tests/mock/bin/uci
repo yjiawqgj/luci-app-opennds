@@ -29,6 +29,58 @@ read_val() { # $1=rel → 输出值；空文件=暂存删除
 	return 1
 }
 
+# 匿名节语法 @type / @type[N] → 真实节名。
+# 真实 uci 里 opennds 是匿名节，插件全程用 opennds.@opennds[0].xxx 取值，
+# 桩必须同样支持，否则测试里所有名单都读成空。
+resolve_sec() { # $1=conf $2=@type[N] → 节名
+	want="${2#@}"
+	case "$want" in
+		*'['*)
+			idx="${want#*\[}"; idx="${idx%%\]*}"
+			want="${want%%\[*}"
+			;;
+		*) idx=0 ;;
+	esac
+	n=0
+	for base in "$R/$1" "$D/$1"; do
+		[ -d "$base" ] || continue
+		for sd in "$base"/*; do
+			[ -d "$sd" ] || continue
+			[ -f "$sd/.type" ] || continue
+			[ "$(cat "$sd/.type")" = "$want" ] || continue
+			if [ "$n" = "$idx" ]; then
+				printf '%s' "${sd##*/}"
+				return 0
+			fi
+			n=$((n + 1))
+		done
+	done
+	return 1
+}
+
+# conf.sec.opt / conf.sec → 把 sec 里的 @type[N] 换成真实节名
+norm() {
+	case "$1" in
+		*.*) ;;
+		*) printf '%s' "$1"; return 0 ;;
+	esac
+	c="${1%%.*}"; rest="${1#*.}"
+	case "$rest" in
+		*.*) s="${rest%%.*}"; o=".${rest#*.}" ;;
+		*) s="$rest"; o='' ;;
+	esac
+	case "$s" in
+		@*)
+			rs=$(resolve_sec "$c" "$s") || { printf '%s' "$1"; return 0; }
+			printf '%s.%s%s' "$c" "$rs" "$o"
+			;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+# 所有命令的第一个参数都先做一次 @type[N] → 节名 归一化
+if [ $# -ge 1 ]; then _a1=$(norm "$1"); shift; set -- "$_a1" "$@"; fi
+
 case "$cmd" in
 	get)
 		rel=$(rel_for "$1"); [ -n "$rel" ] || exit 1

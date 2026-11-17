@@ -1,0 +1,244 @@
+#!/bin/sh
+# t9：概览页数据口径（用户现场逐条）
+#   ① 在线 = 已认证 + 免认证已登录 + 可信任；未认证单独一类，不再混进"在线"
+#   ② 卡片数字与列表条目同源：online+authorized 的行数 = counts.online
+#   ③ 无线接入点卡片按 ubus 运行时接口计数（机器上没装 iw 也要能数出来）
+#   ④ 客户端列表带 ssid，前端"接入点"一列才能显示 SSID 而不是 phy2-ap0
+#   ⑤ trusted 客户端 ndsctl 不给 ip 时用邻居表补
+#   ⑥ 同一 MAC 同时在黑名单和信任名单：黑名单优先，应用后被自动清理
+. "$(dirname "$0")/lib.sh"
+tmp_setup t9
+
+mkdir -p "$S/bin"
+
+# ---- ubus：network.wireless status（radio2 两张 AP）----
+cat >"$S/bin/ubus" <<'UEOF'
+#!/bin/sh
+if [ "$1" = 'call' ] && [ "$2" = 'network.wireless' ]; then
+	cat <<'J'
+{
+	"radio2": {
+		"up": true,
+		"interfaces": [
+			{
+				"section": "default_radio2",
+				"ifname": "phy2-ap0",
+				"config": {
+					"mode": "ap",
+					"ssid": "互联网"
+				}
+			},
+			{
+				"section": "wifinet3",
+				"ifname": "phy2-ap1",
+				"config": {
+					"mode": "ap",
+					"ssid": "guest"
+				}
+			}
+		]
+	}
+}
+J
+fi
+UEOF
+
+# ---- ip：邻居表（trusted 客户端的 IP 只能从这里来）+ 地址 ----
+cat >"$S/bin/ip" <<'IEOF'
+#!/bin/sh
+case "$*" in
+	*neigh*) printf '%s\n' '10.0.0.9 dev br-lan lladdr 11:22:33:44:55:66 REACHABLE' ;;
+	*addr*) printf '%s\n' '2: br-lan    inet 10.0.0.1/24 brd 10.0.0.255 scope global br-lan' ;;
+esac
+IEOF
+
+# ---- ndsctl：三个客户端（已认证 / 可信任 / 未认证）----
+cat >"$S/bin/ndsctl" <<'NEOF'
+#!/bin/sh
+[ -n "$NDSCTL_LOG" ] && echo "$1 $2" >> "$NDSCTL_LOG"
+case "$1" in
+	status) echo "openNDS daemon v10.0.0"; exit 0 ;;
+	json)
+		# 与 openNDS src/util.c ndsctl_json_client() 输出格式逐字一致：
+		# 客户端键缩进 4 空格，字段缩进 6 空格，冒号后无空格，最后一个字段无逗号
+		cat <<'J'
+{
+  "client_list_length":"3",
+  "clients":{
+    "AA:BB:CC:DD:EE:01":{
+      "gatewayname":"OpenNDS",
+      "gatewayaddress":"10.0.0.1",
+      "gatewayfqdn":"status.client",
+      "version":"10.0.0",
+      "client_type":"cpd_can",
+      "mac":"AA:BB:CC:DD:EE:01",
+      "ip":"10.0.0.2",
+      "clientif":"phy2-ap0",
+      "session_start":"1700000000",
+      "session_end":"null",
+      "last_active":"1700000100",
+      "token":"aaaa0001",
+      "state":"Authenticated",
+      "custom":"none",
+      "download_rate_limit_threshold":"null",
+      "download_packet_rate":"null",
+      "download_bucket_size":"null",
+      "upload_rate_limit_threshold":"null",
+      "upload_packet_rate":"null",
+      "upload_bucket_size":"null",
+      "download_quota":"1000000",
+      "upload_quota":"null",
+      "download_this_session":"100",
+      "download_session_avg":"0.00",
+      "upload_this_session":"50",
+      "upload_session_avg":"0.00"
+    },
+    "11:22:33:44:55:66":{
+      "gatewayname":"OpenNDS",
+      "gatewayaddress":"10.0.0.1",
+      "gatewayfqdn":"status.client",
+      "version":"10.0.0",
+      "client_type":"cpd_can",
+      "mac":"11:22:33:44:55:66",
+      "ip":"",
+      "clientif":"phy2-ap1",
+      "session_start":"1700000000",
+      "session_end":"null",
+      "last_active":"1700000100",
+      "token":"bbbb0002",
+      "state":"Trusted",
+      "custom":"none",
+      "download_rate_limit_threshold":"null",
+      "download_packet_rate":"null",
+      "download_bucket_size":"null",
+      "upload_rate_limit_threshold":"null",
+      "upload_packet_rate":"null",
+      "upload_bucket_size":"null",
+      "download_quota":"null",
+      "upload_quota":"null",
+      "download_this_session":"10",
+      "download_session_avg":"0.00",
+      "upload_this_session":"5",
+      "upload_session_avg":"0.00"
+    },
+    "22:33:44:55:66:77":{
+      "gatewayname":"OpenNDS",
+      "gatewayaddress":"10.0.0.1",
+      "gatewayfqdn":"status.client",
+      "version":"10.0.0",
+      "client_type":"cpd_can",
+      "mac":"22:33:44:55:66:77",
+      "ip":"10.0.0.3",
+      "clientif":"phy2-ap0",
+      "session_start":"1700000000",
+      "session_end":"null",
+      "last_active":"1700000100",
+      "token":"cccc0003",
+      "state":"Preauthenticated",
+      "custom":"none",
+      "download_rate_limit_threshold":"null",
+      "download_packet_rate":"null",
+      "download_bucket_size":"null",
+      "upload_rate_limit_threshold":"null",
+      "upload_packet_rate":"null",
+      "upload_bucket_size":"null",
+      "download_quota":"null",
+      "upload_quota":"null",
+      "download_this_session":"0",
+      "download_session_avg":"0.00",
+      "upload_this_session":"0",
+      "upload_session_avg":"0.00"
+    }
+  },
+  "trusted_list_length":"1",
+  "trusted":[
+    "11:22:33:44:55:66"
+  ]
+}
+J
+		exit 0
+		;;
+esac
+exit 0
+NEOF
+chmod +x "$S/bin/"*
+export PATH="$S/bin:$PATH"
+
+# ---- 配置：wireless（radio2 + 两张 AP）----
+mk_radio() {
+	mkdir -p "$MOCK_UCI_ROOT/wireless/$1"
+	printf 'wifi-device' >"$MOCK_UCI_ROOT/wireless/$1/.type"
+}
+mk_iface() { # $1=sec $2=device $3=ssid
+	mkdir -p "$MOCK_UCI_ROOT/wireless/$1"
+	printf 'wifi-iface' >"$MOCK_UCI_ROOT/wireless/$1/.type"
+	printf 'ap' >"$MOCK_UCI_ROOT/wireless/$1/mode"
+	printf '%s' "$2" >"$MOCK_UCI_ROOT/wireless/$1/device"
+	printf '%s' "$3" >"$MOCK_UCI_ROOT/wireless/$1/ssid"
+}
+mk_radio radio2
+mk_iface default_radio2 radio2 '互联网'
+mk_iface wifinet3 radio2 'guest'
+
+# ---- opennds 配置：信任名单里有 dc:d8:...（同时也在黑名单里，属于历史脏数据）----
+mkdir -p "$MOCK_UCI_ROOT/opennds/opennds"
+printf 'opennds' >"$MOCK_UCI_ROOT/opennds/opennds/.type"
+printf '1' >"$MOCK_UCI_ROOT/opennds/opennds/enabled"
+printf 'br-lan' >"$MOCK_UCI_ROOT/opennds/opennds/gatewayinterface"
+printf 'block' >"$MOCK_UCI_ROOT/opennds/opennds/macmechanism"
+printf '11:22:33:44:55:66\ndc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/trustedmac"
+printf 'dc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/blockedmac"
+
+out=$(call overview dashboard)
+ck "dashboard 返回 ok" '{"ok":1' "$out"
+
+# ① 统计口径
+counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
+ck "在线=已认证1+可信任1" '"online":2' "$counts"
+ck "已认证=1（不含可信任）" '"authenticated":1' "$counts"
+ck "未认证=1（Preauthenticated 不算在线）" '"unauthenticated":1' "$counts"
+ck "可信任=1（黑名单里的重复条目不算）" '"trusted":1' "$counts"
+ck "黑名单=1" '"blacklist":1' "$counts"
+
+# ② 卡片数与列表同源：同时 online 且 authorized 的行应正好 2 条
+n=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
+ck "列表里 online+authorized 行数=2" '2' "$n"
+
+# ③ 无线接入点计数（ubus 映射：phy2-ap0 / phy2-ap1）
+ap_seg() { printf '%s' "$1" | tr '}' '\n' | grep -F "\"ssid\":\"$2\""; }
+a0=$(ap_seg "$out" '互联网')
+a1=$(ap_seg "$out" 'guest')
+ck "互联网 AP 运行时接口=phy2-ap0" '"iface":"phy2-ap0"' "$a0"
+ck "guest AP 运行时接口=phy2-ap1" '"iface":"phy2-ap1"' "$a1"
+ck "互联网 AP 计数=2（已认证+未认证）" '"count":2' "$a0"
+ck "guest AP 计数=1（可信任客户端）" '"count":1' "$a1"
+
+# ④⑤ 客户端行：SSID + 邻居表补 IP
+seg() { printf '%s' "$1" | tr '{' '\n' | grep -F "\"mac\":\"$2\""; }
+r1=$(seg "$out" 'aa:bb:cc:dd:ee:01')
+r2=$(seg "$out" '11:22:33:44:55:66')
+r3=$(seg "$out" '22:33:44:55:66:77')
+ck "已认证客户端 ssid=互联网" '"ssid":"互联网"' "$r1"
+ck "可信任客户端 ssid=guest" '"ssid":"guest"' "$r2"
+ck "可信任客户端用邻居表补到 IP" '"ip":"10.0.0.9"' "$r2"
+ck "可信任客户端 authorized=true" '"authorized":true' "$r2"
+ck "未认证客户端 authorized=false" '"authorized":false' "$r3"
+ck "未认证客户端 online=true" '"online":true' "$r3"
+
+# ⑥ 名单互斥：黑名单里的 MAC 即便写在 trustedmac 里也不算可信任
+r4=$(seg "$out" 'dc:d8:7b:53:e5:5a')
+ck "黑名单 MAC 不算可信任" '"trusted":false' "$r4"
+ck "黑名单 MAC 标记 blocked" '"blocked":true' "$r4"
+
+echo "== 应用后自动清理重复条目 =="
+call sys post_apply >/dev/null
+tr_list=$(uci -q get 'opennds.@opennds[0].trustedmac' 2>/dev/null)
+bl_list=$(uci -q get 'opennds.@opennds[0].blockedmac' 2>/dev/null)
+ck "trustedmac 保留正常条目" '11:22:33:44:55:66' "$tr_list"
+case "$tr_list" in
+	*dc:d8:7b:53:e5:5a*) echo "  FAIL trustedmac 里的黑名单条目没被清理"; fail=1 ;;
+	*) echo "  OK   trustedmac 里的黑名单条目已清除" ;;
+esac
+ck "blockedmac 原样保留" 'dc:d8:7b:53:e5:5a' "$bl_list"
+
+done_report

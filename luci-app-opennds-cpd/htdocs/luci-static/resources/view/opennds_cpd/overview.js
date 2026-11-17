@@ -22,6 +22,7 @@ var CSS = '\
 .ovd-dot.off{background:#c94848;box-shadow:0 0 0 3px #fbe8e8}\
 .ovd-status-text{font-size:20px;font-weight:650;color:#2e9468;letter-spacing:.5px}\
 .ovd-status-text.off{color:#c94848}\
+.ovd-status-text.pending{color:#9aa6b2}\
 .ovd-switch{position:relative;width:42px;height:24px;flex:none;padding:0;border:1px solid #c9d2da;border-radius:999px;background:#e3e8ec;cursor:pointer;transition:background .15s,border-color .15s}\
 .ovd-switch .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}\
 .ovd-switch[aria-checked="true"]{background:#2e9468;border-color:#2e9468}\
@@ -71,9 +72,9 @@ var CSS = '\
 .ovd-tags{display:flex;gap:4px;flex-wrap:wrap}\
 .ovd-tag{font-size:10px;font-weight:500;line-height:1.5;padding:0 6px;border-radius:999px;border:1px solid;white-space:nowrap}\
 .ovd-tag.t-auth{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}\
-.ovd-tag.t-unauth{color:#7c8894;border-color:#dfe5ea;background:#f4f7f9}\
-.ovd-tag.t-pre{color:#1b5f8a;border-color:#c5dcec;background:#eef6fb}\
-.ovd-tag.t-trusted{color:#8a6116;border-color:#e7d3a6;background:#faf1dc}\
+.ovd-tag.t-unauth{color:#7c8894;border-color:#dfe5ea;background:transparent}\
+.ovd-tag.t-pre{color:#8a6116;border-color:#e7d3a6;background:#faf1dc}\
+.ovd-tag.t-trusted{color:#1a6b41;border-color:#a9d5bd;background:#dff2e6}\
 .ovd-tag.t-black{color:#fff;border-color:#252b31;background:#252b31}\
 .ovd-acts{display:flex;flex-wrap:wrap;gap:5px}\
 .ovd-rowbtn{font-family:inherit;font-size:11px;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:4px;height:26px;padding:0 8px;cursor:pointer;white-space:nowrap}\
@@ -258,45 +259,69 @@ return view.extend({
 		}
 
 		/* ---------- 数据拉取与 10 秒轮询 ----------
-		 * openNDS 忙（刚启动/生成门户资源）时后端可能慢或超时。两条规矩：
+		 * 只发一个 dashboard 请求：后端一次解析 ndsctl、一次读 uci，
+		 * 状态与客户端列表一起回来（之前两个请求串行，首屏要等两轮）。
+		 * 另外两条规矩：
 		 * ① 上一轮没回来就不发下一轮（否则请求会越积越多）；
-		 * ② 失败只占一条通知栏、同一原因不重复弹 —— 之前每 10 秒失败一次
-		 *    就 addNotification 一条，页面上会出现一摞「XHR request timed out」。 */
+		 * ② 失败只占一条通知栏、同一原因不重复弹。 */
 		var refreshing = false;
+		var offTimer = null;
+		var loaded = false;
+
+		function applyStatus(st) {
+			if (!st || !st.ok) return;
+			state.enabled = st.enabled === 1;
+			state.engaged = st.engaged;
+			state.busy = st.busy;
+			state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
+			state.scope = st.session_scope || 'default';
+			state.counts = st.counts || {};
+			state.managed = st.managed || { iface: '', ip: '' };
+			state.aps = st.aps || [];
+			state.confErr = st.confErr || '';
+
+			if (st.running === 1) {
+				if (offTimer) { window.clearTimeout(offTimer); offTimer = null; }
+				state.running = true;
+				return;
+			}
+			/* 刚变成「未运行」：procd 重启 openNDS 时进程会短暂消失，一次轮询
+			 * 撞上就翻红会来回闪。1.2 秒后复核一次，仍是未运行才真的翻红。 */
+			if (state.running && !offTimer) {
+				offTimer = window.setTimeout(function () {
+					offTimer = null;
+					CPD.api('overview', 'run_state').then(function (j) {
+						if (j && j.ok) {
+							state.running = (j.running === 1);
+							renderStatus();
+						}
+					}).catch(function () {});
+				}, 1200);
+				return;
+			}
+			state.running = false;
+		}
+
+		function renderAllSafe() {
+			/* 任何一段渲染抛异常都不能连累后面的区块 */
+			[renderStatus, renderWarnbar, renderStats, renderIface, renderAps, renderList]
+				.forEach(function (fn) {
+					try { fn(); } catch (e) {
+						if (window.console && console.error) console.error('[opennds-cpd] render', e);
+					}
+				});
+		}
 
 		function refresh() {
 			if (refreshing) return Promise.resolve();
 			refreshing = true;
-			return Promise.all([
-				CPD.api('overview', 'status'),
-				CPD.api('overview', 'clients')
-			]).then(function (rs) {
+			return CPD.api('overview', 'dashboard').then(function (st) {
 				refreshing = false;
 				CPD.clearOnce();
-				var st = rs[0], cl = rs[1];
-				if (st && st.ok) {
-					state.running = st.running === 1;
-					state.enabled = st.enabled === 1;
-					state.engaged = st.engaged;
-					state.busy = st.busy;
-					state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
-					state.scope = st.session_scope || 'default';
-					state.counts = st.counts || {};
-					state.managed = st.managed || { iface: '', ip: '' };
-					state.aps = st.aps || [];
-					state.confErr = st.confErr || '';
-				}
-				if (cl && cl.ok) {
-					state.clients = cl.clients || [];
-				}
-				/* 任何一段渲染抛异常都不能连累后面的区块：
-				 * 逐段兜住，出问题的那段留空并在控制台留痕，其余照常画出来 */
-				[renderStatus, renderWarnbar, renderStats, renderIface, renderAps, renderList]
-					.forEach(function (fn) {
-						try { fn(); } catch (e) {
-							if (window.console && console.error) console.error('[opennds-cpd] render', e);
-						}
-					});
+				applyStatus(st);
+				state.clients = (st && st.clients) || [];
+				loaded = true;
+				renderAllSafe();
 			}, function (e) {
 				refreshing = false;
 				/* 同一原因只占一条通知栏，恢复后自动清掉 */
@@ -328,6 +353,14 @@ return view.extend({
 		]);
 
 		function renderStatus() {
+			if (!loaded) {
+				/* 首屏数据还没回来：不要先亮一下「未运行」再变绿 */
+				statusDot.className = 'ovd-dot';
+				statusText.className = 'ovd-status-text pending';
+				statusText.textContent = _('读取中…');
+				runSwitch.setAttribute('aria-checked', 'false');
+				return;
+			}
 			var on = state.running;
 			statusDot.className = 'ovd-dot' + (on ? '' : ' off');
 			statusText.className = 'ovd-status-text' + (on ? '' : ' off');
@@ -432,28 +465,28 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ---------- */
-		function isOnline(c) { return c.joined !== ''; }
+		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
+		 * "在线" = 有访问权限的在线客户端（已认证 / 免认证已登录 / 可信任）；
+		 * 还没通过认证的单独归"未认证"。计数与列表用的是后端同一组标记
+		 * （online / authorized），不会出现卡片数与列表条数对不上。 */
+		function isOnline(c) { return !!c.online; }
 
 		function inFilter(c) {
-			var online = isOnline(c);
+			var online = !!c.online;
 			switch (state.filter) {
 				case 'blacklist':
 					return !!c.blocked;
 				case 'trusted':
 					return !!c.trusted;
 				case 'preauth':
-					/* 名单内且已登录算免认证；离线的名单补行也归本视图 */
-					return !!c.preauth && !c.trusted && !c.blocked &&
-						(!!c.authenticated || !online);
+					/* 名单内且已登录算免认证 */
+					return online && !!c.preauth && !!c.authenticated && !c.trusted && !c.blocked;
 				case 'auth':
-					return online && !c.blocked && !c.trusted &&
-						!(c.preauth && c.authenticated) && !!c.authenticated;
+					return online && !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
 				case 'unauth':
-					return online && !c.blocked && !c.trusted && !c.authenticated &&
-						!(c.preauth && c.authenticated);
+					return online && !c.authorized && !c.blocked;
 				default: /* online */
-					return online && !c.blocked;
+					return online && !!c.authorized && !c.blocked;
 			}
 		}
 
@@ -468,17 +501,45 @@ return view.extend({
 			return n;
 		}
 
+		/* 接入点一列显示 SSID。后端已经把运行时接口对应的 SSID 一并给了（c.ssid），
+		 * 这里再兜一层：接口名 → AP 卡片 → SSID。 */
 		function apName(iface) {
 			if (!iface) return '—';
 			for (var i = 0; i < state.aps.length; i++) {
-				if (state.aps[i].iface === iface) return state.aps[i].ssid;
+				if (state.aps[i].iface === iface && state.aps[i].ssid) return state.aps[i].ssid;
 			}
 			if (iface === state.managed.iface) return iface + _('（有线）');
 			return iface;
 		}
 
+		/* AP 卡片的唯一键：没有运行时接口名时用 section，
+		 * 否则两张 iface 为空的卡片会被当成同一个，点一个同时点亮另一个 */
+		function apKey(a) { return a.iface || a.section || a.ssid || ''; }
+
+		function apLabel(key) {
+			for (var i = 0; i < state.aps.length; i++) {
+				if (apKey(state.aps[i]) === key) return state.aps[i].ssid || key;
+			}
+			return key;
+		}
+
+		function clientAp(c) {
+			if (c.ssid) return c.ssid;
+			return apName(c.iface);
+		}
+
+		function apFilterMatch(c) {
+			if (!state.ap) return true;
+			for (var i = 0; i < state.aps.length; i++) {
+				var a = state.aps[i];
+				if (apKey(a) !== state.ap) continue;
+				return !!a.iface && c.iface === a.iface;
+			}
+			return c.iface === state.ap;
+		}
+
 		function filteredClients() {
-			var b = state.clients.filter(inFilter);
+			var b = state.clients.filter(inFilter).filter(apFilterMatch);
 			var q = normSearch(state.query);
 			if (q) {
 				b = b.filter(function (c) {
@@ -492,7 +553,7 @@ return view.extend({
 			return b.slice().sort(function (a, b2) {
 				var va, vb;
 				if (key === 'ip') { va = ipSortValue(a.ip); vb = ipSortValue(b2.ip); }
-				else if (key === 'ap') { va = apName(a.iface); vb = apName(b2.iface); }
+				else if (key === 'ap') { va = clientAp(a); vb = clientAp(b2); }
 				else { va = a[key] || ''; vb = b2[key] || ''; }
 				if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
 				return String(va).localeCompare(String(vb), 'zh-CN', { numeric: true }) * dir;
@@ -570,11 +631,12 @@ return view.extend({
 
 		function renderAps() {
 			var h = state.aps.map(function (a) {
-				var sel = (state.ap === a.iface) ? ' selected' : '';
+				var key = apKey(a);
+				var sel = (state.ap === key) ? ' selected' : '';
 				return '<button type="button" class="ovd-card ovd-ap' + sel +
-					'" data-ap="' + esc(a.iface) + '" aria-pressed="' +
-					(state.ap === a.iface ? 'true' : 'false') + '">' +
-					'<div class="ovd-ap-name">' + esc(a.ssid) + '</div>' +
+					'" data-ap="' + esc(key) + '" aria-pressed="' +
+					(state.ap === key ? 'true' : 'false') + '">' +
+					'<div class="ovd-ap-name">' + esc(a.ssid || '—') + '</div>' +
 					'<div class="ovd-ap-count"><span class="ovd-ap-count-num">' +
 					(a.count == null ? 0 : a.count) + '</span>' +
 					'<span class="ovd-ap-count-label">' + _('已连接客户端') + '</span></div>' +
@@ -583,8 +645,8 @@ return view.extend({
 			apGrid.innerHTML = h || '<div class="ovd-count">' + _('暂无启用的无线接入点') + '</div>';
 			apGrid.querySelectorAll('[data-ap]').forEach(function (b) {
 				b.addEventListener('click', function () {
-					var iface = b.getAttribute('data-ap');
-					state.ap = (state.ap === iface) ? null : iface;
+					var key = b.getAttribute('data-ap');
+					state.ap = (state.ap === key) ? null : key;
 					state.filter = 'online';
 					renderStats();
 					renderAps();
@@ -637,7 +699,7 @@ return view.extend({
 		}
 
 		function tagOf(c) {
-			if (c.blocked) return ['t-black', _('拉黑')];
+			if (c.blocked) return ['t-black', _('黑名单')];
 			if (c.trusted) return ['t-trusted', _('可信任')];
 			if (c.preauth && c.authenticated) return ['t-pre', _('免认证')];
 			if (c.authenticated) return ['t-auth', _('已认证')];
@@ -648,12 +710,12 @@ return view.extend({
 			var items = filteredClients();
 			listTitle.textContent = TITLES[state.filter] || TITLES.online;
 			listCount.textContent = _('共 %s 个').format(String(items.length)) +
-				(state.ap ? ' · ' + _('接入点 %s').format(apName(state.ap)) : '');
+				(state.ap ? ' · ' + _('接入点 %s').format(apLabel(state.ap)) : '');
 			updateSortUI();
 
 			if (!items.length) {
 				tbody.innerHTML = '<tr><td colspan="5" class="ovd-empty">' +
-					_('暂无符合条件的客户端') + '</td></tr>';
+					(loaded ? _('暂无符合条件的客户端') : _('读取中…')) + '</td></tr>';
 				return;
 			}
 
@@ -678,7 +740,7 @@ return view.extend({
 					esc(c.host || '—') + '</span><div class="ovd-tags">' + tags + '</div></div></td>' +
 					'<td class="ovd-mono">' + esc(c.ip || '—') + '</td>' +
 					'<td class="ovd-mono">' + esc(c.mac) + '</td>' +
-					'<td class="ovd-mono">' + esc(apName(c.iface)) + '</td>' +
+					'<td>' + esc(clientAp(c)) + '</td>' +
 					'<td><div class="ovd-acts">' +
 					'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
 					(disView ? ' disabled' : '') + '>' + _('详情') + '</button>' +
@@ -778,6 +840,11 @@ return view.extend({
 		function askAction(act, row) {
 			var d = CONFIRM_TEXT[act];
 			if (!d) return;
+			/* 一个客户端只能属于一个名单：黑名单里的必须先解除拉黑 */
+			if (row.blocked && (act === 'trust' || act === 'preauth')) {
+				CPD.notify(_('该客户端在黑名单中，请先解除拉黑'), 'warn');
+				return;
+			}
 			var h = row.host || row.mac;
 			/* 即时动作（断开 / 拉黑）确认后立刻执行；其余动作要说明「还需点保存并应用」 */
 			var msg = d.msg(h);
@@ -909,26 +976,23 @@ return view.extend({
 				limitRowEd(LIMIT_ROWS[2]),
 				E('p', { 'class': 'ovd-note' }, _('上传与下载速度分别独立设置，可只限制其中一个方向。'))
 			]);
+			/* 流量限制：公平使用策略没开启时不允许编辑（输入框置灰）+ 红字说明；
+			 * 开启后红字消失、输入框可编辑。不用灰蒙层盖住 —— 蒙层会把数值一起
+			 * 挡住，用户看不出当前设置是多少。 */
 			var quotaSec = E('div', { 'class': 'ovd-dsec' }, [
-				E('h4', {}, _('流量限制')),
-				E('p', { 'class': 'ovd-warn' }, _('设置完流量配额后需要到设置页 公平使用策略 里设置限速，否则流量耗尽将会被取消认证。')),
-				limitRowEd(LIMIT_ROWS[3]),
-				limitRowEd(LIMIT_ROWS[4]),
-				E('p', { 'class': 'ovd-note' }, _('上传与下载流量额度分别独立设置；达到额度后，NDS 会对该客户端执行相应的流量控制。'))
+				E('h4', {}, _('流量限制'))
 			]);
-
-			/* 公平使用策略未开启 → 流量限制不可编辑：整区盖一层灰蒙层并给出指引 */
+			if (!state.fupEnabled) {
+				quotaSec.appendChild(E('p', { 'class': 'ovd-warn' },
+					_('请先到设置页开启并配置“公平使用策略”。')));
+			}
+			quotaSec.appendChild(limitRowEd(LIMIT_ROWS[3]));
+			quotaSec.appendChild(limitRowEd(LIMIT_ROWS[4]));
 			if (!state.fupEnabled) {
 				[LIMIT_ROWS[3], LIMIT_ROWS[4]].forEach(function (row) {
 					var e = editInputs[row.k];
 					if (e && e.input) e.input.disabled = true;
 				});
-				quotaSec.style.position = 'relative';
-				quotaSec.appendChild(E('div', {
-					'style': 'position:absolute;inset:0;z-index:2;border-radius:8px;' +
-						'background:rgba(238,242,245,.86);display:flex;align-items:center;justify-content:center;' +
-						'text-align:center;padding:16px;font-size:12.5px;line-height:1.7;color:#5a6672'
-				}, _('请在设置页开启「公平使用策略」后再编辑流量限制')));
 			}
 			edBody.appendChild(timeSec);
 			edBody.appendChild(speedSec);
@@ -1080,7 +1144,7 @@ return view.extend({
 				dtlRow(_('主机名'), row.host || '—'),
 				dtlRow(_('IP 地址'), row.ip || '—', true),
 				dtlRow(_('MAC 地址'), row.mac, true),
-				dtlRow(_('接入点'), apName(row.iface)),
+				dtlRow(_('接入点'), clientAp(row)),
 				dtlRow(_('认证状态'), auth)
 			]));
 			dtlBody.appendChild(dtlSec(_('时间与超时'), [
@@ -1181,6 +1245,9 @@ return view.extend({
 		body.appendChild(editMask);
 		body.appendChild(detailMask);
 
+		/* 先把骨架画出来（标题、卡片、空表格立刻可见），数据回来再填。
+		 * 之前整页要等两次后端请求才出现，看着像卡住了。 */
+		renderAllSafe();
 		refresh();
 
 		/* ---------- LuCI 框架底部按钮：本页只有运行控制，配置写入只走暂存 ---------- */

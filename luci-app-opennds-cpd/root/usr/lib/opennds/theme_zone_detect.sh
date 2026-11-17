@@ -11,6 +11,10 @@
 #   generate_splash_sequence() function defined by the portal script we
 #   source below. This dispatcher therefore:
 #
+#   0. If the client MAC is in the plugin blacklist (opennds blockedmac), it is
+#      served /usr/lib/opennds/cpd/blacklist/<selected portal> (fallback
+#      cpd/default/blacklist/default.sh) instead of a zone portal, so it never
+#      gets the zone portal's authenticate button and stays offline.
 #   1. Uses get_client_interface.sh to find the local interface the client
 #      is connected to (by client MAC).
 #   2. If the interface is a local wireless interface (found in "iw dev"),
@@ -223,7 +227,35 @@ if [ -z "$zone_type" ]; then
 	fi
 fi
 
+# ---- Blacklist ------------------------------------------------------------
+# openNDS 9.4 起废弃了 macmechanism/allowedmaclist/blockedmaclist，主进程不再
+# 自己拦 MAC。本插件的黑名单存在 opennds 的 blockedmac 列表里，由这里执行：
+# 命中名单的客户端不出示区域门户（区域门户里的"继续"按钮会调 ndsctl auth），
+# 只出示黑名单门户，于是它一直停在上不了网的状态，直到从名单里移除。
+blportal=""
+if [ ! -z "$clientmac" ]; then
+	for bmac in $(uci -q get opennds.@opennds[0].blockedmac 2>/dev/null); do
+		[ ! -z "$bmac" ] || continue
+		if [ "$(mac_upper "$bmac")" = "$(mac_upper "$clientmac")" ]; then
+			bname=$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)
+			blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+			if [ -z "$blportal" ] && [ -f "$DEFAULT_ROOT/blacklist/default.sh" ]; then
+				blportal="$DEFAULT_ROOT/blacklist/default.sh"
+			fi
+			zone_type="blacklist"
+			zone_name=""
+			zone_debug "client $clientmac is blacklisted, portal=$blportal"
+			break
+		fi
+	done
+fi
+
 # ---- Portal resolution ----------------------------------------------------
+
+if [ "$zone_type" = "blacklist" ]; then
+	# 黑名单客户端的门户在上面的分支里已经定好，不再参与区域解析
+	portal="$blportal"
+else
 
 # A zone name is used as a directory name. An SSID is arbitrary octets, so it
 # may contain "/" or be "." / ".." -- both would escape the portal root.
@@ -265,6 +297,8 @@ if [ ! -z "$zone_name" ]; then
 else
 	# No zone name (unknown interface): type default only.
 	portal=$(type_default_portal "$zone_type")
+fi
+
 fi
 
 if [ ! -f "$portal" ]; then

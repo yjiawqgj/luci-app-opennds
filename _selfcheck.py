@@ -326,6 +326,37 @@ else:
     errors.append('缺少 view/opennds_cpd 目录')
 
 # ============================================================
+# 7b. 黑名单门户的三方契约（用户明确要求这一组功能必须在）
+#     openNDS 9.4 起主进程不再读 blockedmac，拦截靠分发脚本；
+#     前端选门户 → 后端扫/删/传 → 分发脚本按选中项出示页面，
+#     任何一环被删掉，黑名单就会变成"名单里有人但没人被拦"。
+# ============================================================
+_api = os.path.join(PKG, 'root', 'usr', 'lib', 'opennds', 'opennds-cpd-api.sh')
+_theme = os.path.join(PKG, 'root', 'usr', 'lib', 'opennds', 'theme_zone_detect.sh')
+_blj = os.path.join(VIEW_DIR, 'blacklist.js')
+if os.path.isfile(_api):
+    a = io.open(_api, encoding='utf-8').read()
+    for fn in ('bl_portals_scan', 'bl_portal_delete', 'bl_upload_begin', 'bl_upload_store'):
+        if not re.search(r'^%s\(\)' % fn, a, re.M):
+            errors.append('api.sh: 缺少 %s —— 黑名单门户的上传/删除/列表会失效' % fn)
+    if 'portal_blacklist' not in a:
+        errors.append('api.sh: 没读 zone_detect.main.portal_blacklist —— '
+                      '选中的门户存不住')
+if os.path.isfile(_theme):
+    t = io.open(_theme, encoding='utf-8').read()
+    if 'blockedmac' not in t:
+        errors.append('theme_zone_detect.sh: 没有 blockedmac 分支 —— '
+                      'openNDS 主进程不拦 MAC，这脚本不拦就等于黑名单不生效')
+    if 'portal_blacklist' not in t:
+        errors.append('theme_zone_detect.sh: 没读 portal_blacklist —— '
+                      '黑名单客户端拿不到本页选的门户')
+if os.path.isfile(_blj):
+    b = io.open(_blj, encoding='utf-8').read()
+    for pat in ('门户选择', 'portal_delete', 'portal_blacklist'):
+        if pat not in b:
+            errors.append('view/blacklist.js: 缺少「%s」—— 门户区块被删了' % pat)
+
+# ============================================================
 # 8. 后端：add_list/del_list 必须是单参数「键=值」
 #    （多参数写法在真机 uci 上直接打 usage 并以非 0 退出）
 # ============================================================
@@ -362,13 +393,13 @@ REMOVED = [
     'ov_set_themespec',
     # 预设 MAC —— 任何形态都不许出现
     'AA:BB:CC:DD:EE:FF', 'aa:bb:cc:dd:ee:ff', 'D8:3A:DD:41:6F:22',
-    # 黑名单自建配置 /etc/config/zone_blacklist（改用官方 opennds blockedmac；
-    # 唯一合法残留是 api.sh 里 bl_migrate_legacy 的一次性迁移，它只读 main.mac）
+    # 黑名单自建配置 /etc/config/zone_blacklist（第 58 轮起名单改存 opennds
+    # 的 blockedmac；门户选中项存插件自己的 zone_detect.main.portal_blacklist）。
+    # 唯一合法残留是 api.sh 里 bl_migrate_legacy 的一次性迁移，它只读 main.mac。
+    # 门户库目录 /usr/lib/opennds/cpd/blacklist/ 是正式功能，不在此列。
     'zone_blacklist.main.portal', "stageUci('zone_blacklist'", "'zone_blacklist', 'main'",
-    'bl_save_macs', 'bl_apply', 'bl_save_portal', 'bl_upload_store',
-    'bl_portal_delete', 'bl_portals_scan',
+    'bl_save_macs', 'bl_apply', 'bl_save_portal',
     'ZONE_ROOT_BLACKLIST', 'BLACKLIST_CONFIG',
-    'CPD_ROOT/blacklist', 'cpd/default/blacklist',
 ]
 for p in list(walk('.js')) + list(walk('.sh')):
     raw = io.open(p, encoding='utf-8').read()

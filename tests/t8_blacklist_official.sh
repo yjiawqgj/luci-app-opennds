@@ -69,10 +69,54 @@ ck "返回 ok" '"ok":1' "$out"
 [ -d "$MOCK_UCI_ROOT/opennds" ] &&
 	echo "  OK   opennds 节已补建" || { echo "  FAIL opennds 节没补建"; fail=1; }
 
-echo "== B6 blacklist 只有 status 子命令（门户 API 已删） =="
+echo "== B6 黑名单门户：列表 / 删除 / 选中保护 / 上传 =="
+BLD="$CPD_ROOT/blacklist"
+mkdir -p "$BLD/folder" "$BLD/notportal"
+printf '#!/bin/sh\n' >"$BLD/a.sh"
+printf '#!/bin/sh\n' >"$BLD/default.sh"
+printf '#!/bin/sh\n' >"$BLD/folder/theme.sh"
+printf '#!/bin/sh\n' >"$BLD/b.sh"
+
+out=$(call blacklist status)
+ck "门户列表含 .sh 门户" '"name":"a.sh","kind":"file"' "$out"
+ck "门户列表含文件夹门户" '"name":"folder","kind":"dir"' "$out"
+ck "返回门户目录" "\"dir\":\"$CPD_ROOT/blacklist\"" "$out"
+case "$out" in
+	*'"name":"default.sh"'*) echo "  FAIL 兜底 default.sh 不该列进门户列表"; fail=1 ;;
+	*) echo "  OK   兜底 default.sh 已跳过" ;;
+esac
+case "$out" in
+	*'"name":"notportal"'*) echo "  FAIL 没有 theme.sh 的文件夹不该算门户"; fail=1 ;;
+	*) echo "  OK   没有 theme.sh 的文件夹已跳过" ;;
+esac
+
+out=$(call blacklist portal_delete 'name=a.sh')
+ck "删除已上传门户" '"ok":1' "$out"
+[ -f "$BLD/a.sh" ] && { echo "  FAIL a.sh 没被删掉"; fail=1; } || echo "  OK   a.sh 已删除"
+
+uci set zone_detect.main.portal_blacklist=b.sh 2>/dev/null
+out=$(call blacklist portal_delete 'name=b.sh')
+ck "选中中的门户拒绝删除" '正在使用中' "$out"
+[ -f "$BLD/b.sh" ] && echo "  OK   选中中的门户文件保留" || { echo "  FAIL b.sh 被删了"; fail=1; }
+
+out=$(call blacklist portal_delete 'name=default.sh')
+ck "兜底 default.sh 不能删" '不能删除' "$out"
+
+out=$(call blacklist upload_begin t9u1)
+ck "上传会话建立" '"ok":1' "$out"
+mkdir -p "$ZONE_UP/t9u1"
+printf '#!/bin/sh\n# portal\n' >"$ZONE_UP/t9u1/new.sh"
+out=$(call blacklist upload_store t9u1 new.sh)
+ck "上传落盘" '"ok":1' "$out"
+[ -f "$BLD/new.sh" ] && echo "  OK   new.sh 已进入门户库" || { echo "  FAIL new.sh 没落盘"; fail=1; }
+
+out=$(call blacklist upload_begin t9u2)
+mkdir -p "$ZONE_UP/t9u2"
+printf '#!/bin/sh\n' >"$ZONE_UP/t9u2/default.sh"
+out=$(call blacklist upload_store t9u2 default.sh)
+ck "拒绝上传 default.sh" '不能上传名为 default.sh' "$out"
+
 out=$(call blacklist save_macs add=aa:bb:cc:dd:ee:09)
-ck "save_macs 已不存在" '"ok":0' "$out"
-out=$(call blacklist save_portal portal=x)
-ck "save_portal 已不存在" '"ok":0' "$out"
+ck "旧 save_macs 已不存在" '"ok":0' "$out"
 
 done_report

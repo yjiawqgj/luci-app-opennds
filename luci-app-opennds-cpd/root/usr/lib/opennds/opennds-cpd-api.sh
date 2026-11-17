@@ -354,12 +354,13 @@ in_c {
 	s = $0
 	sub(/^[ \t]+/, "", s)
 	sub(/,[ \t]*$/, "", s)
-	if (match(s, /^"[a-zA-Z_0-9]+":".*"$/)) {
+	if (match(s, /^"[a-zA-Z_0-9]+"[ \t]*:[ \t]*".*"$/)) {
 		kv = substr(s, RSTART, RLENGTH)
-		kv = substr(kv, 2)
-		i = index(kv, "\":\"")
-		k = substr(kv, 1, i - 1)
-		v = substr(kv, i + 3)
+		sub(/^"/, "", kv)
+		i = index(kv, "\"")
+		k = (i > 0) ? substr(kv, 1, i - 1) : ""
+		v = (i > 0) ? substr(kv, i + 1) : ""
+		sub(/^[ \t]*:[ \t]*"/, "", v)
 		sub(/"$/, "", v)
 		if (k == "state") st[cur] = v
 		else if (k == "ip") ip[cur] = v
@@ -557,25 +558,28 @@ guard_enable() { # 返回 0=可继续；返回 1=已输出 need_confirm 应答
 # ============================================================
 
 # 读三份名单，归一为小写合法 MAC 集合：BL_MACS / TR_MACS / PM_MACS 与原始 PM_LIST
-ov_load_lists() {
+ov_load_lists() { # 读三份名单（小写集合）：BL_MACS / TR_MACS / PM_MACS，原始条目 PM_LIST
 	local v
 	PM_LIST=$(list_of 'opennds.@opennds[0].preemptivemac')
 
-	TR_MACS=""
-	for v in $(list_of 'opennds.@opennds[0].trustedmac'); do
-		mac_valid "$v" || continue
-		TR_MACS="$TR_MACS $(mac_lower "$v")"
-	done
-	TR_MACS=" $TR_MACS "
-
 	BL_MACS=""
-	# 黑名单 MAC 存 /etc/config/opennds（openNDS 官方 MAC 黑名单：blockedmac），
-	# 插件不再有独立配置文件
 	for v in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		mac_valid "$v" || continue # 空值等脏数据过滤掉
 		BL_MACS="$BL_MACS $(mac_lower "$v")"
 	done
 	BL_MACS=" $BL_MACS "
+
+	# 一个客户端只能属于一个名单：黑名单优先。
+	# openNDS 官方机制里 BlockedMAC 的报文在防火墙层直接丢弃，比 trusted 更靠前，
+	# 所以 MAC 一旦在黑名单里，就不再算可信任 / 免认证 —— 页面显示与运行时一致。
+	# 配置里已经写重复的（旧版本或手改留下），由启动/应用后的 sys_dedup_lists 清掉。
+	TR_MACS=""
+	for v in $(list_of 'opennds.@opennds[0].trustedmac'); do
+		mac_valid "$v" || continue
+		mac_in_bl "$(mac_lower "$v")" && continue
+		TR_MACS="$TR_MACS $(mac_lower "$v")"
+	done
+	TR_MACS=" $TR_MACS "
 
 	PM_MACS=""
 	for v in $PM_LIST; do
@@ -583,11 +587,76 @@ ov_load_lists() {
 			mac=*)
 				v="${v#mac=}"
 				v="${v%%;*}"
-				mac_valid "$v" && PM_MACS="$PM_MACS $(mac_lower "$v")"
+				mac_valid "$v" || continue
+				v=$(mac_lower "$v")
+				mac_in_bl "$v" && continue
+				PM_MACS="$PM_MACS $v"
 				;;
 		esac
 	done
 	PM_MACS=" $PM_MACS "
+}
+
+# 黑名单 / 信任 / 免认证三份名单互斥（黑名单 > 可信任 > 免认证）：
+# 启动与应用后各跑一次，把配置里真实存在的重复条目删掉（只动重复项，其余不碰）。
+# 这一步保证用户设备上历史遗留的"同时出现在两个名单里"会被自动修正。
+sys_dedup_lists() {
+	local osc v lm e changed=0
+	uci -q show 'opennds.@opennds[0]' >/dev/null 2>&1 || return 0
+	osc='@opennds[0]'
+
+	local bl=' '
+	for v in $(list_of 'opennds.@opennds[0].blockedmac'); do
+		mac_valid "$v" && bl="$bl$(mac_lower "$v") "
+	done
+
+	# ① 黑名单里有的，从 trustedmac 摘掉
+	for v in $(list_of 'opennds.@opennds[0].trustedmac'); do
+		mac_valid "$v" || continue
+		lm=$(mac_lower "$v")
+		case "$bl" in
+			*" $lm "*) uci del_list "opennds.$osc.trustedmac=$v" 2>/dev/null && changed=1 ;;
+		esac
+	done
+
+	# ② 黑名单里有的，从 preemptivemac 摘掉（并清掉预认证队列，免得下一轮又自动登录）
+	local pm
+	pm=$(list_of 'opennds.@opennds[0].preemptivemac')
+	for e in $pm; do
+		lm=$(printf '%s' "$e" | sed -n 's/^mac=//p' | cut -d';' -f1)
+		mac_valid "$lm" || continue
+		lm=$(mac_lower "$lm")
+		case "$bl" in
+			*" $lm "*) uci del_list "opennds.$osc.preemptivemac=$e" 2>/dev/null || continue
+				remove_preauth_queue "$lm"
+				changed=1
+				;;
+		esac
+	done
+
+	# ③ 可信任与免认证同时存在的：保留可信任（权限更大），摘免认证
+	local tr=' ' v2
+	for v2 in $(list_of "opennds.$osc.trustedmac"); do
+		mac_valid "$v2" && tr="$tr$(mac_lower "$v2") "
+	done
+	pm=$(list_of "opennds.$osc.preemptivemac")
+	for e in $pm; do
+		lm=$(printf '%s' "$e" | sed -n 's/^mac=//p' | cut -d';' -f1)
+		mac_valid "$lm" || continue
+		lm=$(mac_lower "$lm")
+		case "$tr" in
+			*" $lm "*) uci del_list "opennds.$osc.preemptivemac=$e" 2>/dev/null || continue
+				remove_preauth_queue "$lm"
+				changed=1
+				;;
+		esac
+	done
+
+	[ "$changed" = '1' ] || return 0
+	if uci commit opennds 2>/dev/null; then
+		log '已清理重复名单条目：同一 MAC 只保留一个身份（黑名单 > 可信任 > 免认证）'
+	fi
+	return 0
 }
 
 mac_in_bl() {
@@ -654,8 +723,12 @@ ov_limits_json() {
 	int_valid "$uq" || uq=0
 	int_valid "$dq" || dq=0
 	local fup_u fup_d
-	fup_u=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
-	fup_d=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
+	fup_u="$CPD_FUP_U"
+	fup_d="$CPD_FUP_D"
+	if [ -z "$fup_u$fup_d" ]; then
+		fup_u=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
+		fup_d=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
+	fi
 	int_valid "$fup_u" || fup_u=0
 	int_valid "$fup_d" || fup_d=0
 
@@ -689,16 +762,104 @@ dhcp_leases_file() {
 	return 0
 }
 
-ov_host_for() { # $1=小写 mac（租约是小写）
-	# dnsmasq 租约行格式：<到期时间> <MAC> <IP> <主机名> <clientid>，取第 4 段
-	awk -v m="$1" 'tolower($2) == m && $4 != "" && $4 != "*" {print $4; exit}' \
+# 租约一次性读成 "mac<TAB>主机名"（小写 MAC）；下面查表就不再 fork
+ov_lease_map() {
+	awk 'NF >= 4 { h = $4; if (h == "" || h == "*") next; print tolower($2) "\t" h }' \
 		"$(dhcp_leases_file)" 2>/dev/null
 }
 
-# 客户端行；$1=state $2=ip $3=iface(首段) $4=小写mac $5=dl_kb $6=ul_kb $7=ss $8=se
+ov_host_for() { # $1=小写 mac（租约是小写）
+	local m="$1" k v h=''
+	if [ -n "$CPD_LEASE_MAP" ]; then
+		while IFS='	' read -r k v; do
+			[ "$k" = "$m" ] && { h="$v"; break; }
+		done <<EOF2
+$CPD_LEASE_MAP
+EOF2
+		printf '%s' "$h"
+		return 0
+	fi
+	# 兜底：没有预读表时现查文件（dnsmasq 行：到期时间 MAC IP 主机名 clientid）
+	awk -v m="$m" 'tolower($2) == m && $4 != "" && $4 != "*" {print $4; exit}' \
+		"$(dhcp_leases_file)" 2>/dev/null
+}
+
+# ARP/邻居表兜底取 IP：openNDS 的 trusted 客户端不一定带着 ip 字段回来，
+# 只看 ndsctl 会让"可信任客户端在线却没 IP"。同网段设备的邻居表一定有它。
+neigh_ip_for() { # $1=小写 mac
+	ip -4 neigh show 2>/dev/null |
+		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m {print $1; exit}'
+}
+
+# network.wireless status（ubus）→ "section<TAB>ifname" 行。
+# 这是 OpenWrt 运行时最权威的映射：uci 里配的是 section，真正跑起来的接口名
+# （phyN-apM）只有 netifd 知道。之前只靠 iw 反查，机器上没装 iw 时全部为空，
+# 无线接入点卡片就会一直显示 0。
+ws_iface_map() {
+	[ -n "$1" ] || return 0
+	printf '%s\n' "$1" | awk '
+	function flush() {
+		if (depth == 1 && sec != "") printf "%s\t%s\n", sec, ifn
+		sec = ""; ifn = ""
+	}
+	/"interfaces"[ \t]*:[ \t]*\[/ { in_if = 1; depth = 0; sec = ""; ifn = ""; next }
+	!in_if { next }
+	/^[ \t]*\{[ \t]*$/ { depth++; next }
+	/^[ \t]*\}[ \t]*,?[ \t]*$/ { if (depth > 0) { if (depth == 1) flush(); depth-- } next }
+	depth == 1 && /"section"[ \t]*:/ {
+		s = $0; sub(/.*"section"[ \t]*:[ \t]*"/, "", s); sub(/".*/, "", s); sec = s; next
+	}
+	depth == 1 && /"ifname"[ \t]*:/ {
+		v = $0; sub(/.*"ifname"[ \t]*:[ \t]*"/, "", v); sub(/".*/, "", v); ifn = v; next
+	}
+	'
+}
+
+# 当前启用的 AP 列表：AP_META 每行 iface<TAB>ssid<TAB>section
+ov_ap_meta() {
+	local secids sec mode dis dev ssid ifn idx
+	AP_META=''
+	secids=$(uci show wireless 2>/dev/null |
+		awk -F'[.=]' '/^wireless\..+=wifi-iface$/ {print $2}')
+	for sec in $secids; do
+		mode=$(uci -q get "wireless.$sec.mode" 2>/dev/null)
+		[ "$mode" = 'ap' ] || continue
+		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
+		[ "$dis" = '1' ] && continue
+		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
+		if [ -n "$dev" ]; then
+			wifi_radio_off "$dev" && continue
+		fi
+		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
+		ifn=$(printf '%s\n' "$AP_MAP" | awk -F'\t' -v s="$sec" '$1 == s {print $2; exit}')
+		if [ -z "$ifn" ]; then
+			idx=$(ap_section_index "$sec" "$dev")
+			ifn=$(ap_runtime_if "$dev" "$ssid" "$idx")
+		fi
+		# 空字段同样用 - 占位：read 会吞掉连续的 tab
+		[ -z "$ifn" ] && ifn='-'
+		[ -z "$ssid" ] && ssid='-'
+		AP_META="$AP_META$ifn	$ssid	$sec
+"
+	done
+}
+
+# 运行时接口名 → SSID（客户端列表「接入点」一列显示 SSID，不显示 phyN-apM）
+iface_ssid() { # $1=接口名
+	local i s r
+	[ -n "$1" ] || return 0
+	while IFS='	' read -r i s r; do
+		[ "$i" = "$1" ] && [ "$s" != '-' ] && [ -n "$s" ] && { printf '%s' "$s"; return 0; }
+	done <<EOF2
+$AP_META
+EOF2
+}
+
+# 客户端行；$1=state $2=ip $3=iface $4=mac $5=dl_kb $6=ul_kb $7=ss $8=se $9=online(0/1)
 ov_client_row() {
 	local state="$1" ip="$2" cif="$3" lm="$4" dkb="$5" ukb="$6" ss="$7" se="$8"
-	local host up down auth pre trst blk joined expires lim
+	local onl="${9:-1}"
+	local host ssidv up down auth pre trst blk joined expires lim authorized
 	host=$(ov_host_for "$lm")
 	dkb="${dkb:-0}"
 	ukb="${ukb:-0}"
@@ -706,6 +867,9 @@ ov_client_row() {
 	case "$ukb" in '' | null | *[!0-9]*) ukb=0 ;; esac
 	up=$((ukb * 1024))
 	down=$((dkb * 1024))
+	# openNDS 对 trusted 客户端不一定填 ip；用邻居表补，别让"在线却没 IP"
+	[ -z "$ip" ] && ip=$(neigh_ip_for "$lm")
+	ssidv=$(iface_ssid "$cif")
 
 	auth=false
 	pre=false
@@ -720,133 +884,34 @@ ov_client_row() {
 	# trusted 是独立状态，不算 authenticated
 	[ "$trst" = 'true' ] && auth=false
 
-	joined=$(fmt_time "$ss")
-	expires=$(fmt_time "$se")
-	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
-
-	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"limits":%s}' \
-		"$(json_escape "$host")" "$(json_escape "$ip")" "$(json_escape "$lm")" \
-		"$(json_escape "$cif")" "$(json_escape "$expires")" "$(json_escape "$joined")" \
-		"$(uci_val 'opennds.@opennds[0].authidletimeout' '120')" \
-		"$up" "$down" "$auth" "$pre" "$trst" "$blk" "$lim"
-}
-
-ov_clients() {
-	local running enabled parsed rows="" n=0 sep=""
-	enabled=$(nds_enabled)
-	running=0
-	nds_running && running=1
-
-	ov_load_lists
-
-	local in_lines lm mac state ip cif dkb ukb ss se
-	if [ "$running" = '1' ]; then
-		parsed=$(parse_clients)
-		# 在线行
-		in_lines=$(printf '%s\n' "$parsed" | awk -F'\t' '
-			$1 == "S" {
-				cif = $5; sub(/ .*/, "", cif)
-				print $2 "\t" $3 "\t" $4 "\t" cif "\t" $9 "\t" $10 "\t" $6 "\t" $7
-			}')
-		# 在线小写集合（补行去重用）
-		ONLINE_LOWER=$(printf '%s\n' "$in_lines" |
-			awk -F'\t' '{print tolower($1)}' | sort -u)
-		while IFS='	' read -r mac state ip cif dkb ukb ss se; do
-			[ -n "$mac" ] || continue
-			lm=$(mac_lower "$mac")
-			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se")"
-			sep=','
-			n=$((n + 1))
-		done <<EOF2
-$in_lines
-EOF2
-	fi
-
-	# 名单补行：trusted / preemptivemac / 黑名单（blockedmac）里不在线的 MAC
-	local supp
-	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS | sort -u | grep -v '^$')
-	for lm in $supp; do
-		printf '%s\n' "$ONLINE_LOWER" | grep -qx "$lm" && continue
-		state=''
-		mac_in_tr "$lm" && state='Trusted'
-		rows="$rows$sep$(ov_client_row "$state" '' '' "$lm" 0 0 '' '')"
-		sep=','
-		n=$((n + 1))
-	done
-
-	printf '{"ok":1,"running":%s,"enabled":%s,"clients":[%s],"count":%s}\n' \
-		"$running" "$enabled" "$rows" "$n"
-}
-
-ov_client_detail() { # $1=mac
-	local mac="$1"
-	mac_valid "$mac" || out_err 'MAC 格式不正确'
-	local lm running parsed srow
-	lm=$(mac_lower "$mac")
-	running=0
-	nds_running && running=1
-	ov_load_lists
-
-	local state='' ip='' cif='' dkb=0 ukb=0 ss='' se='' la=''
-	local drt='' urt='' dq='' uq='' davg='' uavg='' cty='' custom=''
-	if [ "$running" = '1' ]; then
-		parsed=$(parse_clients)
-		srow=$(printf '%s\n' "$parsed" | awk -F'\t' -v m="$lm" '
-			$1 == "S" && tolower($2) == m {print; exit}')
-		if [ -n "$srow" ]; then
-			state=$(printf '%s\n' "$srow" | cut -f3)
-			ip=$(printf '%s\n' "$srow" | cut -f4)
-			cif=$(printf '%s\n' "$srow" | cut -f5)
-			cif="${cif%% *}"
-			ss=$(printf '%s\n' "$srow" | cut -f6)
-			se=$(printf '%s\n' "$srow" | cut -f7)
-			la=$(printf '%s\n' "$srow" | cut -f8)
-			dkb=$(printf '%s\n' "$srow" | cut -f9)
-			ukb=$(printf '%s\n' "$srow" | cut -f10)
-			davg=$(printf '%s\n' "$srow" | cut -f11)
-			uavg=$(printf '%s\n' "$srow" | cut -f12)
-			cty=$(printf '%s\n' "$srow" | cut -f13)
-			drt=$(printf '%s\n' "$srow" | cut -f14)
-			urt=$(printf '%s\n' "$srow" | cut -f15)
-			dq=$(printf '%s\n' "$srow" | cut -f16)
-			uq=$(printf '%s\n' "$srow" | cut -f17)
-			custom=$(printf '%s\n' "$srow" | cut -f18)
+	# authorized = 有访问权限（已认证 / 可信任 / 免认证已登录），黑名单一律不算
+	authorized=false
+	if [ "$blk" != 'true' ]; then
+		if [ "$auth" = 'true' ] || [ "$trst" = 'true' ]; then
+			authorized=true
 		fi
 	fi
-	case "$custom" in
-		'') custom='none' ;;
-	esac
+	[ "$blk" = 'true' ] && authorized=false
 
-	local auth=false pre=false trst=false blk=false
-	case "$state" in
-		Authenticated | AuthBlocked) auth=true ;;
-	esac
-	mac_in_pm "$lm" && pre=true
-	mac_in_tr "$lm" && trst=true
-	mac_in_bl "$lm" && blk=true
-	[ "$trst" = 'true' ] && auth=false
-
-	local lim joined expires
-	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
 	joined=$(fmt_time "$ss")
 	expires=$(fmt_time "$se")
+	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
 
-	printf '{"ok":1,"mac":"%s","state":"%s","clientType":"%s","ip":"%s","iface":"%s","host":"%s","joined":"%s","expires":"%s","lastActive":"%s","authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"limits":%s,"actual":{"downloadRate":"%s","uploadRate":"%s","downloadQuota":"%s","uploadQuota":"%s","downloadAvg":"%s","uploadAvg":"%s"},"custom":"%s"}\n' \
-		"$(json_escape "$mac")" "$(json_escape "$state")" "$(json_escape "$cty")" \
-		"$(json_escape "$ip")" "$(json_escape "$cif")" \
-		"$(json_escape "$(ov_host_for "$lm")")" \
-		"$(json_escape "$joined")" "$(json_escape "$expires")" \
-		"$(json_escape "$(fmt_time "$la")")" \
-		"$auth" "$pre" "$trst" "$blk" "$lim" \
-		"$drt" "$urt" "$dq" "$uq" \
-		"$(json_escape "$davg")" "$(json_escape "$uavg")" \
-		"$(json_escape "$custom")"
+	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"limits":%s}' \
+		"$(json_escape "$host")" "$(json_escape "$ip")" "$(json_escape "$lm")" \
+		"$(json_escape "$cif")" "$(json_escape "$ssidv")" \
+		"$(json_escape "$expires")" "$(json_escape "$joined")" \
+		"${CPD_AUTHIDLE:-120}" \
+		"$up" "$down" "$auth" "$pre" "$trst" "$blk" \
+		"$( [ "$onl" = '1' ] && printf 'true' || printf 'false' )" \
+		"$authorized" "$lim"
 }
 
-ov_status() {
-	local running enabled engaged busy scope conf_err=''
-	# 配置文件存在但解析不了时，uci 的读与写都会失败：
-	# 这种情况必须在页面上直说，否则用户只会看到「可信任客户端没了」+「暂存失败」
+# 一次构建仪表盘全部数据：CPD_IN / ROWS_JSON / COUNTS_* / APS_JSON
+# 之前 status 与 clients 是两个请求、各解析一次 ndsctl、各跑一遍 uci，
+# 页面切进来要等两次串行往返；合并成一次后首屏明显更快。
+ov_build() {
+	local running enabled engaged busy scope='' conf_err=''
 	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
 		conf_err=$(uci show opennds 2>&1 >/dev/null)
 	fi
@@ -856,102 +921,185 @@ ov_status() {
 	scope=$(uci_val 'zone_detect.main.session_scope' 'default')
 	running=0
 	nds_running && running=1
+	CPD_RUNNING="$running"
+	CPD_ENABLED="$enabled"
+	CPD_ENGAGED="$engaged"
+	CPD_BUSY="$busy"
+	CPD_SCOPE="$scope"
+	CPD_CONFERR="$conf_err"
+
 	ov_load_lists
+	# 预读：租约表 / 空闲超时 / FUP 速率（每个客户端再查就太慢了）
+	CPD_LEASE_MAP=$(ov_lease_map)
+	CPD_AUTHIDLE=$(uci_val 'opennds.@opennds[0].authidletimeout' '120')
+	CPD_FUP_U=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
+	CPD_FUP_D=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
+	CPD_WS=''
+	if command -v ubus >/dev/null 2>&1; then
+		CPD_WS=$(ubus call network.wireless status 2>/dev/null)
+	fi
+	AP_MAP=$(ws_iface_map "$CPD_WS")
+	ov_ap_meta
 
-	local n_bl=0 lm
-	for lm in $BL_MACS; do
-		n_bl=$((n_bl + 1))
-	done
-
-	local n_online=0 n_auth=0 n_pre=0 n_tr=0 n_un=0
-	local CLIENT_LINES='' in_lines mac state cif
+	CPD_PARSED=''
+	CPD_IN=''
+	ONLINE_LOWER=''
 	if [ "$running" = '1' ]; then
-		in_lines=$(parse_clients | awk -F'\t' '
+		CPD_PARSED=$(parse_clients)
+		# 空值一律写成 -：POSIX read 把 IFS 里的 tab 当空白，连续两个 tab
+		# 会被并成一个，空字段直接消失，后面所有字段整体左移（trusted 客户端
+		# 的 ip 就是空串，会把 clientif 读成 ip、把流量读成接口名）。
+		CPD_IN=$(printf '%s\n' "$CPD_PARSED" | awk -F'\t' '
+			function S(v) { return (v == "") ? "-" : v }
 			$1 == "S" {
 				cif = $5; sub(/ .*/, "", cif)
-				print tolower($2) "\t" $3 "\t" cif
+				print S($2) "\t" S($3) "\t" S($4) "\t" S(cif) "\t" S($9) "\t" S($10) "\t" S($6) "\t" S($7)
 			}')
-		while IFS='	' read -r lm state cif; do
-			[ -n "$lm" ] || continue
-			mac_in_bl "$lm" && continue # 黑名单从在线剔除
-			n_online=$((n_online + 1))
-			if [ "$state" = 'Trusted' ]; then
-				n_tr=$((n_tr + 1))
-			elif mac_in_pm "$lm" &&
-				{ [ "$state" = 'Authenticated' ] || [ "$state" = 'AuthBlocked' ]; }; then
-				n_pre=$((n_pre + 1))
-			elif [ "$state" = 'Authenticated' ] || [ "$state" = 'AuthBlocked' ]; then
-				n_auth=$((n_auth + 1))
-			else
-				n_un=$((n_un + 1))
-			fi
-		done <<EOF2
-$in_lines
-EOF2
-		CLIENT_LINES="$in_lines"
-	else
-		# openNDS 未运行：在线数保持 0，但名单里配置的客户端仍要计入统计
-		# （可信任客户端不受服务是否运行影响，界面照常可见）
-		local m2 pe2
-		for m2 in $TR_MACS; do
-			[ -n "$m2" ] && n_tr=$((n_tr + 1))
-		done
-		pe2=$(uci_val 'opennds.@opennds[0].allow_preemptive_authentication' '1')
-		if [ "$pe2" != '0' ]; then
-			for m2 in $PM_MACS; do
-				[ -n "$m2" ] && n_pre=$((n_pre + 1))
-			done
-		fi
+		ONLINE_LOWER=$(printf '%s\n' "$CPD_IN" | awk -F'\t' 'NF {print tolower($1)}' | sort -u)
 	fi
 
-	# 可信任客户端以配置里的 trustedmac 为准：在线的照常算，离线的不漏
-	local tr_cfg=0 m2c
-	for m2c in $TR_MACS; do
-		[ -n "$m2c" ] && tr_cfg=$((tr_cfg + 1))
-	done
-	[ "$tr_cfg" -gt "$n_tr" ] && n_tr="$tr_cfg"
+	ov_rows
+	ov_counts
+	ov_aps
+}
 
-	# 管理接口与 IP
+ov_rows() {
+	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0
+	if [ "$CPD_RUNNING" = '1' ]; then
+		while IFS='	' read -r mac state ip cif dkb ukb ss se; do
+			[ -n "$mac" ] || continue
+			# 还原占位符（见 ov_build 里的 S()）
+			[ "$ip" = '-' ] && ip=''
+			[ "$cif" = '-' ] && cif=''
+			[ "$ss" = '-' ] && ss=''
+			[ "$se" = '-' ] && se=''
+			lm=$(mac_lower "$mac")
+			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" 1)"
+			sep=','
+			n=$((n + 1))
+		done <<EOF2
+$CPD_IN
+EOF2
+	fi
+
+	# 名单补行：trusted / preemptivemac / blockedmac 里不在线的 MAC
+	local supp
+	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS | sort -u | grep -v '^$')
+	for lm in $supp; do
+		printf '%s\n' "$ONLINE_LOWER" | grep -qx "$lm" && continue
+		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0)"
+		sep=','
+		n=$((n + 1))
+	done
+	ROWS_JSON="$rows"
+	N_ROWS="$n"
+}
+
+# 统计口径：在线 = 有访问权限的在线客户端（已认证 / 免认证已登录 / 可信任），
+# 未认证单独算一类。计数与列表用同一组标记（online / authorized），
+# 不会出现"卡片 2 个、点开只有 1 个"的对不上。
+ov_counts() {
+	local lm st cif
+	N_ONLINE=0
+	N_AUTH=0
+	N_PRE=0
+	N_TR=0
+	N_UN=0
+	while IFS='	' read -r lm st cif; do
+		[ -n "$lm" ] || continue
+		mac_in_bl "$lm" && continue # 黑名单从在线里剔除
+		case "$st" in
+			Trusted)
+				N_TR=$((N_TR + 1))
+				N_ONLINE=$((N_ONLINE + 1))
+				continue
+				;;
+			Authenticated | AuthBlocked) ;;
+			*)
+				N_UN=$((N_UN + 1)) # Preauthenticated：还没通过认证，不算在线
+				continue
+				;;
+		esac
+		if mac_in_pm "$lm"; then
+			N_PRE=$((N_PRE + 1))
+		else
+			N_AUTH=$((N_AUTH + 1))
+		fi
+		N_ONLINE=$((N_ONLINE + 1))
+	done <<EOF2
+$CPD_IN
+EOF2
+
+	# 可信任以配置为准（在线的照常算，离线的不漏）
+	local m2 tr_cfg=0
+	for m2 in $TR_MACS; do
+		[ -n "$m2" ] && tr_cfg=$((tr_cfg + 1))
+	done
+	[ "$tr_cfg" -gt "$N_TR" ] && N_TR="$tr_cfg"
+
+	N_BL=0
+	for m2 in $BL_MACS; do
+		[ -n "$m2" ] && N_BL=$((N_BL + 1))
+	done
+}
+
+ov_aps() {
+	local ifn ssid sec cnt lm cif e sep=''
+	APS_JSON=''
+	while IFS='	' read -r ifn ssid sec; do
+		[ "$ifn" = '-' ] && ifn=''
+		[ "$ssid" = '-' ] && ssid=''
+		[ -n "$ssid$sec" ] || continue
+		cnt=0
+		if [ "$CPD_RUNNING" = '1' ] && [ -n "$ifn" ]; then
+			# CPD_IN 列序：mac state ip cif dl ul ss se —— cif 是第 4 列，
+			# read 少写一个变量就会把它读成 ip，接口计数永远是 0
+			while IFS='	' read -r lm st ip cif rest; do
+				[ -n "$lm" ] || continue
+				[ "$cif" = '-' ] && cif=''
+				[ "$cif" = "$ifn" ] || continue
+				mac_in_bl "$lm" && continue # 只数未拉黑客户端
+				cnt=$((cnt + 1))
+			done <<EOF2
+$CPD_IN
+EOF2
+		fi
+		APS_JSON="$APS_JSON$sep{\"iface\":\"$(json_escape "$ifn")\",\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"count\":$cnt}"
+		sep=','
+	done <<EOF2
+$AP_META
+EOF2
+}
+
+ov_status_fields() { # 输出 status 的 JSON 片段（不含外层花括号）
 	local mif mip=''
 	mif=$(managed_iface)
 	[ -n "$mif" ] && mip=$(iface_ip "$mif")
-
-	# AP 卡片：只列真正启用的 AP（接口 disabled=1 或所属 radio disabled=1 都不算）
-	local aps='' secids sec dev mode dis ssid idx apif sep cnt tlm tst cif0 rd
-	secids=$(uci show wireless 2>/dev/null |
-		awk -F'[.=]' '/^wireless\..+=wifi-iface$/ {print $2}')
-	for sec in $secids; do
-		mode=$(uci -q get "wireless.$sec.mode" 2>/dev/null)
-		[ "$mode" = 'ap' ] || continue
-		dis=$(uci -q get "wireless.$sec.disabled" 2>/dev/null)
-		[ "$dis" = '1' ] && continue
-		dev=$(uci -q get "wireless.$sec.device" 2>/dev/null)
-		if [ -n "$dev" ]; then
-			wifi_radio_off "$dev" && continue
-		fi
-		ssid=$(uci -q get "wireless.$sec.ssid" 2>/dev/null)
-		idx=$(ap_section_index "$sec" "$dev")
-		apif=$(ap_runtime_if "$dev" "$ssid" "$idx")
-		cnt=0
-		if [ "$running" = '1' ] && [ -n "$apif" ]; then
-			while IFS='	' read -r tlm tst cif0; do
-				[ "$cif0" = "$apif" ] || continue
-				mac_in_bl "$tlm" && continue # 只数未拉黑客户端
-				cnt=$((cnt + 1))
-			done <<EOF2
-$CLIENT_LINES
-EOF2
-		fi
-		aps="$aps$sep{\"iface\":\"$(json_escape "$apif")\",\"ssid\":\"$(json_escape "$ssid")\",\"count\":$cnt}"
-		sep=','
-	done
-
-	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
-		"$running" "$enabled" "$engaged" "$busy" "$(fup_enabled_val)" "$(json_escape "$scope")" \
-		"$(json_escape "$conf_err")" \
-		"$n_online" "$n_auth" "$n_pre" "$n_tr" "$n_un" "$n_bl" \
+	printf '"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
+		"$CPD_RUNNING" "$CPD_ENABLED" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
+		"$(json_escape "$CPD_SCOPE")" "$(json_escape "$CPD_CONFERR")" \
+		"$N_ONLINE" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
-		"$(json_escape "$mif")" "$(json_escape "$mip")" "$aps"
+		"$(json_escape "$mif")" "$(json_escape "$mip")" \
+		"[${APS_JSON}]"
+}
+
+ov_status() {
+	ov_build
+	printf '{"ok":1,%s}\n' "$(ov_status_fields)"
+}
+
+ov_clients() {
+	ov_build
+	printf '{"ok":1,"running":%s,"enabled":%s,"clients":[%s],"count":%s}\n' \
+		"$CPD_RUNNING" "$CPD_ENABLED" "$ROWS_JSON" "$N_ROWS"
+}
+
+# 概览页首屏只发这一个请求：状态 + 客户端列表一次给全
+ov_dashboard() {
+	ov_build
+	printf '{"ok":1,%s,"clients":[%s],"count":%s}\n' \
+		"$(ov_status_fields)" "$ROWS_JSON" "$N_ROWS"
 }
 
 ov_run_state() {
@@ -2149,7 +2297,7 @@ ex_zone_for() { # $1=运行时接口名（可空）
 }
 
 ex_status() {
-	local enabled tlist pentries t p pe
+	local enabled tlist pentries t p pe b
 	enabled=$(nds_enabled)
 	pe=$(uci_val 'opennds.@opennds[0].allow_preemptive_authentication' '1')
 	tlist=$(list_of 'opennds.@opennds[0].trustedmac')
@@ -2165,8 +2313,16 @@ ex_status() {
 		pjson="$pjson$sep\"$(json_escape "$p")\""
 		sep=','
 	done
-	printf '{"ok":1,"enabled":%s,"trusted":[%s],"preempt":[%s],"preempt_enabled":%s}\n' \
-		"$enabled" "$tjson" "$pjson" "$pe"
+	# 黑名单一起返回：前端在应用前做"一个客户端只属于一个名单"的校验
+	local blist bjson='' bsep=''
+	blist=$(list_of 'opennds.@opennds[0].blockedmac')
+	for b in $blist; do
+		mac_valid "$b" || continue
+		bjson="$bjson$bsep\"$(json_escape "$(mac_lower "$b")")\""
+		bsep=','
+	done
+	printf '{"ok":1,"enabled":%s,"trusted":[%s],"preempt":[%s],"preempt_enabled":%s,"blocked":[%s]}\n' \
+		"$enabled" "$tjson" "$pjson" "$pe" "$bjson"
 }
 
 ex_info() {
@@ -2183,6 +2339,9 @@ ex_info() {
 			cif="${cif%% *}"
 			zone=$(ex_zone_for "$cif")
 			host=$(ov_host_for "$lm")
+			# trusted 客户端 ndsctl 不一定给 ip：邻居表兜底，
+			# 否则"可信任列表里在线设备不显示 IP"
+			[ -z "$ip" ] && ip=$(neigh_ip_for "$lm")
 			out="$out$sep\"$(json_escape "$mac")\":{\"host\":\"$(json_escape "$host")\",\"ip\":\"$(json_escape "$ip")\",\"zone\":\"$(json_escape "$zone")\",\"online\":1}"
 			sep=','
 			seen="$seen$lm|"
@@ -2416,13 +2575,39 @@ ndsctl_mac_rc() { # $1=子命令 $2=小写 mac
 
 # ============================================================
 # 页面：blacklist（《客户端黑名单.md》）
-# 黑名单 = openNDS 官方 MAC 黑名单（/etc/config/opennds 的 blockedmac，
-# 配合 macmechanism='block'）。openNDS 官方机制在网络层直接拦截被拉黑的
-# 客户端，客户端根本到不了门户层，因此不存在"黑名单门户"。
+# 名单 = /etc/config/opennds 的 blockedmac（由本插件的分发脚本执行拦截：
+# openNDS 9.4.0 起已废弃 macmechanism/blockedmaclist，主进程不再自己读它，
+# 客户端被拒绝认证、只看得到门户，靠 theme_zone_detect.sh 的黑名单分支实现）。
+# 门户库 = /usr/lib/opennds/cpd/blacklist/，兜底 = cpd/default/blacklist/default.sh
 # ============================================================
 
+BL_PORTAL_DIR="$CPD_ROOT/blacklist"
+
+# 门户库扫描：.sh 文件与含 theme.sh 的文件夹；跳过 default.sh 与 default/
+bl_portals_scan() {
+	local d="$BL_PORTAL_DIR" f b
+	[ -d "$d" ] || return 0
+	for f in "$d"/*; do
+		[ -e "$f" ] || continue
+		b="${f##*/}"
+		case "$b" in
+			default.sh | default) continue ;;
+		esac
+		if [ -f "$f" ] && [ "${b%.sh}" != "$b" ]; then
+			printf '%s\tfile\n' "$b"
+		elif [ -d "$f" ] && [ -f "$f/theme.sh" ]; then
+			printf '%s\tdir\n' "$b"
+		fi
+	done
+	return 0
+}
+
+bl_portal_sel() { # 当前选中的黑名单门户（空 = 兜底 default.sh）
+	uci_val 'zone_detect.main.portal_blacklist' ''
+}
+
 bl_status() {
-	local enabled m macj='' sep='' mm
+	local enabled m macj='' sep='' mm portal pj='' sep2='' name kind
 	ensure_opennds_conf >/dev/null 2>&1 || true
 	enabled=$(nds_enabled)
 	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
@@ -2431,8 +2616,83 @@ bl_status() {
 		sep=','
 	done
 	mm=$(uci -q get 'opennds.@opennds[0].macmechanism' 2>/dev/null)
-	printf '{"ok":1,"enabled":%s,"macs":[%s],"mechanism":"%s"}\n' \
-		"$enabled" "$macj" "$(json_escape "$mm")"
+	portal=$(bl_portal_sel)
+	while IFS='	' read -r name kind; do
+		[ -n "$name" ] || continue
+		pj="$pj$sep2{\"name\":\"$(json_escape "$name")\",\"kind\":\"$kind\"}"
+		sep2=','
+	done <<EOF2
+$(bl_portals_scan)
+EOF2
+	printf '{"ok":1,"enabled":%s,"macs":[%s],"mechanism":"%s","portal":"%s","portals":[%s],"dir":"%s"}\n' \
+		"$enabled" "$macj" "$(json_escape "$mm")" "$(json_escape "$portal")" "$pj" \
+		"$(json_escape "$BL_PORTAL_DIR")"
+}
+
+# 删除已上传门户；正在使用的拒绝删（前后端同一口径，见《客户端黑名单.md》决策 #8）
+bl_portal_delete() { # 命名参数：name=<门户名>
+	local a name='' p sel
+	for a in "$@"; do
+		case "$a" in name=*) name="${a#name=}" ;; esac
+	done
+	[ -n "$name" ] || out_err '缺少门户名'
+	name_ok "$name" 40 || out_err '门户名含非法字符'
+	case "$name" in
+		default.sh | default) out_err '内置默认门户不能删除' ;;
+	esac
+	sel=$(bl_portal_sel)
+	[ "$sel" = "$name" ] && out_err '该门户正在使用中，请先在「门户选择」里换一个再删除'
+	p="$BL_PORTAL_DIR/$name"
+	if [ -f "$p" ]; then
+		acquire_lock
+		rm -f "$p" 2>/dev/null || out_err '删除门户失败'
+	elif [ -d "$p" ]; then
+		acquire_lock
+		rm -rf "$p" 2>/dev/null || out_err '删除门户失败'
+	else
+		out_err '门户不存在'
+	fi
+	printf '{"ok":1}\n'
+}
+
+bl_upload_begin() { # $1=id
+	local id="$1"
+	case "$id" in
+		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
+	esac
+	rm -rf "$ZONE_UP/$id" 2>/dev/null
+	mkdir -p "$ZONE_UP/$id" 2>/dev/null || out_err '无法创建上传临时目录'
+	printf '{"ok":1}\n'
+}
+
+bl_upload_store() { # $1=id $2=原名（原名即落盘名）
+	local id="$1" name="$2" tmp
+	case "$id" in
+		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
+	esac
+	[ -n "$name" ] || out_err '缺少文件名'
+	[ "$(name_bytes "$name")" -le 20 ] 2>/dev/null || out_err '文件名过长（最多 20 个字符）'
+	name_ok "$name" 20 || out_err '文件名含非法字符，无法上传'
+	case "$name" in
+		default.sh) out_err '不能上传名为 default.sh 的脚本，兜底门户请用内置 default.sh' ;;
+		*.sh) ;;
+		*) out_err '只接受 .sh 门户脚本' ;;
+	esac
+	tmp="$ZONE_UP/$id/$name"
+	[ -f "$tmp" ] || out_err '上传内容不存在，请重新上传'
+	file_is_text "$tmp" || out_err '只支持文本脚本，二进制文件无法上传'
+	acquire_lock
+	mkdir -p "$BL_PORTAL_DIR" 2>/dev/null || out_err '无法创建门户目录'
+	cp "$tmp" "$BL_PORTAL_DIR/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
+	chmod 755 "$BL_PORTAL_DIR/$name.tmp" 2>/dev/null
+	mv "$BL_PORTAL_DIR/$name.tmp" "$BL_PORTAL_DIR/$name" 2>/dev/null || {
+		rm -f "$BL_PORTAL_DIR/$name.tmp" 2>/dev/null
+		out_err '替换门户文件失败'
+	}
+	case "$ZONE_UP/$id" in
+		"$ZONE_UP"/*) rm -rf "$ZONE_UP/$id" 2>/dev/null ;;
+	esac
+	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
 }
 
 # ============================================================
@@ -4603,6 +4863,9 @@ sys_selftest() {
 #    reload_config 不会动它）
 sys_post_apply() {
 	local m lm scope deployed=0 zr
+	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：
+	# 用户设备上历史遗留的"既在可信任又在黑名单"会在这里被修正
+	sys_dedup_lists
 	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		[ -n "$m" ] || continue
 		lm=$(mac_lower "$m")
@@ -4722,6 +4985,7 @@ case "$PAGE" in
 		set -- $ARGS
 		case "$SUB" in
 			status) ov_status ;;
+			dashboard) ov_dashboard ;;
 			run_state) ov_run_state ;;
 			set_run) ov_set_run "$1" ;;
 			restart) ov_restart ;;
@@ -4789,6 +5053,9 @@ case "$PAGE" in
 		shift 2
 		case "$SUB" in
 			status) bl_status ;;
+			portal_delete) bl_portal_delete "$@" ;;
+			upload_begin) bl_upload_begin "$1" ;;
+			upload_store) bl_upload_store "$1" "$2" ;;
 			*) out_err "blacklist：未知子命令 $SUB" ;;
 		esac
 		;;
