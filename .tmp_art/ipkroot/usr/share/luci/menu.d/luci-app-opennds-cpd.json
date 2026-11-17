@@ -1,0 +1,62 @@
+{
+  "admin/services/opennds-cpd": {
+    "title": "openNDS",
+    "order": 60,
+    "action": { "type": "firstchild" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/overview": {
+    "title": "概览",
+    "order": 10,
+    "action": { "type": "view", "path": "opennds_cpd/overview" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/zone": {
+    "title": "区域识别",
+    "order": 20,
+    "action": { "type": "view", "path": "opennds_cpd/zone" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/session": {
+    "title": "客户端会话管理",
+    "order": 30,
+    "action": { "type": "view", "path": "opennds_cpd/session" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/exempt": {
+    "title": "客户端豁免管理",
+    "order": 40,
+    "action": { "type": "view", "path": "opennds_cpd/exempt" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/blacklist": {
+    "title": "客户端黑名单",
+    "order": 50,
+    "action": { "type": "view", "path": "opennds_cpd/blacklist" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/router": {
+    "title": "路由器访问",
+    "order": 60,
+    "action": { "type": "view", "path": "opennds_cpd/router" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/walledgarden": {
+    "title": "Walled Garden",
+    "order": 70,
+    "action": { "type": "view", "path": "opennds_cpd/walledgarden" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/access": {
+    "title": "访问限制",
+    "order": 75,
+    "action": { "type": "view", "path": "opennds_cpd/access" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  },
+  "admin/services/opennds-cpd/settings": {
+    "title": "openNDS 设置",
+    "order": 80,
+    "action": { "type": "view", "path": "opennds_cpd/settings" },
+    "depends": { "acl": [ "luci-app-opennds-cpd" ] }
+  }
+}

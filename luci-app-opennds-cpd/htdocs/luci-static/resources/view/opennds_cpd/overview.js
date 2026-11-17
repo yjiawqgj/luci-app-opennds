@@ -1119,7 +1119,6 @@ return view.extend({
 		body.appendChild(E('div', { 'class': 'cpd-head' },
 			E('h2', {}, _('openNDS 概览'))));
 		body.appendChild(warnbar);
-		body.appendChild(themeBar);
 		body.appendChild(confBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [

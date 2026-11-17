@@ -906,8 +906,6 @@ EOF2
 		"$(json_escape "$mif")" "$(json_escape "$mip")" "$aps"
 }
 
-# 用户点击「修复脚本地址」时才写：只改 themespec_path 一项，不动其它任何配置
-
 ov_run_state() {
 	local running enabled
 	enabled=$(nds_enabled)

@@ -352,6 +352,25 @@ for p in walk('.sh'):
                                   '（真机 uci 会打 usage）：%s' % (rel(p), i, line.strip()))
 
 # ============================================================
+# 已删除机制 / 预设内容的残留（回归守卫：删了定义忘了删引用会直接白页）
+# ============================================================
+REMOVED = [
+    # 豁免页恢复机制（用户明确要求整组删除）
+    'restore_scan', 'trustedmac.orig', 'restoreDismissed', 'cpd-restore-dismiss',
+    # 概览页脚本路径提示（改为点「启动」时才在后端补）
+    'themeBar', 'renderThemeBar', 'fixThemespec', 'themeOk', 'set_themespec',
+    'ov_set_themespec',
+    # 预设 MAC —— 任何形态都不许出现
+    'AA:BB:CC:DD:EE:FF', 'aa:bb:cc:dd:ee:ff', 'D8:3A:DD:41:6F:22',
+]
+for p in list(walk('.js')) + list(walk('.sh')):
+    raw = io.open(p, encoding='utf-8').read()
+    for pat in REMOVED:
+        if pat in raw:
+            errors.append('%s: 残留已删除机制/预设内容「%s」—— 删了定义就要删光所有引用'
+                          % (rel(p), pat))
+
+# ============================================================
 # 输出
 # ============================================================
 for w in warnings:
