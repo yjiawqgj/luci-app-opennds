@@ -796,7 +796,7 @@ ov_client_detail() { # $1=mac
 }
 
 ov_status() {
-	local running enabled engaged busy scope theme_ok themespec lo conf_err=''
+	local running enabled engaged busy scope conf_err=''
 	# 配置文件存在但解析不了时，uci 的读与写都会失败：
 	# 这种情况必须在页面上直说，否则用户只会看到「可信任客户端没了」+「暂存失败」
 	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
@@ -808,14 +808,6 @@ ov_status() {
 	scope=$(uci_val 'zone_detect.main.session_scope' 'default')
 	running=0
 	ndsctl status >/dev/null 2>&1 && running=1
-	# 登录模式 3 = 自定义主题门户；脚本地址没指向本插件时给出提示（只提示，不自动改配置）
-	lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
-	themespec=$(uci_val 'opennds.@opennds[0].themespec_path' '')
-	theme_ok=1
-	if [ "$lo" = '3' ] && [ "$themespec" != '/usr/lib/opennds/theme_zone_detect.sh' ]; then
-		theme_ok=0
-	fi
-
 	ov_load_lists
 
 	local n_bl=0 lm
@@ -906,33 +898,15 @@ EOF2
 		sep=','
 	done
 
-	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","themeOk":%s,"themespec":"%s","confErr":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
+	printf '{"ok":1,"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":[%s]}\n' \
 		"$running" "$enabled" "$engaged" "$busy" "$(fup_enabled_val)" "$(json_escape "$scope")" \
-		"$theme_ok" "$(json_escape "$themespec")" "$(json_escape "$conf_err")" \
+		"$(json_escape "$conf_err")" \
 		"$n_online" "$n_auth" "$n_pre" "$n_tr" "$n_un" "$n_bl" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
 		"$(json_escape "$mif")" "$(json_escape "$mip")" "$aps"
 }
 
 # 用户点击「修复脚本地址」时才写：只改 themespec_path 一项，不动其它任何配置
-ov_set_themespec() {
-	local lo tp
-	lo=$(uci_get 'opennds.@opennds[0].login_option_enabled')
-	tp=$(uci_get 'opennds.@opennds[0].themespec_path')
-	[ "$lo" = '3' ] || out_err '当前登录模式不是 3，无需设置自定义主题脚本'
-	[ "$tp" = '/usr/lib/opennds/theme_zone_detect.sh' ] && {
-		printf '{"ok":1,"already":1}\n'
-		return 0
-	}
-	acquire_lock
-	uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh' ||
-		out_err '写入配置失败'
-	uci commit opennds || out_err '写入配置失败'
-	if nds_running; then
-		/etc/init.d/opennds restart 9>&- >/dev/null 2>&1
-	fi
-	printf '{"ok":1}\n'
-}
 
 ov_run_state() {
 	local running enabled
@@ -950,6 +924,14 @@ ov_set_run() { # $1=0|1
 	esac
 	acquire_lock
 	uci set 'opennds.@opennds[0].enabled'="$want"
+	if [ "$want" = '1' ]; then
+		# 用户点「启动」才补：登录模式 3 且脚本路径为空（缺失），不覆盖用户自己设的值
+		lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
+		tp=$(uci_val 'opennds.@opennds[0].themespec_path' '')
+		if [ "$lo" = '3' ] && [ -z "$tp" ]; then
+			uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh'
+		fi
+	fi
 	uci commit opennds
 	if [ "$want" = '1' ]; then
 		/etc/init.d/opennds start 9>&- >/dev/null 2>&1
@@ -4792,31 +4774,6 @@ sys_post_apply() {
 
 # 设备原配置里的可信任客户端（随包提供，只读）与当前配置对比，返回缺的那几个。
 # 本函数绝不写任何配置：用户点「恢复」只是把它们并进页面名单，仍要自己保存。
-exempt_restore_scan() {
-	local f="${CPD_ROOT}/trustedmac.orig" m cur out='' sep='' n=0 lm
-	[ -f "$f" ] || {
-		printf '{"ok":1,"macs":[],"total":0}\n'
-		return 0
-	}
-	# mac_lower 用 printf 不带换行，必须自己补，否则多行会粘成一行
-	# 注意两点：mac_lower 不带换行（要自己补）；uci get 最后一行没有换行，
-	# `while read` 会读不到它，必须写 `|| [ -n "$m" ]`
-	cur=$(list_of 'opennds.@opennds[0].trustedmac' | while IFS= read -r m || [ -n "$m" ]; do
-		[ -n "$m" ] && printf '%s\n' "$(mac_lower "$m")"
-	done)
-	while IFS= read -r m; do
-		m=$(printf '%s' "$m" | tr -d ' \t\r')
-		[ -n "$m" ] || continue
-		case "$m" in \#*) continue ;; esac
-		lm=$(mac_lower "$m")
-		printf '%s\n' "$cur" | grep -Fxq "$lm" && continue
-		out="$out$sep\"$(json_escape "$lm")\""
-		sep=','
-		n=$((n + 1))
-	done <"$f"
-	printf '{"ok":1,"macs":[%s],"total":%s}\n' "$out" "$n"
-}
-
 # ============================================================
 # 主分发
 # ============================================================
@@ -4831,7 +4788,6 @@ case "$PAGE" in
 		set -- $ARGS
 		case "$SUB" in
 			status) ov_status ;;
-			set_themespec) ov_set_themespec ;;
 			run_state) ov_run_state ;;
 			set_run) ov_set_run "$1" ;;
 			restart) ov_restart ;;
@@ -4889,7 +4845,6 @@ case "$PAGE" in
 		case "$SUB" in
 			status) ex_status ;;
 			info) ex_info ;;
-			restore_scan) exempt_restore_scan ;;
 			save) ex_save "$@" ;;
 			*) out_err "exempt：未知子命令 $SUB" ;;
 		esac

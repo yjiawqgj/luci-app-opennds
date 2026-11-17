@@ -165,7 +165,7 @@ return view.extend({
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			filter: 'online', ap: null, query: '', fupEnabled: true,
-			themeOk: 1, themespec: '', confErr: '',
+			confErr: '',
 			sortKey: null, sortDir: 1
 		};
 		var locked = false, lockTimer = null, pollTimer = null, modalOpen = 0;
@@ -238,7 +238,6 @@ return view.extend({
 			} else {
 				warnbar.style.display = 'none';
 			}
-			renderThemeBar();
 			renderConfBar();
 		}
 
@@ -258,36 +257,6 @@ return view.extend({
 			confBar.style.display = '';
 		}
 
-		/* ---------- 主题脚本地址提示（登录模式 3 但脚本不是本插件的）
-		 * 只在页面提示，用户点按钮才写这一项，插件安装/加载绝不改配置 ---------- */
-		var themeBar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' });
-
-		function renderThemeBar() {
-			if (state.themeOk === 0) {
-				themeBar.innerHTML = '';
-				themeBar.appendChild(E('span', {},
-					_('当前登录模式为 3（自定义主题门户），但主题脚本地址不是本插件的区域识别脚本，网络区域识别不会生效。')));
-				themeBar.appendChild(E('button', {
-					'class': 'cbi-button',
-					'style': 'margin-left:10px',
-					'click': fixThemespec
-				}, _('设置脚本地址')));
-				themeBar.style.display = '';
-			} else {
-				themeBar.style.display = 'none';
-			}
-		}
-
-		function fixThemespec() {
-			CPD.api('overview', 'set_themespec').then(function (j) {
-				if (!j.ok) { CPD.toast(j.error || _('写入失败'), 'err'); return; }
-				/* 写成功后提示条自己会消失，这就是反馈，不再额外弹横幅 */
-				refresh();
-			}, function (e) {
-				CPD.toast(CPD.errText(e, _('写入失败')), 'err');
-			});
-		}
-
 		/* ---------- 数据拉取与 10 秒轮询 ---------- */
 		function refresh() {
 			return Promise.all([
@@ -305,8 +274,6 @@ return view.extend({
 					state.counts = st.counts || {};
 					state.managed = st.managed || { iface: '', ip: '' };
 					state.aps = st.aps || [];
-					state.themeOk = (st.themeOk === 0) ? 0 : 1;
-					state.themespec = st.themespec || '';
 					state.confErr = st.confErr || '';
 				}
 				if (cl && cl.ok) {

@@ -27,18 +27,13 @@ return view.extend({
 			editing: { trusted: false, preempt: false },
 			open: { trusted: false, preempt: false },
 			perPage: '10',
-			page: { trusted: 1, preempt: 1 },
-			restore: []     /* 设备原配置里有、当前配置里没有的可信任 MAC */
+			page: { trusted: 1, preempt: 1 }
 		};
 		var body = E('div', { 'class': 'cpd-page' });
 
 		function macOf(entry) {
 			var m = (entry.split(';')[0] || '').replace(/^mac=/i, '');
 			return m.toLowerCase();
-		}
-		function restoreDismissed() {
-			try { return window.localStorage.getItem('cpd-restore-dismiss') === '1'; }
-			catch (e) { return false; }
 		}
 		function macOk(s) {
 			return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(s);
@@ -68,35 +63,6 @@ return view.extend({
 			sec.appendChild(E('p', { 'class': 'cpd-note' }, isPre
 				? _('允许指定客户端跳过门户认证，自动获得预先授权，同时保留 openNDS 对客户端的流量统计、配额、速度和会话时长管理。')
 				: _('允许指定客户端绕过 openNDS 的正常认证和客户端流量管理机制，获得无条件访问权限。')));
-
-			if (!isPre && state.restore.length) {
-				var bar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' }, [
-					E('span', {}, _('检测到原有配置里有 %s 个可信任客户端现在不在名单里。').format(state.restore.length)),
-					E('button', {
-						'class': 'cbi-button',
-						'click': function () {
-							var have = {};
-							state.trusted.forEach(function (m) { have[m] = 1; });
-							state.restore.forEach(function (m) { if (!have[m]) state.trusted.push(m); });
-							/* 恢复是一次性动作：并进名单后这条提示就该消失，
-							 * 否则它会一直挂在页面上，看着像没生效。 */
-							state.restore = [];
-							renderAll();
-							/* 只并进本地名单，仍要用户自己点保存并核对 diff */
-							CPD.notify(_('已加入名单，请点「保存」后在右上角核对变更'), 'info');
-						}
-					}, _('恢复这 %s 个').format(state.restore.length)),
-					E('button', {
-						'class': 'cbi-button',
-						'click': function () {
-							try { window.localStorage.setItem('cpd-restore-dismiss', '1'); } catch (e) {}
-							state.restore = [];
-							renderAll();
-						}
-					}, _('不再提示'))
-				]);
-				sec.appendChild(bar);
-			}
 
 			if (isPre) {
 				var tgl = E('button', {
@@ -136,13 +102,12 @@ return view.extend({
 			]));
 			if (state.editing[which]) {
 				var ta = E('textarea', {
-					'class': 'cpd-ta', 'rows': '3', 'spellcheck': 'false',
-					'placeholder': 'AA:BB:CC:DD:EE:FF'
+					'class': 'cpd-ta', 'rows': '3', 'spellcheck': 'false'
 				});
 				ta.value = macs.map(function (m) { return m.toUpperCase(); }).join('\n');
 				wrap.appendChild(E('div', { 'class': 'cpd-field' }, [
 					E('div', { 'class': 'cpd-note', 'style': 'margin-bottom:5px' },
-						_('每行一个 MAC 地址，支持一次输入多个；格式示例 AA:BB:CC:DD:EE:FF')),
+						_('每行一个 MAC 地址，支持一次输入多个')),
 					ta,
 					E('div', { 'class': 'cpd-actions' }, [
 						E('button', { 'class': 'cbi-button', 'click': function () { cancelEdit(which); } }, _('取消')),
@@ -424,22 +389,10 @@ return view.extend({
 				state.preempt0 = state.preempt.slice();
 				state.pe0 = state.preemptEnabled;
 				state.editing = { trusted: false, preempt: false };
-				scanRestore();
 				loadInfo();
 			}).catch(function (e) {
 				CPD.toast((e && e.error) || _('读取状态失败'), 'err');
 			});
-		}
-
-		/* 设备原配置里的可信任名单（随包提供）与当前配置对比，只读不写 */
-		function scanRestore() {
-			if (restoreDismissed()) { state.restore = []; return; }
-			CPD.api('exempt', 'restore_scan').then(function (j) {
-				var list = (j && j.ok) ? (j.macs || []) : [];
-				var changed = (list.length !== state.restore.length);
-				state.restore = list;
-				if (changed) renderAll();
-			}).catch(function () {});
 		}
 
 		refresh();

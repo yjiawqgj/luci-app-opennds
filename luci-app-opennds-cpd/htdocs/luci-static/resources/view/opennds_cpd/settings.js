@@ -57,7 +57,7 @@ return view.extend({
 					'type': 'file', 'webkitdirectory': '', 'id': 'cpd-portal-dir', 'style': 'display:none'
 				}),
 				E('p', { 'class': 'cpd-note' },
-					_('这里上传的是该类型的默认门户（区域未单独选门户时使用）。可上传 .sh 脚本或包含 theme.sh 的文件夹；同一类型只保留一个门户，上传新的会替换旧的（文件夹与单文件互为覆盖）。'))
+					_('这里上传的是该类型的默认门户（区域未单独选门户时使用）。可上传 .sh 脚本或文件夹；同一类型只保留一个门户。'))
 			]));
 			body.appendChild(sec1);
 
@@ -169,7 +169,7 @@ return view.extend({
 					field,
 					tools,
 					E('p', { 'class': 'cpd-note', 'style': 'margin-top:12px' },
-						_('每种类型只保留一个默认门户：上传脚本或文件夹都会替换掉上一次上传的内容（内置 default.sh 不受影响）。'))
+						_('文件夹与文件为相互覆盖模式，后者总会覆盖前者，如果上传文件夹，则文件夹内必须有一个default.sh的主入口脚本。'))
 				])
 			]));
 		}
@@ -375,7 +375,7 @@ return view.extend({
 		function quotaColumn(label, isUp) {
 			var action = isUp ? state.upAction : state.downAction;
 			var rate = isUp ? state.upRate : state.downRate;
-			var sel = E('select', { 'class': 'cpd-input', 'style': 'max-width:260px;min-width:170px;height:36px;padding:0 8px;line-height:34px' }, [
+			var sel = E('select', { 'class': 'cpd-input', 'style': 'max-width:260px;min-width:170px;height:36px;padding:0 8px;line-height:34px;margin-top:10px' }, [
 				E('option', { value: 'limit' }, _('限速')),
 				E('option', { value: 'reject' }, _('取消认证'))
 			]);
@@ -440,14 +440,15 @@ return view.extend({
 				ifaceBox.appendChild(E('p', { 'class': 'cpd-note' },
 					_('当前配置的接口「%s」不在本机接口列表里，点击下方任一接口即可切换').format(state.iface)));
 			}
-			var grid = E('div', { 'style': 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px' });
+			/* 卡片按内容自然大小排布（同仪表盘），有几个占多大，不强行撑满整行 */
+			var grid = E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:12px;margin-top:16px' });
 			state.ifaces.forEach(function (it) {
 				var active = (it.name === state.device);
 				/* 点击事件直接挂在按钮属性上：不依赖 innerHTML 重绘后的二次绑定 */
 				var card = E('button', {
 					'type': 'button',
 					'data-iface': it.name,
-					'style': 'text-align:left;padding:10px 12px;border:1px solid ' +
+					'style': 'text-align:left;padding:10px 12px;min-width:150px;border:1px solid ' +
 						(active ? '#2274a5' : '#d7dde3') + ';border-radius:8px;background:' +
 						(active ? '#e7f1f8' : '#fff') + ';cursor:pointer;font-family:inherit',
 					'aria-pressed': active ? 'true' : 'false',
