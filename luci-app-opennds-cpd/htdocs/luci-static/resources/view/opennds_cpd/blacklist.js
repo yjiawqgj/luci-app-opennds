@@ -247,9 +247,13 @@ return view.extend({
 						return CPD.api('blacklist', 'upload_store', [id, name]);
 					}).then(function (j) {
 						if (!j.ok) throw { error: j.error || '上传失败' };
-						/* 上传即选中：只改本页状态，配置由底部 openwrt 按钮写入 */
-						state.portal = name;
+						/* 先刷新门户列表，再把新脚本设为选中（refreshSilently 会
+						 * 按配置回填 state.portal，先设会被它覆盖掉） */
 						return refreshSilently();
+					}).then(function () {
+						state.portal = name;
+						renderPortal();
+						CPD.notify(_('已上传脚本：%s，并在门户选择中启用').format(name), 'ok');
 					}).catch(function (e) {
 						CPD.notify(CPD.errText(e, _('上传失败')), 'err');
 					});
