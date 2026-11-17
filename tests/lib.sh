@@ -31,7 +31,7 @@ tmp_setup() { # $1=用例名
 	export MOCK_UCI_DELTA="$S/uci_delta"
 	export OPENNDS_CONF="$S/etc/opennds"
 	export ZONE_DETECT_CONFIG="$S/etc/zone_detect"
-	export ZONE_BLACKLIST_CONFIG="$S/etc/zone_blacklist"
+	export ZONE_BLACKLIST_CONF="$S/etc/zone_blacklist"
 	mkdir -p "$CPD_ROOT" "$ZONE_UP" "$MOCK_UCI_ROOT" "$S/etc"
 	printf 'config opennds\n\toption enabled 0\n' >"$OPENNDS_CONF"
 	printf 'config main\n' >"$ZONE_DETECT_CONFIG"

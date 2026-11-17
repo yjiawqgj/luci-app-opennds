@@ -72,12 +72,14 @@ async function t(name, data, body) {
 }
 
 (async () => {
-	await t('黑名单 list 写入', {
-		zone_blacklist: { main: { '.name': 'main', '.type': 'main', '.index': 0, mac: [''], portal: '' } }
+	await t('黑名单 blockedmac list 写入（opennds @opennds[0]）', {
+		opennds: { opennds: { '.name': 'opennds', '.type': 'opennds', '.index': 0,
+			blockedmac: [], macmechanism: '' } }
 	}, async u => {
-		await u.load('zone_blacklist');
-		ck('resolveSID(main) 有值', u.resolveSID('zone_blacklist', 'main') === 'main');
-		u.set('zone_blacklist', 'main', 'mac', ['aa:bb:cc:dd:ee:ff']);
+		await u.load('opennds');
+		ck('resolveSID @opennds[0] 有值',
+			u.resolveSID('opennds', '@opennds[0]') === 'opennds');
+		u.set('opennds', '@opennds[0]', 'blockedmac', ['aa:bb:cc:dd:ee:ff']);
 		await u.save();
 		ck('下发了 set', calls.length === 1, JSON.stringify(calls));
 	});
@@ -104,10 +106,11 @@ async function t(name, data, body) {
 	});
 
 	await t('清空 list（传 null）', {
-		zone_blacklist: { main: { '.name': 'main', '.type': 'main', '.index': 0, mac: ['aa:bb:cc:dd:ee:ff'] } }
+		opennds: { opennds: { '.name': 'opennds', '.type': 'opennds', '.index': 0,
+			blockedmac: ['aa:bb:cc:dd:ee:ff'] } }
 	}, async u => {
-		await u.load('zone_blacklist');
-		u.set('zone_blacklist', 'main', 'mac', null);
+		await u.load('opennds');
+		u.set('opennds', '@opennds[0]', 'blockedmac', null);
 		await u.save();
 		ck('下发了 del', calls.length && calls[0][0] === 'del', JSON.stringify(calls));
 	});

@@ -1,6 +1,6 @@
 /*
  * openNDS 设置 · openNDS CPD（LuCI view）
- * 照《OpenNDS设置.md》：默认门户（三 tab 上传/清理 default.sh，即时动作不进快照）+
+ * 照《OpenNDS设置.md》：默认门户（两 tab 上传/清理 default.sh，即时动作不进快照）+
  * 公平使用策略（限速/取消认证，取消认证写 0）+ 网络接口（前端切换只改状态，
  * gatewayinterface 只在「应用」写盘）；保存 = 内存快照，应用 = 后端写三键 + 重启。
  */
@@ -11,7 +11,7 @@
 'require dom';
 
 var CPD = null;
-var TAB_NAMES = { wireless: _('无线区域'), wired: _('有线区域'), blacklist: _('黑名单') };
+var TAB_NAMES = { wireless: _('无线区域'), wired: _('有线区域') };
 
 return view.extend({
 	load: function () {
@@ -22,8 +22,7 @@ return view.extend({
 		var state = {
 			portals: {
 				wireless: { sel: '', items: [], builtin: false },
-				wired: { sel: '', items: [], builtin: false },
-				blacklist: { sel: '', items: [], builtin: false }
+				wired: { sel: '', items: [], builtin: false }
 			},
 			upAction: 'reject', upRate: '',
 			downAction: 'reject', downRate: '',
@@ -120,7 +119,7 @@ return view.extend({
 
 		function renderPortalTabs() {
 			portalBox.innerHTML = '';
-			var tabs = ['wireless', 'wired', 'blacklist'];
+			var tabs = ['wireless', 'wired'];
 			/* 与顶部页面切换同风格：无背景色，选中只加粗 + 下划线，不改变文字颜色 */
 			var tabRow = E('div', { 'role': 'tablist',
 				'style': 'display:flex;flex-wrap:wrap;border-bottom:1px solid #e3e9ee;margin-top:16px' });

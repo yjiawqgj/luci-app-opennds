@@ -11,8 +11,6 @@
 #   generate_splash_sequence() function defined by the portal script we
 #   source below. This dispatcher therefore:
 #
-#   0. If the client MAC is in the blacklist (/etc/config/zone_blacklist),
-#      it is served the blacklist portal instead of a zone portal.
 #   1. Uses get_client_interface.sh to find the local interface the client
 #      is connected to (by client MAC).
 #   2. If the interface is a local wireless interface (found in "iw dev"),
@@ -43,10 +41,8 @@
 CPD_ROOT="/usr/lib/opennds/cpd"
 ZONE_ROOT_WIRELESS="$CPD_ROOT/wireless"
 ZONE_ROOT_WIRED="$CPD_ROOT/wired"
-ZONE_ROOT_BLACKLIST="$CPD_ROOT/blacklist"
 DEFAULT_ROOT="$CPD_ROOT/default"
 MARKERS="/usr/lib/opennds/zone_markers"
-BLACKLIST_CONFIG="/etc/config/zone_blacklist"
 ZONE_DETECT_CONFIG="/etc/config/zone_detect"
 FALLBACK_THEME="/usr/lib/opennds/theme_click-to-continue-basic.sh"
 
@@ -178,35 +174,11 @@ type_default_portal() {
 	[ -f "$td_dir/default.sh" ] && echo "$td_dir/default.sh"
 }
 
-# ---- Blacklist check (highest priority) -----------------------------------
+# ---- Zone detection -------------------------------------------------------
 
 zone_type=""
 zone_name=""
 clientif=""
-portal=""
-
-if [ ! -z "$clientmac" ] && [ -f "$BLACKLIST_CONFIG" ]; then
-	cmac=$(mac_upper "$clientmac")
-	for bmac in $(uci -q get zone_blacklist.main.mac); do
-		if [ "$(mac_upper "$bmac")" = "$cmac" ]; then
-			# Blacklisted: ignore zones entirely, serve the blacklist portal.
-			bportal=$(uci -q get zone_blacklist.main.portal)
-			portal=$(portal_from_name "$ZONE_ROOT_BLACKLIST" "$bportal")
-			if [ -z "$portal" ]; then
-				portal=$(type_default_portal blacklist)
-			fi
-			if [ -z "$portal" ]; then
-				portal="$FALLBACK_THEME"
-			fi
-			zone_type="blacklist"
-			zone_name="$cmac"
-			zone_debug "client $clientmac is blacklisted, portal=$portal"
-			break
-		fi
-	done
-fi
-
-# ---- Zone detection -------------------------------------------------------
 
 if [ -z "$zone_type" ]; then
 	if [ ! -z "$clientmac" ]; then
@@ -262,9 +234,7 @@ case "$zone_name" in
 		;;
 esac
 
-if [ "$zone_type" = "blacklist" ]; then
-	: # portal already resolved above
-elif [ ! -z "$zone_name" ]; then
+if [ ! -z "$zone_name" ]; then
 	if [ "$zone_type" = "wireless" ]; then
 		zonedir="$ZONE_ROOT_WIRELESS/$zone_name"
 	else

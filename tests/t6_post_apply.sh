@@ -27,13 +27,21 @@ else
 fi
 
 echo "== C4 post_apply 把黑名单 MAC 摘信任 + 踢下线（只动运行时） =="
-uci add_list "zone_blacklist.main.mac=AA:BB:CC:DD:EE:01" >/dev/null 2>&1
-uci commit zone_blacklist >/dev/null 2>&1
+uci add_list "opennds.@opennds[0].blockedmac=AA:BB:CC:DD:EE:01" >/dev/null 2>&1
+uci commit opennds >/dev/null 2>&1
 export NDSCTL_LOG="$S/ndsctl.log"
 : >"$NDSCTL_LOG"
 call sys post_apply >/dev/null
 ck "调了 untrust（小写 MAC）" 'untrust aa:bb:cc:dd:ee:01' "$(tr '\n' ' ' <"$NDSCTL_LOG")"
 ck "调了 deauth" 'deauth aa:bb:cc:dd:ee:01' "$(tr '\n' ' ' <"$NDSCTL_LOG")"
+
+echo "== C4b 后端不再有 zone_blacklist 机制（除一次性迁移） =="
+if grep -q "zone_blacklist" "$API_SRC" &&
+	! grep -q "bl_migrate_legacy" "$API_SRC"; then
+	echo "  FAIL 后端残留 zone_blacklist 机制"; fail=1
+else
+	echo "  OK   黑名单已改用 opennds blockedmac"
+fi
 
 echo "== C5 sys 未知子命令仍然报错 =="
 out=$(call sys nosuchcmd)

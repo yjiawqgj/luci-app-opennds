@@ -333,7 +333,7 @@ var CPD = L.Class.extend({
 
 	/* section 类型（新建节时用；与出厂模板一致） */
 	secType: function (conf) {
-		return (conf === 'zone_blacklist') ? 'main' : conf;
+		return conf;
 	},
 
 	/* 确保 section 可写：存在就直接用，不存在就按类型建一个 */

@@ -15,7 +15,6 @@ PKG_MAINTAINER:=
 include $(TOPDIR)/feeds/luci/luci.mk
 
 define Package/$(PKG_NAME)/conffiles
-/etc/config/zone_blacklist
 /etc/config/zone_detect
 endef
 
@@ -26,8 +25,8 @@ define Package/$(PKG_NAME)/postinst
 [ -n "$${IPKG_INSTROOT}" ] || {
 	chmod 755 /usr/lib/opennds/opennds-cpd-api.sh
 	chmod 755 /usr/lib/opennds/theme_zone_detect.sh
-	mkdir -p /usr/lib/opennds/cpd/wireless /usr/lib/opennds/cpd/wired /usr/lib/opennds/cpd/blacklist
-	mkdir -p /usr/lib/opennds/cpd/default/wireless /usr/lib/opennds/cpd/default/wired /usr/lib/opennds/cpd/default/blacklist
+	mkdir -p /usr/lib/opennds/cpd/wireless /usr/lib/opennds/cpd/wired
+	mkdir -p /usr/lib/opennds/cpd/default/wireless /usr/lib/opennds/cpd/default/wired
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache
 }

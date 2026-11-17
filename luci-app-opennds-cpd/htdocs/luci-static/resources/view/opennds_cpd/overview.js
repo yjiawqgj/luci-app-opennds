@@ -784,7 +784,7 @@ return view.extend({
 			if (act === 'unblock') {
 				return CPD.api('blacklist', 'status').then(function (j) {
 					var list = (j.macs || []).filter(function (m) { return low(m) !== lm; });
-					return CPD.stageUci('zone_blacklist', 'main', 'mac', 'list', list);
+					return CPD.stageUci('opennds', '@opennds[0]', 'blockedmac', 'list', list);
 				});
 			}
 			return CPD.api('exempt', 'status').then(function (j) {

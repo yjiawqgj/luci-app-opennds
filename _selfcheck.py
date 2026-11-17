@@ -362,6 +362,13 @@ REMOVED = [
     'ov_set_themespec',
     # 预设 MAC —— 任何形态都不许出现
     'AA:BB:CC:DD:EE:FF', 'aa:bb:cc:dd:ee:ff', 'D8:3A:DD:41:6F:22',
+    # 黑名单自建配置 /etc/config/zone_blacklist（改用官方 opennds blockedmac；
+    # 唯一合法残留是 api.sh 里 bl_migrate_legacy 的一次性迁移，它只读 main.mac）
+    'zone_blacklist.main.portal', "stageUci('zone_blacklist'", "'zone_blacklist', 'main'",
+    'bl_save_macs', 'bl_apply', 'bl_save_portal', 'bl_upload_store',
+    'bl_portal_delete', 'bl_portals_scan',
+    'ZONE_ROOT_BLACKLIST', 'BLACKLIST_CONFIG',
+    'CPD_ROOT/blacklist', 'cpd/default/blacklist',
 ]
 for p in list(walk('.js')) + list(walk('.sh')):
     raw = io.open(p, encoding='utf-8').read()

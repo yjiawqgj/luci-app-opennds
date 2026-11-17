@@ -553,8 +553,10 @@ ov_load_lists() {
 	TR_MACS=" $TR_MACS "
 
 	BL_MACS=""
-	for v in $(list_of 'zone_blacklist.main.mac'); do
-		mac_valid "$v" || continue # 出厂模板有一条空串，过滤掉
+	# 黑名单 MAC 存 /etc/config/opennds（openNDS 官方 MAC 黑名单：blockedmac），
+	# 插件不再有独立配置文件
+	for v in $(list_of 'opennds.@opennds[0].blockedmac'); do
+		mac_valid "$v" || continue # 空值等脏数据过滤掉
 		BL_MACS="$BL_MACS $(mac_lower "$v")"
 	done
 	BL_MACS=" $BL_MACS "
@@ -577,6 +579,19 @@ mac_in_bl() {
 		*" $1 "*) return 0 ;;
 	esac
 	return 1
+}
+
+# openNDS 官方 MAC 黑名单语义：blockedmac 只在 macmechanism='block' 时生效。
+# 名单有内容而用户没设过 mechanism 时补成 'block'；用户已设的值一律不碰
+# （'allow' 是白名单模式，属于用户自己的选择，前端会另行提示名单不生效）。
+# $1=opennds section 名（不含配置前缀）
+ensure_block_mechanism() { # $1=section
+	local mm
+	mm=$(uci -q get "opennds.$1.macmechanism" 2>/dev/null)
+	case "$mm" in
+		'' | *[!A-Za-z0-9_-]*) uci set "opennds.$1.macmechanism"='block' || out_err '写入配置失败' ;;
+	esac
+	return 0
 }
 mac_in_tr() {
 	case "$TR_MACS" in
@@ -714,7 +729,7 @@ $in_lines
 EOF2
 	fi
 
-	# 名单补行：trusted / preemptivemac / zone_blacklist 里不在线的 MAC
+	# 名单补行：trusted / preemptivemac / 黑名单（blockedmac）里不在线的 MAC
 	local supp
 	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS | sort -u | grep -v '^$')
 	for lm in $supp; do
@@ -992,37 +1007,33 @@ ov_client_action() { # $1=action $2=mac
 			printf '{"ok":1,"immediate":1}\n'
 			return 0
 			;;
-		block)
-			acquire_lock
-			local bsc
-			# 黑名单节缺失才新建（仅用户点动作时发生，安装零写入）
-			if uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
-				bsc='main'
-			else
-				bsc=$(sys_ensure_sec zone_blacklist main) ||
-					out_err '写入配置失败：找不到 zone_blacklist 配置节，且无法新建'
-			fi
-			ov_load_lists
-			# ① 黑名单追加并立刻落盘（theme_zone_detect.sh 读的就是 /etc/config）
-			mac_in_bl "$lm" || { uci add_list "zone_blacklist.$bsc.mac"="$lm" || out_err '写入配置失败'; }
-			uci commit zone_blacklist || out_err '写入配置失败'
-			# ② 摘两份名单并立刻落盘
-			if uci -q show 'opennds.@opennds[0]' >/dev/null 2>&1; then
-				e=$(entry_for_mac "$PM_LIST" "$lm")
-				[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac'="$e" 2>/dev/null
-				mac_in_tr "$lm" && uci del_list 'opennds.@opennds[0].trustedmac'="$lm" 2>/dev/null
-				uci commit opennds
-			fi
-			# ③ 撤信任 + 清预认证队列 + 踢下线
-			ndsctl_mac untrust "$lm"
-			remove_preauth_queue "$lm"
-			ndsctl_mac deauth "$lm"
-			# ④ 重启并等就绪（黑名单门户与 fw 规则要重新加载）
-			local ready=1
-			service_restart || ready=0
-			printf '{"ok":1,"immediate":1,"restarted":%s,"ready":%s}\n' "$SR_RESTARTED" "$ready"
-			return 0
-			;;
+	block)
+		acquire_lock
+		# 黑名单 MAC 写 /etc/config/opennds 的 blockedmac（openNDS 官方 MAC 黑名单）
+		local osc
+		osc=$(sys_ensure_sec opennds '@opennds[0]') ||
+			out_err '写入配置失败：找不到 opennds 配置节，且无法新建'
+		ov_load_lists
+		# ① 黑名单追加并立刻落盘；macmechanism 未设置时补成官方 'block' 语义
+		mac_in_bl "$lm" || { uci add_list "opennds.$osc.blockedmac"="$lm" || out_err '写入配置失败'; }
+		ensure_block_mechanism "$osc"
+		# ② 摘两份名单并立刻落盘
+		if uci -q show 'opennds.@opennds[0]' >/dev/null 2>&1; then
+			e=$(entry_for_mac "$PM_LIST" "$lm")
+			[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac'="$e" 2>/dev/null
+			mac_in_tr "$lm" && uci del_list 'opennds.@opennds[0].trustedmac'="$lm" 2>/dev/null
+		fi
+		uci commit opennds || out_err '写入配置失败'
+		# ③ 撤信任 + 清预认证队列 + 踢下线
+		ndsctl_mac untrust "$lm"
+		remove_preauth_queue "$lm"
+		ndsctl_mac deauth "$lm"
+		# ④ 重启并等就绪（fw 规则要按新名单重新加载）
+		local ready=1
+		service_restart || ready=0
+		printf '{"ok":1,"immediate":1,"restarted":%s,"ready":%s}\n' "$SR_RESTARTED" "$ready"
+		return 0
+		;;
 	esac
 
 	acquire_lock
@@ -1073,8 +1084,8 @@ ov_client_action() { # $1=action $2=mac
 			;;
 		unblock)
 			ov_load_lists
-			if mac_in_bl "$lm" && uci -q show 'zone_blacklist.main' >/dev/null 2>&1; then
-				uci_w del_list 'zone_blacklist.main.mac'="$lm" || sys_stage_fail
+			if mac_in_bl "$lm"; then
+				uci_w del_list 'opennds.@opennds[0].blockedmac'="$lm" || sys_stage_fail
 			fi
 			printf '{"ok":1,"staged":1}\n'
 			;;
@@ -1166,8 +1177,6 @@ ov_client_edit() { # $1=stage|apply $2=mac $3…=k=v（5 项）
 ov_apply() {
 	acquire_lock
 	uci commit opennds || out_err '写入配置失败'
-	# 黑名单是另一份配置；没有增量时 commit 是空操作，不会伪造写入
-	uci commit zone_blacklist 2>/dev/null || true
 	local ready=1
 	service_restart || ready=0
 	# 重启后让 openNDS 按新的 preemptivemac 重建预认证队列（否则要等下次接入才生效）
@@ -1434,6 +1443,22 @@ z_status() {
 			case "$(printf '%s' "$ws" |
 				jsonfilter -e "@.$dev.interfaces[@.section=\"$sec\"].config.disabled" 2>/dev/null)" in
 				true | 1) disf=1 ;;
+			esac
+		fi
+		# ④ 运行时兜底（配置上全启用、现实里没在跑的场景）：
+		#    radio 已 up 却找不到这个 section 的真实接口 → 没在工作，按未启用显示；
+		#    radio 的 up=false 时 interfaces 列表为空，这里同样命中。
+		#    uci 与 ubus 的 config 都没写 disabled、但接口没建立（radio 被关、
+		#    DFS 信道没起 beacon、netifd 没拉起）时，漏了这条就会显示"已启用"。
+		#    只认 up 值明确的 radio：键缺失（ubus 视图异常）时不动，避免误标。
+		if [ "$disf" = '0' ] && [ -n "$ws" ] && [ -n "$dev" ]; then
+			up=$(printf '%s' "$ws" | jsonfilter -q -e "@.$dev.up" 2>/dev/null)
+			case "$up" in
+				0 | false | 1 | true)
+					ifn=$(printf '%s' "$ws" |
+						jsonfilter -q -e "@.$dev.interfaces[@.section=\"$sec\"].ifname" 2>/dev/null | head -n1)
+					[ -n "$ifn" ] || disf=1
+					;;
 			esac
 		fi
 		# 运行时接口名（iw dev / /sys/class/net 的 phyX-apX，openNDS 官方识别用的就是它）
@@ -2225,7 +2250,7 @@ ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_r
 	# ---- ②′ 黑名单检查：本次要 added 的 MAC（决策 #10）----
 	local bl outbl='' bsep=''
 	for lm in $t_add $p_add; do
-		case " $(list_of 'zone_blacklist.main.mac') " in
+		case " $(list_of 'opennds.@opennds[0].blockedmac') " in
 			*" $lm "*)
 				outbl="$outbl$bsep\"$lm\""
 				bsep=','
@@ -2339,219 +2364,23 @@ ndsctl_mac_rc() { # $1=子命令 $2=小写 mac
 }
 
 # ============================================================
-# 页面：blacklist（《客户端黑名单.md》§5）
+# 页面：blacklist（《客户端黑名单.md》）
+# 黑名单 = openNDS 官方 MAC 黑名单（/etc/config/opennds 的 blockedmac，
+# 配合 macmechanism='block'）。openNDS 官方机制在网络层直接拦截被拉黑的
+# 客户端，客户端根本到不了门户层，因此不存在"黑名单门户"。
 # ============================================================
 
-# 门户库扫描：.sh 文件与含 theme.sh 的文件夹；跳过 default.sh 与 default/（决策 #6）
-bl_portals_scan() { # → "name<TAB>kind" 行
-	local d="$CPD_ROOT/blacklist" f b
-	[ -d "$d" ] || return 0
-	for f in "$d"/*; do
-		[ -e "$f" ] || continue
-		b="${f##*/}"
-		case "$b" in
-			default.sh | default) continue ;;
-		esac
-		if [ -f "$f" ] && [ "${b%.sh}" != "$b" ]; then
-			printf '%s\tfile\n' "$b"
-		elif [ -d "$f" ] && [ -f "$f/theme.sh" ]; then
-			printf '%s\tdir\n' "$b"
-		fi
-	done
-	return 0
-}
-
 bl_status() {
-	local enabled m macj='' sep='' portal pj='' sep2='' line kind
+	local enabled m macj='' sep='' mm
 	enabled=$(nds_enabled)
-	for m in $(list_of 'zone_blacklist.main.mac'); do
-		[ -n "$m" ] || continue # 出厂模板的空串过滤掉
+	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
+		[ -n "$m" ] || continue # 空值等脏数据过滤掉
 		macj="$macj$sep\"$(json_escape "$m")\""
 		sep=','
 	done
-	portal=$(uci_val 'zone_blacklist.main.portal' '')
-	while IFS='	' read -r line kind; do
-		[ -n "$line" ] || continue
-		pj="$pj$sep2{\"name\":\"$(json_escape "$line")\",\"kind\":\"$kind\"}"
-		sep2=','
-	done <<EOF2
-$(bl_portals_scan)
-EOF2
-	printf '{"ok":1,"enabled":%s,"macs":[%s],"portal":"%s","portals":[%s]}\n' \
-		"$enabled" "$macj" "$(json_escape "$portal")" "$pj"
-}
-
-bl_save_macs() { # 命名参数：add= remove= clear=0|1 [confirm_enable=1]
-	local a add='' rem='' clear=''
-	for a in "$@"; do
-		case "$a" in
-			confirm_enable=1) CONFIRM_ENABLE=1 ;;
-			add=*) add="${a#add=}" ;;
-			remove=*) rem="${a#remove=}" ;;
-			clear=*) clear="${a#clear=}" ;;
-		esac
-	done
-	case "$clear" in
-		'' | 0 | 1) ;;
-		*) out_err 'clear 必须是 0 或 1' ;;
-	esac
-	ex_parse_macs "$add" A_ADD
-	ex_parse_macs "$rem" A_REM
-
-	# 当前名单（小写集合；出厂模板的空串过滤）
-	local cur=' ' m
-	for m in $(list_of 'zone_blacklist.main.mac'); do
-		[ -n "$m" ] || continue
-		cur="$cur$(mac_lower "$m") "
-	done
-
-	guard_enable || return 0
-	acquire_lock
-
-	local n_new=0 NEW='' lm v e
-	# ① uci 写入（按 MAC 增删，不动其它条目）
-	if [ "$clear" = '1' ]; then
-		uci -q delete 'zone_blacklist.main.mac' 2>/dev/null
-	else
-		for lm in $A_REM; do
-			for v in $(list_of 'zone_blacklist.main.mac'); do
-				[ -n "$v" ] || continue
-				[ "$(mac_lower "$v")" = "$lm" ] &&
-					uci del_list 'zone_blacklist.main.mac'="$v"
-			done
-		done
-	fi
-	for lm in $A_ADD; do
-		case "$cur" in
-			*" $lm "*) continue ;; # 已在名单里不算新增（§5：不重启）
-		esac
-		uci add_list 'zone_blacklist.main.mac'="$lm"
-		n_new=$((n_new + 1))
-		NEW="$NEW$lm
-"
-		# ② 摘两份名单（优先级高于黑名单，不摘会继续被自动放行）
-		for v in $(list_of 'opennds.@opennds[0].trustedmac'); do
-			[ "$(mac_lower "$v")" = "$lm" ] &&
-				uci del_list 'opennds.@opennds[0].trustedmac'="$v"
-		done
-		e=$(ex_entry_for_mac "$(list_of 'opennds.@opennds[0].preemptivemac')" "$lm")
-		[ -n "$e" ] && uci del_list 'opennds.@opennds[0].preemptivemac'="$e"
-	done
-	uci commit zone_blacklist
-	uci commit opennds
-
-	# ③④ 运行时同步（逐个执行、失败只记日志不中断）
-	for lm in $NEW; do
-		ndsctl_mac untrust "$lm"
-		remove_preauth_queue "$lm"
-		ndsctl_mac deauth "$lm"
-	done
-
-	# ⑤ 新增了 MAC 才重启（纯删除不重启，分发脚本现读配置）
-	if [ "$n_new" -gt 0 ]; then
-		if service_restart; then
-			printf '{"ok":1,"deauthed":0,"untrusted":0,"restarted":'"$SR_RESTARTED"'}\n'
-		else
-			printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
-		fi
-		return 0
-	fi
-	printf '{"ok":1,"deauthed":0,"untrusted":0,"restarted":0}\n'
-}
-
-# 应用（框架「保存并应用」）：提交 zone_blacklist 暂存增量，同步运行时并重启一次
-bl_apply() {
-	guard_enable || return 0
-	acquire_lock
-	uci commit zone_blacklist || out_err '写入配置失败'
-	local m lm
-	for m in $(list_of 'zone_blacklist.main.mac'); do
-		[ -n "$m" ] || continue
-		lm=$(mac_lower "$m")
-		ndsctl_mac untrust "$lm"
-		remove_preauth_queue "$lm"
-		ndsctl_mac deauth "$lm"
-	done
-	if service_restart; then
-		printf '{"ok":1,"restarted":%s}\n' "$SR_RESTARTED"
-	else
-		printf '{"ok":0,"error":"配置已写入，但 openNDS 未能启动，请检查日志"}\n'
-	fi
-}
-
-bl_save_portal() { # 命名参数：portal=<门户名>（default/空 = 默认门户，落盘是删除该 option）
-	local a p=''
-	for a in "$@"; do
-		case "$a" in
-			portal=*) p="${a#portal=}" ;;
-		esac
-	done
-	case "$p" in
-		'' | default)
-			uci -q delete 'zone_blacklist.main.portal' 2>/dev/null
-			;;
-		*)
-			name_ok "$p" 31 || out_err '门户名非法'
-			local found=0 f
-			for f in $(bl_portals_scan | cut -f1); do
-				[ "$f" = "$p" ] && found=1
-			done
-			[ "$found" = '1' ] || out_err '门户不存在'
-			uci set 'zone_blacklist.main.portal'="$p"
-			;;
-	esac
-	acquire_lock
-	uci commit zone_blacklist
-	printf '{"ok":1}\n'
-}
-
-bl_upload_store() { # $1=id $2=文件名（落点固定 cpd/blacklist/，保留原名、同名覆盖）
-	local id="$1" name="$2"
-	case "$id" in
-		'' | *[!A-Za-z0-9]*) out_err '上传 id 非法' ;;
-	esac
-	[ "$(name_bytes "$name")" -le 31 ] 2>/dev/null ||
-		out_err '文件名过长（最多 31 个字符）'
-	name_ok "$name" 31 || out_err '文件名含非法字符，无法上传'
-	case "$name" in
-		*.sh) ;;
-		*) out_err '只接受 .sh 门户脚本' ;;
-	esac
-	local tmp="$ZONE_UP/$id/$name"
-	[ -f "$tmp" ] || out_err '上传内容不存在，请重新上传'
-	file_is_text "$tmp" || out_err '只支持文本脚本，二进制文件无法上传'
-	local sz
-	sz=$(wc -c <"$tmp" | tr -d ' ')
-	[ "$sz" -le 524288 ] 2>/dev/null || out_err '文件超过 512KB，无法上传'
-	acquire_lock
-	local d="$CPD_ROOT/blacklist"
-	mkdir -p "$d" 2>/dev/null || out_err '无法创建门户目录'
-	cp "$tmp" "$d/$name.tmp" 2>/dev/null || out_err '写入门户文件失败'
-	chmod 755 "$d/$name.tmp" 2>/dev/null
-	mv "$d/$name.tmp" "$d/$name" 2>/dev/null || {
-		rm -f "$d/$name.tmp" 2>/dev/null
-		out_err '替换门户文件失败'
-	}
-	printf '{"ok":1,"name":"%s"}\n' "$(json_escape "$name")"
-}
-
-bl_portal_delete() { # 命名参数：name=<门户名>
-	local a name=''
-	for a in "$@"; do
-		case "$a" in
-			name=*) name="${a#name=}" ;;
-		esac
-	done
-	name_ok "$name" 31 || out_err '门户名非法'
-	acquire_lock
-	local cur
-	cur=$(uci_val 'zone_blacklist.main.portal' '')
-	[ "$name" = "$cur" ] &&
-		out_err '该门户正在使用中，请先在「门户选择」里换一个再删除'
-	# 文件已被别处删掉时按成功处理
-	[ -e "$CPD_ROOT/blacklist/$name" ] &&
-		rm -rf "$CPD_ROOT/blacklist/$name" 2>/dev/null
-	printf '{"ok":1}\n'
+	mm=$(uci -q get 'opennds.@opennds[0].macmechanism' 2>/dev/null)
+	printf '{"ok":1,"enabled":%s,"macs":[%s],"mechanism":"%s"}\n' \
+		"$enabled" "$macj" "$(json_escape "$mm")"
 }
 
 # ============================================================
@@ -4144,7 +3973,7 @@ EOF2
 # gatewayinterface，外加 cpd/default/<tab>/default.sh 门户文件
 # ============================================================
 
-ST_TABS='|wireless|wired|blacklist|'
+ST_TABS='|wireless|wired|'
 
 st_tab_ok() { # $1=tab（白名单防目录穿越）
 	case "$ST_TABS" in
@@ -4223,7 +4052,7 @@ st_status() {
 	dwr="${dw#*|}"
 	# 每个类型：当前选中的门户（空=内置 default.sh）+ 可选项（上传时保留的原名）
 	local sel items isep2 pn pk
-	for t in wireless wired blacklist; do
+	for t in wireless wired; do
 		sel=$(uci_val "zone_detect.main.portal_$t" '')
 		[ "$sel" = 'default' ] && sel=''
 		[ -n "$sel" ] && ! z_portal_exists "$CPD_ROOT/default/$t" "$sel" && sel=''
@@ -4550,11 +4379,11 @@ st_apply() { # $@: up_action= up_rate= down_action= down_rate= iface= [fup_enabl
 # 「未保存的配置: N」指示器与复位按钮都以这份增量为数据源。
 # ============================================================
 
-SYS_CONFS='opennds|zone_detect|zone_blacklist'
+SYS_CONFS='opennds|zone_detect'
 
 sys_conf_ok() {
 	case "$1" in
-		opennds | zone_detect | zone_blacklist) return 0 ;;
+		opennds | zone_detect) return 0 ;;
 	esac
 	return 1
 }
@@ -4597,10 +4426,7 @@ sys_stage_fail() {
 
 # 新建 section 时用的类型名（与出厂模板一致）
 sys_sec_type() {
-	case "$1" in
-		zone_blacklist) printf 'main' ;;
-		*) printf '%s' "$1" ;;
-	esac
+	printf '%s' "$1"
 }
 
 # 该配置里第一个 <type> 类型 section 的名字（匿名 section 会输出 @type[n]）
@@ -4725,7 +4551,7 @@ sys_selftest() {
 #    reload_config 不会动它）
 sys_post_apply() {
 	local m lm scope deployed=0 zr
-	for m in $(list_of 'zone_blacklist.main.mac'); do
+	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		[ -n "$m" ] || continue
 		lm=$(mac_lower "$m")
 		ndsctl_mac untrust "$lm"
@@ -4772,9 +4598,43 @@ sys_post_apply() {
 
 # 设备原配置里的可信任客户端（随包提供，只读）与当前配置对比，返回缺的那几个。
 # 本函数绝不写任何配置：用户点「恢复」只是把它们并进页面名单，仍要自己保存。
+
+# ============================================================
+# 旧版自建黑名单配置一次性迁移
+# 旧版本把黑名单 MAC 存在插件自建的 /etc/config/zone_blacklist 里。
+# 现在黑名单改用 openNDS 官方机制（/etc/config/opennds 的 blockedmac +
+# macmechanism='block'）。检测到旧文件就把里面的 MAC 迁入官方名单，
+# 然后删除旧文件——openNDS 只有一个配置文件，插件不再多建。
+# ============================================================
+ZONE_BLACKLIST_CONF="${ZONE_BLACKLIST_CONF:-/etc/config/zone_blacklist}"
+
+bl_migrate_legacy() {
+	[ -f "$ZONE_BLACKLIST_CONF" ] || return 0
+	local m any=0 osc cur
+	osc=$(sys_ensure_sec opennds '@opennds[0]') || return 0
+	cur=" $(list_of "opennds.$osc.blockedmac") "
+	for m in $(list_of 'zone_blacklist.main.mac'); do
+		mac_valid "$m" || continue
+		m=$(mac_lower "$m")
+		case "$cur" in
+			*" $m "*) ;;
+			*) uci add_list "opennds.$osc.blockedmac"="$m" 2>/dev/null && any=1 ;;
+		esac
+	done
+	if [ "$any" = '1' ]; then
+		ensure_block_mechanism "$osc"
+		uci commit opennds 2>/dev/null
+	fi
+	rm -f "$ZONE_BLACKLIST_CONF" 2>/dev/null
+	log '已迁移旧黑名单配置 /etc/config/zone_blacklist → opennds blockedmac，旧文件已删除'
+	return 0
+}
+
 # ============================================================
 # 主分发
 # ============================================================
+
+bl_migrate_legacy
 
 case "$PAGE" in
 	overview)
@@ -4853,12 +4713,6 @@ case "$PAGE" in
 		shift 2
 		case "$SUB" in
 			status) bl_status ;;
-			save_macs) bl_save_macs "$@" ;;
-			apply) bl_apply ;;
-			save_portal) bl_save_portal "$@" ;;
-			upload_begin) z_upload_begin "$1" ;;
-			upload_store) bl_upload_store "$1" "$2" ;;
-			portal_delete) bl_portal_delete "$@" ;;
 			*) out_err "blacklist：未知子命令 $SUB" ;;
 		esac
 		;;
