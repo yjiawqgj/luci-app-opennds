@@ -63,8 +63,6 @@ return view.extend({
 				])
 			]));
 			body.appendChild(sec2);
-
-			refreshSilently();
 		}
 
 		function refreshSilently() {
