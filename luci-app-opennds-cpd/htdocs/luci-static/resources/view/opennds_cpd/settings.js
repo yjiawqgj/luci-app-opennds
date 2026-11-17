@@ -46,6 +46,8 @@ return view.extend({
 
 			/* 默认门户设置 */
 			var sec1 = CPD.section(_('默认门户设置'), 'Default Portal');
+			sec1.appendChild(E('p', { 'class': 'cpd-note' },
+				_('文件夹与文件为相互覆盖模式，后者总会覆盖前者，如果上传文件夹，则文件夹内必须有一个default.sh的主入口脚本。')));
 			portalBox = E('div', {});
 			sec1.appendChild(portalBox);
 			renderPortalTabs();
@@ -55,9 +57,7 @@ return view.extend({
 				}),
 				E('input', {
 					'type': 'file', 'webkitdirectory': '', 'id': 'cpd-portal-dir', 'style': 'display:none'
-				}),
-				E('p', { 'class': 'cpd-note' },
-					_('这里上传的是该类型的默认门户（区域未单独选门户时使用）。可上传 .sh 脚本或文件夹；同一类型只保留一个门户。'))
+				})
 			]));
 			body.appendChild(sec1);
 
@@ -138,18 +138,6 @@ return view.extend({
 			/* 门户不再做「选择」：该类型下只允许存在一个门户（文件或文件夹），
 			 * 后传的覆盖先传的，这里只显示当前生效的那一个 */
 			var curName = cur.sel || (cur.items && cur.items.length ? cur.items[0] : '');
-			var field = E('div', {
-				'style': 'display:flex;align-items:center;gap:10px;flex-wrap:wrap'
-			}, [
-				E('span', { 'style': 'font-size:13px;font-weight:600' }, _('当前门户')),
-				E('span', {
-					'style': 'font-family:ui-monospace,Consolas,monospace;font-size:13px'
-				}, curName || _('内置 default.sh')),
-				E('span', {
-					'style': 'font-size:11.5px;color:#7a8794;' +
-						'font-family:ui-monospace,Consolas,monospace'
-				}, _('目录：%s').format(portalPath(state.tab)))
-			]);
 
 			var tools = E('div', {
 				'style': 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px'
@@ -166,10 +154,7 @@ return view.extend({
 			portalBox.appendChild(E('div', {}, [
 				tabRow,
 				E('div', { 'style': 'padding-top:22px' }, [
-					field,
-					tools,
-					E('p', { 'class': 'cpd-note', 'style': 'margin-top:12px' },
-						_('文件夹与文件为相互覆盖模式，后者总会覆盖前者，如果上传文件夹，则文件夹内必须有一个default.sh的主入口脚本。'))
+					tools
 				])
 			]));
 		}
@@ -400,7 +385,7 @@ return view.extend({
 			rateInput.addEventListener('input', sync);
 			rateLine.style.display = (action === 'reject') ? 'none' : 'flex';
 			return E('div', {}, [
-				E('label', { 'class': 'cpd-note', 'style': 'font-weight:600;color:var(--text,#222a31)' }, label),
+				E('label', { 'class': 'cpd-note', 'style': 'display:block;margin-bottom:10px;font-weight:600;color:var(--text,#222a31)' }, label),
 				sel,
 				rateLine
 			]);

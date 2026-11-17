@@ -1,2 +1,0 @@
-config zone_detect 'main'
-	option session_scope 'default'

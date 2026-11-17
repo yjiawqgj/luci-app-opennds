@@ -1,3 +1,0 @@
-config main 'main'
-	option portal ''
-	list mac ''
