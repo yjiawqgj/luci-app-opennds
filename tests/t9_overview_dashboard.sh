@@ -2,8 +2,8 @@
 # t9：概览页数据口径（用户现场逐条）
 #   ① 在线 = 已认证 + 免认证已登录 + 可信任；未认证单独一类，不再混进"在线"
 #   ② 卡片数字与列表条目同源：online+authorized 的行数 = counts.online
-#   ③ 无线接入点卡片按 ubus 运行时接口计数（机器上没装 iw 也要能数出来）
-#   ④ 客户端列表带 ssid，前端"接入点"一列才能显示 SSID 而不是 phy2-ap0
+#   ③ 无线接入点卡片按 hostapd ubus 关联终端计数（clientif=br-lan 也能数出来）
+#   ④ 客户端列表带 ssid：按 MAC 反查关联表，不依赖 clientif 与 SSID 的直配
 #   ⑤ trusted 客户端 ndsctl 不给 ip 时用邻居表补
 #   ⑥ 同一 MAC 同时在黑名单和信任名单：黑名单优先，应用后被自动清理
 . "$(dirname "$0")/lib.sh"
@@ -11,7 +11,7 @@ tmp_setup t9
 
 mkdir -p "$S/bin"
 
-# ---- ubus：network.wireless status（radio2 两张 AP）----
+# ---- ubus：network.wireless status（radio2 两张 AP）+ hostapd 关联终端 ----
 cat >"$S/bin/ubus" <<'UEOF'
 #!/bin/sh
 if [ "$1" = 'call' ] && [ "$2" = 'network.wireless' ]; then
@@ -37,6 +37,37 @@ if [ "$1" = 'call' ] && [ "$2" = 'network.wireless' ]; then
 				}
 			}
 		]
+	}
+}
+J
+fi
+# hostapd.<ifname> get_clients：关联终端（AP 计数与客户端 SSID 的权威来源）
+if [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' ]; then
+	cat <<'J'
+{
+	"num_sta": 2,
+	"clients": {
+		"AA:BB:CC:DD:EE:01": {
+			"address": "aa:bb:cc:dd:ee:01",
+			"aid": "1"
+		},
+		"22:33:44:55:66:77": {
+			"address": "22:33:44:55:66:77",
+			"aid": "2"
+		}
+	}
+}
+J
+fi
+if [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap1' ]; then
+	cat <<'J'
+{
+	"num_sta": 1,
+	"clients": {
+		"11:22:33:44:55:66": {
+			"address": "11:22:33:44:55:66",
+			"aid": "1"
+		}
 	}
 }
 J
@@ -101,7 +132,7 @@ case "$1" in
       "client_type":"cpd_can",
       "mac":"11:22:33:44:55:66",
       "ip":"",
-      "clientif":"phy2-ap1",
+      "clientif":"br-lan",
       "session_start":"1700000000",
       "session_end":"null",
       "last_active":"1700000100",
@@ -210,16 +241,16 @@ a0=$(ap_seg "$out" '互联网')
 a1=$(ap_seg "$out" 'guest')
 ck "互联网 AP 运行时接口=phy2-ap0" '"iface":"phy2-ap0"' "$a0"
 ck "guest AP 运行时接口=phy2-ap1" '"iface":"phy2-ap1"' "$a1"
-ck "互联网 AP 计数=2（已认证+未认证）" '"count":2' "$a0"
-ck "guest AP 计数=1（可信任客户端）" '"count":1' "$a1"
+ck "互联网 AP 计数=2（hostapd 关联终端）" '"count":2' "$a0"
+ck "guest AP 计数=1（clientif=br-lan 也按 MAC 查到）" '"count":1' "$a1"
 
-# ④⑤ 客户端行：SSID + 邻居表补 IP
+# ④⑤ 客户端行：SSID + 邻居表补 IP（trusted 的 clientif 是 br-lan，SSID 只能靠关联表）
 seg() { printf '%s' "$1" | tr '{' '\n' | grep -F "\"mac\":\"$2\""; }
 r1=$(seg "$out" 'aa:bb:cc:dd:ee:01')
 r2=$(seg "$out" '11:22:33:44:55:66')
 r3=$(seg "$out" '22:33:44:55:66:77')
 ck "已认证客户端 ssid=互联网" '"ssid":"互联网"' "$r1"
-ck "可信任客户端 ssid=guest" '"ssid":"guest"' "$r2"
+ck "可信任客户端按关联表补 ssid=guest" '"ssid":"guest"' "$r2"
 ck "可信任客户端用邻居表补到 IP" '"ip":"10.0.0.9"' "$r2"
 ck "可信任客户端 authorized=true" '"authorized":true' "$r2"
 ck "未认证客户端 authorized=false" '"authorized":false' "$r3"

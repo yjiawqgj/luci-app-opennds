@@ -262,52 +262,6 @@ return view.extend({
 			renderAll();
 		});
 
-		var effV = E('span', { 'class': 'zd-ms-v' }, '');
-		var savedV = E('span', { 'class': 'zd-ms-v' }, '');
-		var dirtySpan = E('span', { 'class': 'zd-ms-dirty', 'style': 'display:none' },
-			_('有未保存的修改'));
-
-		function modeLabel(m) {
-			if (m === 'zone') return _('区域模式');
-			if (m === 'default') return _('默认模式');
-			return _('尚未配置');
-		}
-
-		function renderModeState() {
-			var eff = (state.loginOptionEnabled === '3') ? 'zone' :
-				(state.loginOptionEnabled === '1') ? 'default' : null;
-			effV.textContent = modeLabel(eff);
-			effV.className = 'zd-ms-v' + (eff ? ' on' : '');
-			savedV.textContent = state.scope ? modeLabel(state.scope) : _('无');
-			dirtySpan.style.display = overallDirty() ? '' : 'none';
-		}
-
-		/* ---------- 默认模式面板 ---------- */
-		var defaultNote = E('p', { 'class': 'zd-sec-desc mt' }, '');
-		var defaultHint = E('span', { 'class': 'zd-save-state' }, '');
-
-		function renderDefault() {
-			var eff = (state.loginOptionEnabled === '3') ? 'zone' :
-				(state.loginOptionEnabled === '1') ? 'default' : null;
-			if (eff === 'zone') {
-				defaultNote.textContent = _('当前仍在使用区域识别。点击应用后，将停止使用区域配置，统一使用 openNDS 默认认证设置。');
-			} else if (eff === 'default') {
-				defaultNote.textContent = _('当前使用 openNDS 默认认证设置。再次保存或应用会保留该模式。');
-			} else {
-				defaultNote.textContent = _('选择默认模式将不再使用网络区域识别，统一使用 openNDS 默认认证设置。');
-			}
-			if (state.scope === 'global') {
-				defaultHint.textContent = _('已保存');
-				defaultHint.className = 'zd-save-state ok';
-			} else if (!state.scope) {
-				defaultHint.textContent = _('尚未保存');
-				defaultHint.className = 'zd-save-state';
-			} else {
-				defaultHint.textContent = _('有未保存的修改');
-				defaultHint.className = 'zd-save-state dirty';
-			}
-		}
-
 		/* 全局模式：openNDS 自带的登录方式，不做区域识别 */
 		function handleDefaultSave(quiet) {
 			return Promise.all([
@@ -918,14 +872,11 @@ return view.extend({
 				wiredHint.textContent = w.text;
 				wiredHint.className = 'zd-save-state' + (w.kind ? ' ' + w.kind : '');
 			}
-			renderDefault();
-			renderModeState();
 		}
 
 		function renderAll() {
 			scopeSel.value = state.scopeSel;
 			var isZone = (state.scopeSel === 'zone');
-			defaultPanel.style.display = isZone ? 'none' : '';
 			wirelessPanel.style.display = isZone ? '' : 'none';
 			wiredPanel.style.display = isZone ? '' : 'none';
 			if (isZone) {
@@ -941,12 +892,6 @@ return view.extend({
 		}
 
 		/* ---------- 组装页面 ---------- */
-		var defaultPanel = E('div', { 'class': 'cpd-sec' }, [
-			E('h3', {}, [_('默认模式'), E('span', { 'class': 'cpd-en' }, 'Default')]),
-			defaultNote,
-			E('div', { 'class': 'zd-save-row' }, [defaultHint])
-		]);
-
 		zoneSaveRow.appendChild(zoneHint);
 
 		var wirelessPanel = E('div', { 'class': 'cpd-sec' }, [
@@ -990,15 +935,8 @@ return view.extend({
 			E('div', { 'class': 'zd-scope-row' }, [
 				E('label', { 'class': 'zd-scope-label', 'for': 'zd-scope' }, _('区域')),
 				scopeSel
-			]),
-			E('div', { 'class': 'zd-mode-state' }, [
-				E('span', {}, _('当前生效')), effV,
-				E('span', { 'aria-hidden': 'true' }, '·'),
-				E('span', {}, _('已保存')), savedV,
-				dirtySpan
 			])
 		]));
-		body.appendChild(defaultPanel);
 		body.appendChild(wirelessPanel);
 		body.appendChild(wiredPanel);
 		body.appendChild(unmatchedPanel);

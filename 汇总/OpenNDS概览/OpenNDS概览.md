@@ -45,8 +45,8 @@ luci-app-opennds-cpd/
 | 决策点 | 结论 |
 |---|---|
 | LuCI 版本 | 现代 JS LuCI（OpenWrt 21.02+），前端 JS 视图 + rpcd `file.exec` 调后端脚本，后端输出 JSON。后端脚本是全插件共用的 `opennds-cpd-api.sh`，本页调用形式 `opennds-cpd-api.sh overview <子命令>` |
-| 持久化策略 | **全部持久化**：编辑限制与「免认证」写 `preemptivemac`、信任写 `trustedmac`（均为 uci opennds 配置，重启后仍生效）、拉黑写插件自有名单 `/etc/config/zone_blacklist`（分发脚本运行时读取）。**唯一纯运行时的是「解除认证」**（`ndsctl deauth`，本来就不该持久——用户重新登录即可恢复） |
-| 拉黑的实现机制 | openNDS 配置里**没有持久**的按 MAC 黑名单（只有 FQDN/端口维度的 `blocklist_fqdn_list`）；9.x 的 `ndsctl block` 只是"内存名单 + 当场插 nft 规则"（`auth_client_block()` → `add_to_blocked_mac_list()` + `iptables_block_mac()`），**重启即失效、也不会改变分发脚本出示哪个门户**，10.x 已把这条命令删掉。所以持久黑名单只能插件自建。拉黑 = ① 写 `zone_blacklist` 名单并 commit；② 从 `trustedmac` / `preemptivemac` 里摘掉该 MAC 并 commit（否则重启后又被自动放行/自动认证，名单形同虚设）；③ `ndsctl untrust` 即时撤掉 nft 里的信任规则、`ndsctl deauth` 踢下线；④ **`/etc/init.d/opennds restart`**，让主进程重新读取 `trustedmac` / `preemptivemac` 并重建 nft 链。此后该客户端回到未认证状态，被 openNDS 自身挡在门外，门户请求由分发脚本识别名单后改为出示黑名单门户（这条只在「区域」模式下成立——切回「全局」时 openNDS 用自带的"点一下就过"页面，名单拦不住，见《客户端黑名单.md》§1）。重启的代价是已认证客户端被 `shutdown_deauth` 踢下线，随后按 `authlog.log` 的剩余时长恢复（见 §3.1 锁定态，倒计时按需要重启的 15 秒起算） |
+| 持久化策略 | **全部持久化**：编辑限制与「免认证」写 `preemptivemac`、信任写 `trustedmac`（均为 uci opennds 配置，重启后仍生效）、拉黑写 `/etc/config/opennds` 的 `blockedmac` 名单（分发脚本每次请求现读）。**唯一纯运行时的是「解除认证」**（`ndsctl deauth`，本来就不该持久——用户重新登录即可恢复） |
+| 拉黑的实现机制 | openNDS **9.4.0（2021-12-08）已废弃** `macmechanism` / `allowedmaclist` / `blockedmaclist`（ChangeLog 原文），10.x 源码里没有 `blockedmaclist`，写进配置不报错但没有任何进程执行它；9.x 的 `ndsctl block` 也只是"内存名单 + 当场插 nft 规则"，重启即失效，10.x 已删掉这条命令。所以持久黑名单由插件自建（`opennds.blockedmac` 名单）+ **分发脚本执行拦截**：命中名单的客户端不出示区域门户、只出示黑名单门户，永远认证不了。拉黑 = ① 写 `zone_blacklist` 名单并 commit；② 从 `trustedmac` / `preemptivemac` 里摘掉该 MAC 并 commit（否则重启后又被自动放行/自动认证，名单形同虚设）；③ `ndsctl untrust` 即时撤掉 nft 里的信任规则、`ndsctl deauth` 踢下线；④ **`/etc/init.d/opennds restart`**，让主进程重新读取 `trustedmac` / `preemptivemac` 并重建 nft 链。此后该客户端回到未认证状态，被 openNDS 自身挡在门外，门户请求由分发脚本识别名单后改为出示黑名单门户（这条只在「区域」模式下成立——切回「全局」时 openNDS 用自带的"点一下就过"页面，名单拦不住，见《客户端黑名单.md》§1）。重启的代价是已认证客户端被 `shutdown_deauth` 踢下线，随后按 `authlog.log` 的剩余时长恢复（见 §3.1 锁定态，倒计时按需要重启的 15 秒起算） |
 | 编辑弹窗"应用"的含义 | **保存设置并重启 openNDS**。点"应用"→ 校验 → 持久化写入 → `/etc/init.d/opennds restart`，重启后新限制生效 |
 | 数据刷新 | 纯自动轮询（10 秒）刷新列表与状态，**不设手动刷新按钮、不设自动刷新开关**。编辑/详情弹窗打开、整页锁定时暂停轮询，关闭/解锁后立刻补拉一次 |
 | 禁用 WIFI 的接入点卡片 | **不显示**。无线接入点卡片只展示启用状态的 WIFI |
@@ -105,7 +105,7 @@ luci-app-opennds-cpd/
   `if (!id && config->allow_preemptive_authentication == 1)`），所以关掉它不会让重启后的
   客户端集体掉在未认证，只是**还没产生过流量、不在 `ip neigh` 里的设备**要等自己发一次
   请求才会被放行。本页不读这个开关，也不因此改任何计数。
-- 启停与重启的 toast 文案照演示：启停成功「openNDS 已启动」/「openNDS 已停止」，重启过程「正在重启 openNDS…」→ 成功「openNDS 已重启」。
+- 启停与重启的横幅：启停成功「openNDS 已启动」/「openNDS 已停止」、重启成功「openNDS 已重启」都用 **3 秒自动消失**的横幅（不需要用户点叉）；「正在重启 openNDS…」这条**不再显示**（按钮自身的「重启中…」态已经足够）。失败/未生效的报错横幅不自动消失。
 - 重启按钮：后端同步执行 `/etc/init.d/opennds restart`，**返回 0 只代表脚本跑完**，
   前端要继续轮询 `run_state`，直到进程真的起来（最多 20 秒）；超时提示
   「openNDS 未能在 20 秒内就绪，请查看 openNDS 日志」（日志目录由 `libopennds.sh` 的
@@ -123,12 +123,12 @@ luci-app-opennds-cpd/
 
 | 卡片 | 判定 |
 |---|---|
-| 在线客户端 | **当前真的连着的全部设备** = `ndsctl json` 的 `clients` 里的全部条目（`state` 为 `Authenticated` / `AuthBlocked` / `Preauthenticated` / `Trusted` 四种都算在线），剔除 `zone_blacklist` 名单内的。点开就是这份完整列表。**不要只数 `state=Authenticated`**——那样会把未认证、超配额、可信任的都漏掉 |
+| 在线客户端 | **当前真的连着的、有访问权限的设备** = `ndsctl json` 里 `state` 为 `Trusted` / `Authenticated` / `AuthBlocked` 的条目（剔除 `blockedmac` 名单内的）；`Preauthenticated`（未认证）**不算在线**，单独一类计数。统计卡片与客户端列表同源（`online` / `authorized` 标记），不会出现卡片数与列表对不上 |
 | 已认证客户端 | `state` 为 `Authenticated`，或 `AuthBlocked`（超流量配额被 FUP 限流、身份仍是已认证），且不在 `trustedmac`、也不在 `preemptivemac` 名单内（普通登录用户） |
 | 免认证客户端 | **在 `preemptivemac` 名单内、且 `state` 是 `Authenticated` / `AuthBlocked`**（预认证真的登录成功了）。名单内但在线仍是 `Preauthenticated` 的（刚加名单还没到下一轮、没有 DHCP 租约）**不算免认证**，落到未认证——宁可卡片上显示"没生效"，也不要显示成功。openNDS 的 `client_type` 字段**不能**用来判定——它只在"客户端还没进客户端列表、由预认证流程新建条目"时才是 `preemptive`，正常运行时先被 15 秒扫描收进列表的客户端一律是 `cpd_can`。离线设备靠名单补行、只补行不计数。**判定只看 `state` 和名单，不读任何开关值**：`allow_preemptive_authentication` 是豁免页自己的开关，本页不读、不写、不因它改计数 |
 | 可信任客户端 | `state == "Trusted"`——openNDS 为 `trustedmac` 里的客户端单独维护的状态，它们**确实在 `clients` 里**，只是状态不是 `Authenticated`。离线设备靠 `trustedmac` 名单（或 json 顶层的 `trusted` 数组）补行 |
 | 未认证客户端 | **前面几类都没接走的在线客户端**（实际就是 `state == "Preauthenticated"` 的）。这一类是兜底，不要再拿名单做排除条件，否则"名单里有、但没登录成功"的设备会从所有卡片里消失，四类相加对不上在线数 |
-| 黑名单 | **以 `zone_blacklist` 名单为准**（不是 ndsctl 状态）。名单内 MAC 无论当前是否在线都计数 |
+| 黑名单 | **以 `opennds.blockedmac` 名单为准**（不是 ndsctl 状态）。名单内 MAC 无论当前是否在线都计数 |
 | 最大客户端 | 静态卡片，取 `uci get opennds.@opennds[0].maxclients`（默认 250） |
 
 点击前 6 张卡片 = 切换列表筛选并滚动到列表；"最大客户端"为静态卡不可点击。
@@ -203,14 +203,14 @@ luci-app-opennds-cpd/
 >   download_quota / upload_quota / download_this_session / download_session_avg /
 >   upload_this_session / upload_session_avg`。
 >   `custom` 也**一定在**：没有自定义串时值是字符串 `"none"`（不是空、也不是缺键）；值真正为空只可能出现在老版本或裁剪过的构建里，解析时把 `"none"` 当"无自定义串"处理即可。
-> - **只有 `blocked` 在 json 里没有**，它来自插件自己的 `zone_blacklist`。
+> - **只有 `blocked` 在 json 里没有**，它来自插件读的 `/etc/config/opennds` 的 `blockedmac` 名单。
 >   前端需要的 `authenticated / preauth / trusted / blocked` 四个布尔由后端换算，
 >   前端不解析 openNDS 内部状态。
 
 **这三类视图的行 = `ndsctl` 里的在线条目 ∪ 名单里的条目**：
 先取 `clients` 里 `state=="Trusted"` 的（可信任，在线），以及 `preemptivemac` 名单里
 当前在 `clients` 中出现的（免认证，在线），再用两份名单补上没出现的行（即为离线行）；
-黑名单只来自 `zone_blacklist` 名单。离线行 IP/主机名/接入点显示"—"，状态标签照旧。
+黑名单只来自 `opennds.blockedmac` 名单。离线行 IP/主机名/接入点显示"—"，状态标签照旧。
 理由：名单是持久的，客户端离线后如果从列表里消失，用户就再也找不到、没法撤销了。
 
 ### 2.3 网络接口
@@ -227,7 +227,7 @@ luci-app-opennds-cpd/
 
 - 卡片来自无线列表（`uci show wireless`），**只显示启用状态的 WIFI**
   （disabled='1' 的不显示，无重名特殊处理需求）。
-- 每张卡片：SSID（小字）+ 该接入点下未拉黑客户端数（大字）+ "已连接客户端"标签。
+- 每张卡片：SSID（小字）+ 该接入点下未拉黑客户端数（大字）+ "已连接客户端"标签。计数来源是 **hostapd 的关联终端**（`ubus call hostapd.<接口名> get_clients` 按 MAC 数，剔除黑名单）——openNDS 的 `clientif` 来自 `get_client_interface.sh`，机器没装 iw 时是 `br-lan` 这类网桥名，对不上 `phyN-apM`，按它数永远是 0（"有客户端连接但卡片全 0"的根因）。
 - 接口→SSID 反查与区域识别页**共用同一份实现**，顺序也一样：先用 `iw dev <接口> info` 里的
   `ssid` 行直读（免疫 `phyN-apM` 编号变化），读不到才回退 `phyN-apM` → radioN 第 M 个 AP section。
   **不要**自己再写一套序号映射——序号法在"中间某个 AP 被禁用"时会取到相邻 SSID。
@@ -257,9 +257,9 @@ luci-app-opennds-cpd/
 - **进入页面默认不排序**，按后端返回的顺序显示；排序、搜索、筛选三者可叠加
   （先按筛选/接入点取子集 → 再按搜索词过滤 → 最后排序）。
 - 空结果时表格显示一行 `暂无符合条件的客户端`，跨全部 5 列居中，不要留一张空表。
-- **黑名单视图的数据源不同**：列表来自 `zone_blacklist` 名单本身，而不是
+- **黑名单视图的数据源不同**：列表来自 `opennds.blockedmac` 名单本身，而不是
   `ndsctl json`。名单里当前不在线的 MAC 照样显示一行，IP 地址与主机名显示
-  为"—"、接入点显示"—"、状态标签显示"拉黑"；这类行只保留"解除拉黑"可用，
+  为"—"、接入点显示"—"、状态标签显示"黑名单"；这类行只保留"解除拉黑"可用，
   其余按钮全部禁用。这样用户拉黑后随时能在本页看到并撤销，不会因为客户端
   被踢下线就"消失得找不到"。
 
@@ -360,8 +360,8 @@ ok 绿 / warn 琥珀 / err 红，与插件其它页面一致）。
 | 解除认证 | `ndsctl deauth`（纯运行时，不写配置）；**若该 MAC 在 `preemptivemac` 名单内，同时删条目并删队列文件**，否则下一轮预认证又把它放进来 |
 | 可信任 | `ndsctl trust <mac>`（立即改内存名单，并往 nft 的 `ndsTRU` 链里插一条按 MAC 放行的规则，**即时生效、不用重启**）+ uci `trustedmac` 追加（只为重启后还在）+ **同时删掉 `preemptivemac` 里该 MAC 的整条**（两份名单必须互斥，见《整包集成与打包.md》§11.2 第 6 条；不删的话它还悄悄留在免认证名单里，以后一取消信任就立刻变回「免认证」，用户会以为信任没撤干净）。预认证队列里那条残留可以不管——`client_auth()` 只在客户端处于 `Preauthenticated` 时才认证，`Trusted` 的直接跳过 |
 | 移除可信任 | `ndsctl untrust <mac>`（立即删掉那条 nft 规则，**即时生效、不用重启**）+ uci `trustedmac` 移除 |
-| 拉黑 | ① **读当前** `zone_blacklist` 名单 → 追加该 MAC（**存小写**，与黑名单页同一口径，见《整包集成与打包.md》§11.4）→ 写回 commit（**只加这一个，不许整体重写**，否则会冲掉黑名单页刚加的）；② uci 摘除 `trustedmac` / `preemptivemac` 条目并 commit（按 MAC 删整条，不看条目原文）；③ `ndsctl untrust` 撤掉信任规则、**删掉该 MAC 的预认证队列文件**、`ndsctl deauth` 踢下线；④ `/etc/init.d/opennds restart`，让主进程重读两份名单并重建 nft 链；后端按《整包集成与打包.md》§11.1 的判据等就绪（`pidof opennds` 有值 **且** `ndsctl status` 能成功，最多 15 秒）再返回，前端在这期间一直锁着。**全站已认证客户端会短暂断线**，按 `authlog.log` 恢复 |
-| 解除拉黑 | **读当前** `zone_blacklist` 名单 → **按 MAC 删这一条** → commit（其它条目不动）。客户端下一次请求门户时恢复正常区域门户，需重新认证 |
+| 拉黑 | ① **读当前** `opennds.blockedmac` 名单 → 追加该 MAC（**存小写**，与黑名单页同一口径，见《整包集成与打包.md》§11.4）→ 写回 commit（**只加这一个，不许整体重写**，否则会冲掉黑名单页刚加的）；② uci 摘除 `trustedmac` / `preemptivemac` 条目并 commit（按 MAC 删整条，不看条目原文）；③ `ndsctl untrust` 撤掉信任规则、**删掉该 MAC 的预认证队列文件**、`ndsctl deauth` 踢下线；④ `/etc/init.d/opennds restart`，让主进程重读两份名单并重建 nft 链；后端按《整包集成与打包.md》§11.1 的判据等就绪（`pidof opennds` 有值 **且** `ndsctl status` 能成功，最多 15 秒）再返回，前端在这期间一直锁着。**全站已认证客户端会短暂断线**，按 `authlog.log` 恢复 |
+| 解除拉黑 | **读当前** `opennds.blockedmac` 名单 → **按 MAC 删这一条** → commit（其它条目不动）。客户端下一次请求门户时恢复正常区域门户，需重新认证 |
 
 > **凡是把 MAC 从 `preemptivemac` 摘掉、而它仍可能处于未认证状态的操作（移除免认证、解除认证、拉黑），都要顺手删掉
 > 它的预认证队列文件**：`<mountpoint>/ndscids/preemptive_auth/<MAC去冒号>`（`mountpoint` 由

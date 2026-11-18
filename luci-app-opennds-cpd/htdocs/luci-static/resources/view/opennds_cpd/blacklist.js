@@ -208,11 +208,7 @@ return view.extend({
 			});
 			portalBox.appendChild(E('div', { 'class': 'cpd-field' }, [
 				E('label', {}, _('门户选择')),
-				sel,
-				E('span', {
-					'style': 'font-size:11.5px;color:#7a8794;' +
-						'font-family:ui-monospace,Consolas,monospace'
-				}, _('门户目录：%s').format(state.dir))
+				sel
 			]));
 		}
 

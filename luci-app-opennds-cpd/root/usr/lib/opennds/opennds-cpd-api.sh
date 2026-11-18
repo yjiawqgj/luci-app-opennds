@@ -815,6 +815,32 @@ ws_iface_map() {
 	'
 }
 
+# hostapd ubus 的关联终端表：mac<TAB>ifname。
+# openNDS 的 clientif 来自 get_client_interface.sh：机器上没装 iw 时退回
+# ip -4 neigh 的设备列（br-lan），永远对不上 phyN-apM —— AP 卡片计数和
+# 客户端 SSID 都不能靠 clientif，得按 MAC 反查关联表。
+ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
+	local ifn
+	[ -n "$1" ] || return 0
+	command -v ubus >/dev/null 2>&1 || return 0
+	for ifn in $(printf '%s\n' "$1" | awk -F'\t' '$1 != "-" && $1 != "" {print $1}'); do
+		ubus call "hostapd.$ifn" get_clients 2>/dev/null |
+			awk -v i="$ifn" '
+			{
+				s = $0
+				m = "[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:" \
+					"[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]"
+				if (match(s, "\"" m "\"")) {
+					k = substr(s, RSTART + 1, RLENGTH - 2)
+					# 只要键值是 { 的（clients 对象的键），不要 "address":"<mac>" 这类值
+					rest = substr(s, RSTART + RLENGTH)
+					sub(/^[ \t]*/, "", rest)
+					if (rest ~ /^[ \t]*:[ \t]*\{/) print tolower(k) "\t" i
+				}
+			}'
+	done
+}
+
 # 当前启用的 AP 列表：AP_META 每行 iface<TAB>ssid<TAB>section
 ov_ap_meta() {
 	local secids sec mode dis dev ssid ifn idx
@@ -855,6 +881,15 @@ $AP_META
 EOF2
 }
 
+# 客户端 → SSID：优先按 MAC 查关联表（clientif 在没装 iw 的机器上是
+# br-lan 之类的网桥名，查不到 AP），查不到再退回 clientif 直配
+client_ssid() { # $1=mac（小写） $2=clientif
+	local cif="$2" sm
+	sm=$(printf '%s\n' "$STA_MAP" | awk -F'\t' -v m="$1" '$1 == m && NF >= 2 {print $2; exit}')
+	[ -n "$sm" ] && cif="$sm"
+	iface_ssid "$cif"
+}
+
 # 客户端行；$1=state $2=ip $3=iface $4=mac $5=dl_kb $6=ul_kb $7=ss $8=se $9=online(0/1)
 ov_client_row() {
 	local state="$1" ip="$2" cif="$3" lm="$4" dkb="$5" ukb="$6" ss="$7" se="$8"
@@ -869,7 +904,7 @@ ov_client_row() {
 	down=$((dkb * 1024))
 	# openNDS 对 trusted 客户端不一定填 ip；用邻居表补，别让"在线却没 IP"
 	[ -z "$ip" ] && ip=$(neigh_ip_for "$lm")
-	ssidv=$(iface_ssid "$cif")
+	ssidv=$(client_ssid "$lm" "$cif")
 
 	auth=false
 	pre=false
@@ -940,6 +975,7 @@ ov_build() {
 	fi
 	AP_MAP=$(ws_iface_map "$CPD_WS")
 	ov_ap_meta
+	STA_MAP=$(ws_sta_map "$AP_META")
 
 	CPD_PARSED=''
 	CPD_IN=''
@@ -1044,24 +1080,23 @@ EOF2
 }
 
 ov_aps() {
-	local ifn ssid sec cnt lm cif e sep=''
+	local ifn ssid sec cnt lm sm sep=''
 	APS_JSON=''
 	while IFS='	' read -r ifn ssid sec; do
 		[ "$ifn" = '-' ] && ifn=''
 		[ "$ssid" = '-' ] && ssid=''
 		[ -n "$ssid$sec" ] || continue
 		cnt=0
-		if [ "$CPD_RUNNING" = '1' ] && [ -n "$ifn" ]; then
-			# CPD_IN 列序：mac state ip cif dl ul ss se —— cif 是第 4 列，
-			# read 少写一个变量就会把它读成 ip，接口计数永远是 0
-			while IFS='	' read -r lm st ip cif rest; do
+		if [ -n "$ifn" ]; then
+			# 按 hostapd 关联终端计数：clientif（get_client_interface.sh）
+			# 没装 iw 时是 br-lan，对不上 phyN-apM，按它数永远是 0
+			while IFS='	' read -r lm sm; do
 				[ -n "$lm" ] || continue
-				[ "$cif" = '-' ] && cif=''
-				[ "$cif" = "$ifn" ] || continue
-				mac_in_bl "$lm" && continue # 只数未拉黑客户端
+				[ "$sm" = "$ifn" ] || continue
+				mac_in_bl "$lm" && continue # 黑名单客户端不计入
 				cnt=$((cnt + 1))
 			done <<EOF2
-$CPD_IN
+$STA_MAP
 EOF2
 		fi
 		APS_JSON="$APS_JSON$sep{\"iface\":\"$(json_escape "$ifn")\",\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"count\":$cnt}"
@@ -2296,37 +2331,43 @@ ex_zone_for() { # $1=运行时接口名（可空）
 	return 0
 }
 
-ex_status() {
-	local enabled tlist pentries t p pe b
-	enabled=$(nds_enabled)
-	pe=$(uci_val 'opennds.@opennds[0].allow_preemptive_authentication' '1')
-	tlist=$(list_of 'opennds.@opennds[0].trustedmac')
-	pentries=$(list_of 'opennds.@opennds[0].preemptivemac')
+# 豁免页公共数据：名单/开关一次取齐 + 租约表预读（每个客户端再 fork
+# 一遍 uci/awk 就是豁免页"切进来要等 2~3 秒"的元凶）
+ex_common() {
+	local t p b
+	EX_ENABLED=$(nds_enabled)
+	EX_PE=$(uci_val 'opennds.@opennds[0].allow_preemptive_authentication' '1')
+	CPD_LEASE_MAP=$(ov_lease_map)
 	local tjson='' sep=''
-	for t in $tlist; do
+	for t in $(list_of 'opennds.@opennds[0].trustedmac'); do
+		[ -n "$t" ] || continue
 		tjson="$tjson$sep\"$(json_escape "$t")\""
 		sep=','
 	done
 	local pjson=''
 	sep=''
-	for p in $pentries; do
+	for p in $(list_of 'opennds.@opennds[0].preemptivemac'); do
+		[ -n "$p" ] || continue
 		pjson="$pjson$sep\"$(json_escape "$p")\""
 		sep=','
 	done
 	# 黑名单一起返回：前端在应用前做"一个客户端只属于一个名单"的校验
-	local blist bjson='' bsep=''
-	blist=$(list_of 'opennds.@opennds[0].blockedmac')
-	for b in $blist; do
+	local bjson='' bsep=''
+	for b in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		mac_valid "$b" || continue
 		bjson="$bjson$bsep\"$(json_escape "$(mac_lower "$b")")\""
 		bsep=','
 	done
-	printf '{"ok":1,"enabled":%s,"trusted":[%s],"preempt":[%s],"preempt_enabled":%s,"blocked":[%s]}\n' \
-		"$enabled" "$tjson" "$pjson" "$pe" "$bjson"
+	EX_TJSON=$tjson
+	EX_PJSON=$pjson
+	EX_BJSON=$bjson
+	EX_TLIST=$(list_of 'opennds.@opennds[0].trustedmac')
+	EX_PENTRIES=$(list_of 'opennds.@opennds[0].preemptivemac')
 }
 
-ex_info() {
-	local running=0 parsed srow
+# 在线/离线客户端信息表（"clients":{...} 的内容，不含外层键）
+ex_clients() {
+	local running=0 srow
 	nds_running && running=1
 	local out='' sep='' seen='|'
 	if [ "$running" = '1' ]; then
@@ -2351,10 +2392,8 @@ EOF2
 	fi
 	# 名单里配了但不在线的：ip -4 neigh 兜底补 IP（zone 未知）；
 	# 主机名照官方 dhcp_check 从 DHCP 租约查 —— 租约与 openNDS 是否在跑无关
-	local tlist pentries lm
-	tlist=$(list_of 'opennds.@opennds[0].trustedmac')
-	pentries=$(list_of 'opennds.@opennds[0].preemptivemac')
-	for lm in $tlist $(printf '%s\n' $pentries | sed -n 's/^mac=//p' | cut -d';' -f1); do
+	local lm
+	for lm in $EX_TLIST $(printf '%s\n' $EX_PENTRIES | sed -n 's/^mac=//p' | cut -d';' -f1); do
 		lm=$(mac_lower "$lm") 2>/dev/null || continue
 		case "$seen" in
 			*"|$lm|"*) continue ;;
@@ -2367,7 +2406,14 @@ EOF2
 		sep=','
 		seen="$seen$lm|"
 	done
-	printf '{"ok":1,"clients":{%s}}\n' "$out"
+	EX_CLIENTS=$out
+}
+
+ex_status() {
+	ex_common
+	ex_clients
+	printf '{"ok":1,"enabled":%s,"trusted":[%s],"preempt":[%s],"preempt_enabled":%s,"blocked":[%s],"clients":{%s}}\n' \
+		"$EX_ENABLED" "$EX_TJSON" "$EX_PJSON" "$EX_PE" "$EX_BJSON" "$EX_CLIENTS"
 }
 
 ex_save() { # 命名参数：trusted_add= trusted_remove= preempt_add= preempt_remove=
@@ -5042,7 +5088,6 @@ case "$PAGE" in
 		shift 2
 		case "$SUB" in
 			status) ex_status ;;
-			info) ex_info ;;
 			save) ex_save "$@" ;;
 			*) out_err "exempt：未知子命令 $SUB" ;;
 		esac

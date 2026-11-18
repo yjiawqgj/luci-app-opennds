@@ -132,7 +132,6 @@ return view.extend({
 					'aria-expanded': open ? 'true' : 'false',
 					'click': function () {
 						state.open[which] = !open;
-						if (state.open[which]) loadInfo();
 						renderAll();
 					}
 				}, open ? _('收起列表') : _('展开列表')),
@@ -252,16 +251,27 @@ return view.extend({
 			wrap.appendChild(foot);
 		}
 
-		function loadInfo() {
-			CPD.api('exempt', 'info').then(function (j) {
-				if (j.ok) {
-					state.info = j.clients || {};
-					renderAll();
-				}
-			}).catch(function () {});
+		function refresh() {
+			CPD.api('exempt', 'status').then(function (j) {
+				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
+				state.trusted = j.trusted || [];
+				state.preempt = j.preempt || [];
+				/* status 现在把在线/离线信息一并返回：首屏不再发第二个 info 请求 */
+				state.info = j.clients || {};
+				state.blocked = (j.blocked || []).map(function (m) { return String(m).toLowerCase(); });
+				state.preemptEnabled = (j.preempt_enabled === 0) ? 0 : 1;
+				state.trusted0 = state.trusted.slice();
+				state.preempt0 = state.preempt.slice();
+				state.pe0 = state.preemptEnabled;
+				state.editing = { trusted: false, preempt: false };
+				renderAll();
+			}).catch(function (e) {
+				CPD.toast((e && e.error) || _('读取状态失败'), 'err');
+			});
 		}
 
-		/* ---------- 编辑 ---------- */
+		renderAll();
+		refresh();
 		function startEdit(which) {
 			state.editing[which] = true;
 			renderAll();
@@ -395,24 +405,6 @@ return view.extend({
 			});
 		}
 
-		function refresh() {
-			CPD.api('exempt', 'status').then(function (j) {
-				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
-				state.trusted = j.trusted || [];
-				state.preempt = j.preempt || [];
-				state.blocked = (j.blocked || []).map(function (m) { return String(m).toLowerCase(); });
-				state.preemptEnabled = (j.preempt_enabled === 0) ? 0 : 1;
-				state.trusted0 = state.trusted.slice();
-				state.preempt0 = state.preempt.slice();
-				state.pe0 = state.preemptEnabled;
-				state.editing = { trusted: false, preempt: false };
-				loadInfo();
-			}).catch(function (e) {
-				CPD.toast((e && e.error) || _('读取状态失败'), 'err');
-			});
-		}
-
-		refresh();
 		/* ---------- LuCI 框架底部按钮：保存 / 保存&应用 / 复位 ---------- */
 		this.handleSave = function () {
 			return stageExempt().then(function () {

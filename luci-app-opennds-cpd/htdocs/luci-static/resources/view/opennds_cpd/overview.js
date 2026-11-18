@@ -378,8 +378,9 @@ return view.extend({
 					state.enabled = j.enabled === 1;
 					renderStatus();
 					if (String(j.running) === want) {
-						CPD.toast(want === '1' ? _('openNDS 已启动') : _('openNDS 已停止'),
-							want === '1' ? 'ok' : 'warn');
+						/* 3 秒自动消失，不用手动点叉 */
+						CPD.notifyTimed(want === '1' ? _('openNDS 已启动') : _('openNDS 已停止'),
+							want === '1' ? 'ok' : 'warn', 3000);
 					} else {
 						CPD.toast(_('操作未完全生效，请查看 openNDS 日志'), 'err');
 					}
@@ -425,7 +426,6 @@ return view.extend({
 			restartBtn.disabled = true;
 			runSwitch.disabled = true;
 			restartLabel.textContent = _('重启中…');
-			CPD.toast(_('正在重启 openNDS…'));
 			CPD.api('overview', 'restart').then(function (j) {
 				if (j && j.error === 'busy') {
 					unlock();
@@ -450,7 +450,7 @@ return view.extend({
 					runSwitch.disabled = false;
 					restartLabel.textContent = _('重启');
 					if (ready) {
-						CPD.toast(_('openNDS 已重启'), 'ok');
+						CPD.notifyTimed(_('openNDS 已重启'), 'ok', 3000);
 					} else {
 						CPD.toast(_('openNDS 未能在 20 秒内就绪，请查看 openNDS 日志'), 'err');
 					}

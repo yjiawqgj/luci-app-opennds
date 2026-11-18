@@ -95,14 +95,14 @@ luci-app-opennds-cpd/
 ### 3.1 整体框架
 - 灰底 + 居中白色圆角卡片 `.sheet`（max-width 980px、1px 边框、8px 圆角），
   与 WalledGarden 页同一套视觉，不要套用概览页的纯白布局。
-- 页头 `.topbar`：H1「openNDS 设置」+ 英文小字 `Settings`；
+- 页头 `.topbar`：H1「openNDS 设置」；标题后面的英文小字已按要求删除；
   描述一行：**「默认门户、公平使用策略与网络接口设置。」**
   （正式页面不要出现"演示""不连接真实服务"这类原型字样。）
 - 三个 `.sec` 区块之间 `hr.divider`。
 - 底部固定 `.action-bar`：「保存」（普通） + 「应用」（primary）。
 
 ### 3.2 默认门户设置
-- H2「默认门户设置」+ 英文小字 `Default Portal`。
+- H2「默认门户设置」。
 - 三个 tab（`role="tablist"`）：**无线区域 / 有线区域 / 黑名单**，默认选中「无线区域」。
   - tab 支持左右方向键循环切换（`role="tab"` + `aria-selected` + `aria-controls="portalPanel"`），
     面板 `aria-labelledby` 跟随当前 tab。
@@ -119,7 +119,7 @@ luci-app-opennds-cpd/
   「只接受名为 default.sh 的脚本；该文件会被 openNDS 直接 source，不能有输出语句。」
 
 ### 3.3 公平使用策略
-- H2「公平使用策略」+ 英文小字 `Fair Use Policy`。
+- H2「公平使用策略」。
 - 区块标题下一条红色小字警告：**「下载配额检查优于上传配额检查。」**（照抄）
 - 两列网格 `.quota-grid`（窄屏单列），每列：
   - 标签「上传」/「下载」
@@ -130,7 +130,7 @@ luci-app-opennds-cpd/
 - 不要在界面上写 0 这个值：用户只需要选"限速还是取消认证"，0 是后端的事。
 
 ### 3.4 网络接口
-- H2「网络接口」+ 英文小字 `Network Interface`。
+- H2「网络接口」。
 - 区块标题下红色小字警告（照演示，修正原文语病）：
   **「更改网络接口，某些自定义规则和客户端将会失效，请先调整好相关配置再更改。」**
 - 卡片网格 `.iface-grid`，每张卡（`<button>`，`aria-pressed`）：

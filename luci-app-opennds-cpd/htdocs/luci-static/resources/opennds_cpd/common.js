@@ -170,6 +170,23 @@ var CPD = L.Class.extend({
 	toast: function (msg, kind) { return this.notify(msg, kind); },
 	toastCenter: function (msg, kind) { return this.notify(msg, kind); },
 
+	/* 自动消失的横幅：ms（默认 3000）后移除，用户不用再手动点叉。
+	 * ui.addNotification 返回它创建的节点；环境不返回节点时退化为普通横幅。 */
+	notifyTimed: function (msg, kind, ms) {
+		var self = this;
+		var k = self.notifyKinds[kind === undefined ? '' : kind] || 'info';
+		if (typeof ui.addNotification === 'function') {
+			var node = ui.addNotification(null, E('p', {}, msg), k);
+			window.setTimeout(function () {
+				if (!node) return;
+				if (node.parentNode) node.parentNode.removeChild(node);
+				else if (typeof node.remove === 'function') node.remove();
+			}, ms || 3000);
+			return true;
+		}
+		return self.statusBar(msg, kind);
+	},
+
 	/* 轮询类失败专用：单条通知栏、同一原因不重复弹、恢复后可被 clearNotice 清掉。
 	 * 轮询每 10 秒失败一次若走 addNotification，红色横幅会一条条往上摞。 */
 	notifyOnce: function (msg, kind) {
@@ -271,9 +288,10 @@ var CPD = L.Class.extend({
 	/* ---------- 页面骨架 ---------- */
 	style: ensureStyle,
 	pageHead: function (title, en, desc) {
+		/* en 参数保留只为兼容老调用点；页面标题后面的英文按需求一律不显示 */
 		ensureStyle();
 		return E('div', { 'class': 'cpd-head' }, [
-			E('h2', {}, [title, E('span', { 'class': 'cpd-en' }, en)]),
+			E('h2', {}, [title]),
 			desc ? E('div', { 'class': 'cpd-desc' }, desc) : E([])
 		]);
 	},

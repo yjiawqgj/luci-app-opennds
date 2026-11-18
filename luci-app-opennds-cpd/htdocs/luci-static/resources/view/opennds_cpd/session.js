@@ -27,17 +27,19 @@ return view.extend({
 		var inputs = {}, scopeSel, scopeHint;
 
 		var FIELDS = [
-			{ key: 'st', title: _('会话超时'), label: _('默认时间1440（分钟）'), ph: '1440', min: 0 },
-			{ key: 'ait', title: _('空闲超时'), label: _('默认时间120分钟'), ph: '120', min: 0 },
-			{ key: 'pit', title: _('未认证超时'), label: _('超时时间（分钟）'), ph: _('请输入分钟数'), min: 0 },
-			{ key: 'ci', title: _('检查间隔'), label: _('默认时间为15（秒）'), ph: '15（秒）', min: 1 }
+			{ key: 'st', title: _('会话超时'), desc: _('默认时间1440（分钟）'), ph: '1440', min: 0 },
+			{ key: 'ait', title: _('空闲超时'), desc: _('默认时间120分钟'), ph: '120', min: 0 },
+			{ key: 'pit', title: _('未认证超时'), desc: _('默认超时30分钟'), ph: '30', min: 0 },
+			{ key: 'ci', title: _('检查间隔'), desc: _('默认时间为15（秒）'), ph: '15', min: 1 }
 		];
 
 		function formScope() {
 			return scopeSel.value;
 		}
 
-		/* ---------- 渲染 ---------- */
+		/* ---------- 渲染 ----------
+		 * 说明（默认时间 1440（分钟）等）放在标题下面，样式与页面标题下的
+		 * 说明一致（cpd-desc）；占位符直接给默认值，输入框下方不再叠说明。 */
 		function renderAll() {
 			body.innerHTML = '';
 			body.appendChild(CPD.pageHead(
@@ -46,6 +48,7 @@ return view.extend({
 
 			FIELDS.forEach(function (fd) {
 				var sec = CPD.section(fd.title);
+				sec.appendChild(E('p', { 'class': 'cpd-desc' }, fd.desc));
 				var inp = E('input', {
 					'class': 'cpd-input', 'type': 'number',
 					'style': 'max-width:200px', 'min': String(fd.min), 'step': '1',
@@ -53,14 +56,7 @@ return view.extend({
 				});
 				inp.value = state[fd.key];
 				inputs[fd.key] = inp;
-				sec.appendChild(E('div', { 'class': 'cpd-field' }, [
-					E('label', {}, fd.label),
-					inp
-				]));
-				if (fd.key === 'pit') {
-					sec.appendChild(E('p', { 'class': 'cpd-note' },
-						_('检查客户端超时和配额状态的间隔（秒）')));
-				}
+				sec.appendChild(E('div', { 'class': 'cpd-field' }, [inp]));
 				if (fd.key === 'st') {
 					scopeSel = E('select', { 'class': 'cpd-input', 'style': 'max-width:320px;min-width:190px;height:36px;padding:0 8px;line-height:34px' }, [
 						E('option', { value: 'default' }, _('默认')),
@@ -68,9 +64,9 @@ return view.extend({
 					]);
 					scopeSel.value = state.scope;
 					scopeSel.addEventListener('change', function () { state.scope = scopeSel.value; });
-					scopeHint = E('p', { 'class': 'cpd-note' }, _('覆盖会覆盖单独客户端的配置'));
+					scopeHint = E('p', { 'class': 'cpd-desc' }, _('覆盖会覆盖单独客户端的配置'));
 					sec.appendChild(E('div', { 'class': 'cpd-field' }, [
-						E('label', {}, _('配置范围')),
+						E('label', { 'class': 'cpd-desc' }, _('配置范围')),
 						scopeSel,
 						scopeHint
 					]));
@@ -88,11 +84,12 @@ return view.extend({
 
 		var FIELD_NAMES = [_('会话超时'), _('空闲超时'), _('未认证超时'), _('检查间隔')];
 
-		/* 与后端 se_validate 口径一致：非负整数；检查间隔 ≥ 1 */
+		/* 与后端 se_validate 口径一致：非负整数；检查间隔 ≥ 1。
+		 * 空 = 删除该配置（应用后 openNDS 用内置默认值） */
 		function validateForm() {
 			var v = formValues();
 			for (var i = 0; i < v.length; i++) {
-				if (v[i] === '') continue;      /* 空 = 不写这个键，保持原值 */
+				if (v[i] === '') continue;      /* 空 = 应用后删除该配置 */
 				if (!/^[0-9]+$/.test(v[i])) {
 					CPD.notify(_('%s 必须是非负整数（0 表示不限制）').format(FIELD_NAMES[i]), 'warn');
 					if (inputs[['st', 'ait', 'pit', 'ci'][i]]) inputs[['st', 'ait', 'pit', 'ci'][i]].focus();
@@ -145,7 +142,8 @@ return view.extend({
 			];
 			[['sessiontimeout', v[0]], ['authidletimeout', v[1]],
 				['preauthidletimeout', v[2]], ['checkinterval', v[3]]].forEach(function (p) {
-				if (p[1] === '') return;        /* 空值不写：绝不把已有键改成空串 */
+				/* 空 = 删除该配置（openNDS 回退到内置默认值），不是"保持原值"；
+				 * stageUci 对 opt 传空串会暂存一条删除增量 */
 				jobs.push(CPD.stageUci('opennds', '@opennds[0]', p[0], 'opt', p[1]));
 			});
 			if (scope === 'override') {
