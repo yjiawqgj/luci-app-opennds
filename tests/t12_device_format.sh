@@ -348,6 +348,15 @@ export PATH="$S/bin:$PATH"
 
 out=$(call overview dashboard)
 
+# 排障留痕：CI 上失败时这几行会被写进 ::error 注解（job 日志要权限，取不到）。
+# 看 DEBUG ap_map / ap_meta / sta_map 哪一层空，就知道断在哪。
+dbg=$(call overview selfcheck 2>&1 | head -c 900)
+printf 'DEBUG selfcheck: %s\n' "$dbg"
+printf 'DEBUG tools: iw=%s ubus=%s awk=%s\n' \
+	"$(command -v iw)" "$(command -v ubus)" "$(command -v awk)"
+printf 'DEBUG awkver: %s\n' "$(awk -W version 2>&1 | head -1)"
+printf 'DEBUG iwdev: %s\n' "$(iw dev 2>&1 | head -3 | tr '\n' '|')"
+
 echo "== AP 卡片 =="
 ck "互联网 AP iface=phy2-ap0" '"iface":"phy2-ap0"' "$out"
 ck "互联网 AP ssid=互联网" '"ssid":"互联网"' "$out"

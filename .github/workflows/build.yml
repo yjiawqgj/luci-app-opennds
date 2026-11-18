@@ -41,7 +41,7 @@ jobs:
             log=$(sh "$t" 2>&1) || {
               rc=1
               printf '%s\n' "$log" | tail -60
-              msg=$(printf '%s\n' "$log" | grep -E "FAIL|失败|错误|cannot|not found|No such" | head -20 |
+              msg=$(printf '%s\n' "$log" | grep -E "FAIL|失败|错误|cannot|not found|No such|DEBUG" | head -25 |
                     awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); gsub(/\r/,""); if (NR>1) printf "%%0A"; printf "%s", $0}')
               [ -n "$msg" ] || msg=$(printf '%s\n' "$log" | tail -5 | awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); if (NR>1) printf "%%0A"; printf "%s", $0}')
               echo "::error title=$t::$msg"
