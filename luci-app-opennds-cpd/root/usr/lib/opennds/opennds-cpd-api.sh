@@ -491,10 +491,24 @@ ap_section_index() { # $1=section id $2=device
 
 # radio 的 AP 运行时接口里，SSID 匹配优先，序号兜底
 # 接口 SSID 直读：iw 优先，没装 iw 用 iwinfo（openwrt 默认自带）
+# iw 把非可打印字节转义成 \xNN——中文 SSID 在真机上就是
+#   ssid \xe4\xba\x92\xe8\x81\x94\xe7\xbd\x91
+# 直接拿去和 uci 里的「互联网」比永远不相等（AP 卡片匹配不到接口、
+# 接入点列也就退回了接口名）。这里把 \xNN 解回原始 UTF-8 字节。
+ssid_unescape() { # $1=可能带 \xNN 转义的 SSID
+	case "$1" in
+		*\\x*) ;;
+		*) printf '%s' "$1"; return 0 ;;
+	esac
+	# printf %b 会把 % 当格式符，先转义一遍
+	printf '%b' "$(printf '%s' "$1" | sed 's/%/%%/g')"
+}
+
 iface_raw_ssid() { # $1=接口名
 	local s=''
 	if command -v iw >/dev/null 2>&1; then
 		s=$(iw dev "$1" info 2>/dev/null | awk '/^[ \t]*ssid / {print $2; exit}')
+		s=$(ssid_unescape "$s")
 	fi
 	if [ -z "$s" ] && command -v iwinfo >/dev/null 2>&1; then
 		# iwinfo 输出：ESSID: "xxx"；unknown 时不带引号 → $2 为空
@@ -967,6 +981,8 @@ neigh_has() { # $1=小写 mac
 ov_conn() {
 	local lm cif mif sta_any=0
 	CONN_ON=''
+	# openNDS 没运行时不需要显示在线（用户口径：只在其开启时显示）
+	[ "$CPD_RUNNING" = '1' ] || return 0
 	printf '%s\n' "$STA_MAP" | grep -q . && sta_any=1
 	if [ "$sta_any" = '1' ]; then
 		while IFS='	' read -r lm cif; do

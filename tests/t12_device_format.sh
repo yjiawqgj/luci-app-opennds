@@ -250,7 +250,7 @@ case "$1" in
 					$'\tifindex 9' \
 					$'\twdev 0x20000005' \
 					$'\taddr 00:11:22:33:44:60' \
-					$'\tssid 互联网' \
+					$'\tssid \\xe4\\xba\\x92\\xe8\\x81\\x94\\xe7\\xbd\\x91' \
 					$'\ttype AP' \
 					$'\twiphy 2' \
 					$'\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz'

@@ -237,6 +237,11 @@ luci-app-opennds-cpd/
 - 接口→SSID 反查与区域识别页**共用同一份实现**，顺序也一样：先用 `iw dev <接口> info` 里的
   `ssid` 行直读（免疫 `phyN-apM` 编号变化），读不到才回退 `phyN-apM` → radioN 第 M 个 AP section。
   **不要**自己再写一套序号映射——序号法在"中间某个 AP 被禁用"时会取到相邻 SSID。
+- **iw 的 SSID 是转义输出的**：非 ASCII 字节一律写成 `\xNN`，真机上
+  `iw dev phy2-ap0 info` 里的中文 SSID 是 `ssid \xe4\xba\x92\xe8\x81\x94\xe7\xbd\x91`，
+  不是「互联网」。拿去和 uci 的 `option ssid '互联网'` 比永远不相等——卡片匹配不到
+  接口、接入点列退回接口名，都是这一处引起的。解析后必须把 `\xNN` 解回原始字节
+  （后端 `ssid_unescape()`，`printf %b` 实现，注意先转义 `%`）。
 - 点击卡片 = 按接入点筛选客户端列表（同时把统计筛选重置回"在线"），并平滑滚动
   到客户端列表；再次点击同一卡片取消筛选。卡片唯一键用 **uci section 名**
   （每张卡一个 wireless-iface 节，天生唯一）——运行时接口名在 ubus 解析失败时
