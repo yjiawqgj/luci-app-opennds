@@ -36,7 +36,17 @@ jobs:
           rc=0
           for t in tests/t[0-9]*_*.sh; do
             echo "======== $t ========"
-            sh "$t" || rc=1
+            # 用例输出只存在这里跑一遍；失败时把关键行写成 ::error 注解，
+            # 注解是公开可读的（job 日志要仓库权限，取不到就没法排查）。
+            log=$(sh "$t" 2>&1) || {
+              rc=1
+              printf '%s\n' "$log" | tail -60
+              msg=$(printf '%s\n' "$log" | grep -E "FAIL|失败|错误|cannot|not found|No such" | head -20 |
+                    awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); gsub(/\r/,""); if (NR>1) printf "%%0A"; printf "%s", $0}')
+              [ -n "$msg" ] || msg=$(printf '%s\n' "$log" | tail -5 | awk 'BEGIN{ORS=""} {gsub(/%/,"%25"); if (NR>1) printf "%%0A"; printf "%s", $0}')
+              echo "::error title=$t::$msg"
+            }
+            printf '%s\n' "$log" | tail -3
           done
           exit $rc
 
