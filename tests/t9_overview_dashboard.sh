@@ -2,7 +2,7 @@
 # t9：概览页数据口径（用户现场逐条）
 #   ① 在线 = 路由器视角「正在连接」（hostapd 关联表为准 + 有线邻居表），
 #     不是 openNDS 的记录数——ndsctl 把客户端留到空闲超时，人走了记录还在
-#   ② 卡片数字与列表条目同源：online+authorized 的行数 = counts.authenticated 等
+#   ② 卡片数字与列表条目同源：online 行数 = counts.online，按 AP 筛出的行数 = AP 卡片数
 #   ③ 无线接入点卡片按 hostapd ubus 关联终端计数（clientif=br-lan 也能数出来）
 #   ④ 客户端列表带 ssid：按 MAC 反查关联表，不依赖 clientif 与 SSID 的直配
 #   ⑤ trusted 客户端 ndsctl 不给 ip 时用邻居表补
@@ -295,20 +295,22 @@ printf 'dc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/blockedmac"
 out=$(call overview dashboard)
 ck "dashboard 返回 ok" '{"ok":1' "$out"
 
-# ① 统计口径。在线 = 正在连接且有访问权限（已认证/可信任/免认证已登录）：
-#    aa01 + 11:22（无线）+ ee08（有线）= 3；22:33 是 Preauthenticated（未认证）
-#    不算在线；ee07 已离线（记录在人不在）不算；黑名单不算
+# ① 统计口径。在线 = 路由器视角「正在连着」（hostapd 关联表 + 有线邻居表），
+#    不管有没有过门户：aa01 + 11:22 + 22:33 + ee08 + ee09 = 5；
+#    ee07 已离线（记录在人不在）不算；黑名单不算
 counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
-ck "在线=3（连着且有访问权限；未认证/离线/黑名单都不算）" '"online":3' "$counts"
+ck "在线=5（连着就算：已认证/可信任/未认证都算，离线与黑名单不算）" '"online":5' "$counts"
 ck "已认证=2（ee07 已离线不占卡片）" '"authenticated":2' "$counts"
-ck "未认证=1（Preauthenticated：连着但还没过门户）" '"unauthenticated":1' "$counts"
+ck "未认证=2（22:33 未过门户 + ee09 门户外关联设备）" '"unauthenticated":2' "$counts"
 ck "可信任=1（黑名单里的重复条目不算）" '"trusted":1' "$counts"
 ck "黑名单=1" '"blacklist":1' "$counts"
 
-# ② 卡片数与列表同源：在线且 authorized 的行应正好 3 条
-#    （aa01 / 11:22 / ee08；22:33 在线但未认证不算）
-n=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
-ck "列表里 online+authorized 行数=3" '3' "$n"
+# ② 卡片数与列表同源：在线（非黑名单）的行应正好 5 条
+n=$(printf '%s' "$out" | grep -o '"online":true' | wc -l | tr -d ' ')
+ck "列表里 online=true 的行数=5（=在线卡）" '5' "$n"
+# 有权限的仍是 3 条（aa01 / 11:22 / ee08）：未认证的两条不算 authorized
+n2=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
+ck "列表里 online+authorized 行数=3" '3' "$n2"
 
 # ③ 无线接入点计数（ubus 映射：phy2-ap0 / phy2-ap1）
 ap_seg() { printf '%s' "$1" | tr '}' '\n' | grep -F "\"ssid\":\"$2\""; }
@@ -345,11 +347,19 @@ ck "有线客户端 iface=br-lan" '"iface":"br-lan"' "$r8"
 ck "有线客户端 authorized=true" '"authorized":true' "$r8"
 
 # ⑩ 连着但没碰过门户的设备（ee09，hostapd 有关联、ndsctl 没记录）：
-#    不进客户端列表、不计入在线卡，但接入点卡片计数包含它
-case "$out" in
-	*aa:bb:cc:dd:ee:09*) echo "  FAIL 门户外设备不应出现在客户端列表"; fail=1 ;;
-	*) echo "  OK   门户外设备不进客户端列表（只在 AP 卡片计数里）" ;;
-esac
+#    必须出现在客户端列表里（未认证）——否则 AP 卡片显示 3、点开却是空的
+r9=$(seg "$out" 'aa:bb:cc:dd:ee:09')
+ck "门户外关联设备出行（AP 卡片数才与列表对得上）" '"mac":"aa:bb:cc:dd:ee:09"' "$r9"
+ck "门户外关联设备 online=true（人确实连着）" '"online":true' "$r9"
+ck "门户外关联设备 authorized=false（算未认证）" '"authorized":false' "$r9"
+ck "门户外关联设备 apsec=default_radio2（点该卡片能筛出来）" '"apsec":"default_radio2"' "$r9"
+ck "门户外关联设备带 ssid=互联网" '"ssid":"互联网"' "$r9"
+ck "门户外关联设备用邻居表补 IP" '"ip":"10.0.0.7"' "$r9"
+
+# ⑪ AP 卡片计数 = 点开该卡片能看到的行数（用户现场：卡片 3、列表 0）
+n_ap=$(printf '%s' "$out" | tr '{' '\n' | grep -F '"apsec":"default_radio2"' |
+	grep -c '"online":true')
+ck "互联网卡片计数(3) = 按该 AP 筛出的行数" '3' "$n_ap"
 
 # ⑥ 名单互斥：黑名单里的 MAC 即便写在 trustedmac 里也不算可信任
 r4=$(seg "$out" 'dc:d8:7b:53:e5:5a')
@@ -370,7 +380,7 @@ ck "blockedmac 原样保留" 'dc:d8:7b:53:e5:5a' "$bl_list"
 echo "== openNDS 停止：接入点卡片照常计数，客户端列表清空 =="
 out3=$(NDS_RUNNING=0 call overview dashboard)
 counts3=$(printf '%s' "$out3" | grep -o '"counts":{[^}]*}')
-ck "停止后在线=0（ndsctl 没记录，门户外设备不进列表）" '"online":0' "$counts3"
+ck "停止后在线=0（openNDS 没在管，不判在线）" '"online":0' "$counts3"
 ck "停止后黑名单卡仍按名单显示" '"blacklist":1' "$counts3"
 s0=$(ap_seg "$out3" '互联网')
 ck "停止后 AP 计数不变（关联表不经过 openNDS）" '"count":3' "$s0"
@@ -386,6 +396,6 @@ ck "兜底：guest AP 计数=1（clientif=phy2-ap1）" '"count":1' "$b1"
 r5=$(seg "$out2" 'aa:bb:cc:dd:ee:01')
 ck "兜底：已认证客户端 ssid=互联网（clientif 直配）" '"ssid":"互联网"' "$r5"
 counts2=$(printf '%s' "$out2" | grep -o '"counts":{[^}]*}')
-ck "兜底：在线=4（关联表拿不到时按 openNDS 记录算）" '"online":4' "$counts2"
+ck "兜底：在线=5（关联表拿不到时按 openNDS 记录算）" '"online":5' "$counts2"
 
 done_report

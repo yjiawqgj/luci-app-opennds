@@ -476,10 +476,10 @@ return view.extend({
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
-		 * "在线" = 正在连接（路由器视角，hostapd 关联表为准）且有访问权限的
-		 * 设备（已认证 / 可信任 / 免认证已登录）；还没过门户的（未认证）
-		 * 不算在线，单独一类。计数与列表用的是后端同一组标记
-		 * （online / authorized），不会出现卡片数与列表条数对不上。 */
+		 * "在线" = 路由器视角正在连着的设备（hostapd 关联表 / 有线邻居表），
+		 * 不管有没有过门户：刚连上还没打开浏览器的设备也算在线，只是算未认证。
+		 * 这样接入点卡片数出来的「已连接客户端」点开就有对应条目。
+		 * 计数与列表用的是后端同一组标记（online / authorized），不会错位。 */
 		function isOnline(c) { return !!c.online; }
 
 		function inFilter(c) {
@@ -497,8 +497,8 @@ return view.extend({
 				case 'unauth':
 					return online && !c.authorized && !c.blocked;
 				default: /* online */
-					/* 在线 = 连着且有访问权限；未认证（还没过门户）不算 */
-					return online && !!c.authorized && !c.blocked;
+					/* 在线 = 当前连着；黑名单不算 */
+					return online && !c.blocked;
 			}
 		}
 
@@ -514,14 +514,17 @@ return view.extend({
 		}
 
 		/* 接入点一列显示 SSID。后端已经把运行时接口对应的 SSID 一并给了（c.ssid），
-		 * 这里再兜一层：接口名 → AP 卡片 → SSID。 */
+		 * 这里再兜一层：接口名 → AP 卡片 → SSID。
+		 * 对不上任何一张 AP 卡片的接口就是有线：显示接口名并标注「（有线）」，
+		 * 例如 br-lan（有线）——不能只显示 br-lan，否则和无线接口名分不清。 */
 		function apName(iface) {
 			if (!iface) return '—';
 			for (var i = 0; i < state.aps.length; i++) {
-				if (state.aps[i].iface === iface && state.aps[i].ssid) return state.aps[i].ssid;
+				if (state.aps[i].iface !== iface) continue;
+				/* 是 AP 的接口：有 SSID 就用 SSID，SSID 反查失败也别标成有线 */
+				return state.aps[i].ssid || iface;
 			}
-			if (iface === state.managed.iface) return iface + _('（有线）');
-			return iface;
+			return iface + _('（有线）');
 		}
 
 		/* AP 卡片的唯一键：uci section 名是唯一的，放最前面——

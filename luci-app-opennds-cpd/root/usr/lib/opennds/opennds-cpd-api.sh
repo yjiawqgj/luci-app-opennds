@@ -841,6 +841,14 @@ neigh_ip_for() { # $1=小写 mac
 		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m {print $1; exit}'
 }
 
+# 邻居表里的设备名（br-lan 等）：有线客户端的「接入点」一列要显示它。
+# ndsctl 的 clientif 来自官方 get_client_interface.sh，探不到时是空串
+# （真机上见过 clientif=""、ip 有值的行），这时只能从邻居表反查设备。
+neigh_dev_for() { # $1=小写 mac
+	ip -4 neigh show 2>/dev/null |
+		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && $6 != "FAILED" {print $3; exit}'
+}
+
 # network.wireless status（ubus）→ "section<TAB>ifname" 行。
 # 这是 OpenWrt 运行时最权威的映射：uci 里配的是 section，真正跑起来的接口名
 # （phyN-apM）只有 netifd 知道。之前只靠 iw 反查，机器上没装 iw 时全部为空，
@@ -1012,8 +1020,12 @@ EOFC1
 				[ -n "$lm" ] || continue
 				lm=$(mac_lower "$lm") # ndsctl 给的 MAC 是大写，统一成小写再比
 				printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && continue
-				# 不在关联表：只有有线（管理接口 + 邻居表有它）才算连着
+				# 不在关联表：有线（clientif 是管理接口、且邻居表里找得到）
 				[ -n "$mif" ] || continue
+				# clientif 为空（官方脚本探不到接口）时用邻居表的设备名补
+				case "$cif" in
+					'' | '-') cif=$(neigh_dev_for "$lm") ;;
+				esac
 				[ "$cif" = "$mif" ] || continue
 				neigh_has "$lm" || continue
 				CONN_ON="$CONN_ON$lm
@@ -1042,6 +1054,11 @@ ov_client_row() {
 	down=$((dkb * 1024))
 	# openNDS 对 trusted 客户端不一定填 ip；用邻居表补，别让"在线却没 IP"
 	[ -z "$ip" ] && ip=$(neigh_ip_for "$lm")
+	# 有线客户端的 clientif 探不到时用邻居表的设备名兜底：
+	# 列表「接入点」一列要显示 br-lan（前端再加「（有线）」）
+	case "$cif" in
+		'' | '-') cif=$(neigh_dev_for "$lm") ;;
+	esac
 	ssidv=$(client_ssid "$lm" "$cif")
 	apsec=$(printf '%s\n' "$STA_SEC" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
 
@@ -1156,10 +1173,31 @@ EOF5
 	ov_aps
 }
 
+# 每个客户端行算出唯一的「身份」（前端 tagOf / inFilter 用的是同一组标记）：
+#   bl=黑名单  tr=可信任  pre=免认证  auth=已认证  unauth=未认证
+# 同时记下行是否在线（onl）。ROW_TBL = "mac<TAB>身份<TAB>onl" 每行一条，
+# ov_counts 只按这张表数数——卡片数字与列表条目永远同源，不会再出现
+# 「卡片 3、点开列表 0 条」这种错位。
+ov_row_class() { # $1=state $2=小写 mac → 打印 bl|tr|pre|auth|unauth
+	local is_auth=0
+	case "$1" in
+		Authenticated | AuthBlocked) is_auth=1 ;;
+	esac
+	mac_in_bl "$2" && { printf 'bl'; return 0; }
+	mac_in_tr "$2" && { printf 'tr'; return 0; }
+	if mac_in_pm "$2" && [ "$is_auth" = '1' ]; then
+		printf 'pre'
+		return 0
+	fi
+	[ "$is_auth" = '1' ] && { printf 'auth'; return 0; }
+	printf 'unauth'
+}
+
 ov_rows() {
 	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0 onl rif
-	local seen is_auth
+	local seen cls
 	N_ONLINE=0
+	ROW_TBL=''
 	# 已见 MAC：openNDS 记录的 + 关联表里的（后面补名单行时去重用）
 	seen="$CPD_MACS"
 	if [ "$CPD_RUNNING" = '1' ]; then
@@ -1179,23 +1217,33 @@ ov_rows() {
 			rif=$(printf '%s\n' "$STA_MAP" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
 			[ -n "$rif" ] && cif="$rif"
 			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" "$onl")"
-			# 在线卡只数「连着且有访问权限」的：已认证 / 可信任 / 免认证已登录。
-			# Preauthenticated（还没过门户）与没碰过门户的设备不算——与前端
-			# inFilter 的 online 分支同一口径，卡片数与列表条数对得上。
-			is_auth=0
-			case "$state" in
-				Authenticated | AuthBlocked) is_auth=1 ;;
-			esac
-			mac_in_tr "$lm" && is_auth=1
-			mac_in_bl "$lm" && is_auth=0
-			if [ "$onl" = '1' ] && [ "$is_auth" = '1' ]; then
-				N_ONLINE=$((N_ONLINE + 1))
-			fi
+			cls=$(ov_row_class "$state" "$lm")
+			ROW_TBL="$ROW_TBL$lm	$cls	$onl
+"
 			sep=','
 			n=$((n + 1))
 		done <<EOF2
 $CPD_IN
 EOF2
+
+		# 关联表里有、openNDS 还没记录的设备（刚连上 / 没开过浏览器 / ARP 表里
+		# 暂时看不到它）也要出行：AP 卡片是按 hostapd 关联表数出来的，列表若只
+		# 认 ndsctl 的记录，就会出现「卡片 3、点开一条都没有」。这些设备没有
+		# 会话记录，按未认证算，状态列显示未认证、IP/主机名照常从租约和邻居表补。
+		while IFS='	' read -r lm rif; do
+			[ -n "$lm" ] || continue
+			printf '%s\n' "$seen" | grep -qFx "$lm" && continue
+			seen="$seen$lm
+"
+			rows="$rows$sep$(ov_client_row '' '' "$rif" "$lm" 0 0 '' '' 1)"
+			cls=$(ov_row_class '' "$lm")
+			ROW_TBL="$ROW_TBL$lm	$cls	1
+"
+			sep=','
+			n=$((n + 1))
+		done <<EOF4
+$STA_MAP
+EOF4
 	fi
 
 	# 名单补行：trusted / preemptivemac / blockedmac 里不在线的 MAC
@@ -1206,62 +1254,54 @@ EOF2
 		seen="$seen$lm
 "
 		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0)"
+		cls=$(ov_row_class '' "$lm")
+		ROW_TBL="$ROW_TBL$lm	$cls	0
+"
 		sep=','
 		n=$((n + 1))
 	done
+
+	# 在线 = 路由器视角「正在连着」且不在黑名单的行。与前端 inFilter 的
+	# online 分支同一口径（online && !blocked），卡片数 = 列表条数。
+	while IFS='	' read -r lm cls onl; do
+		[ -n "$lm" ] || continue
+		[ "$onl" = '1' ] || continue
+		[ "$cls" = 'bl' ] && continue
+		N_ONLINE=$((N_ONLINE + 1))
+	done <<EOF9
+$ROW_TBL
+EOF9
+
 	ROWS_JSON="$rows"
 	N_ROWS="$n"
 }
 
 # 统计口径（在线的判定以路由器为准，见 ov_conn）：
-#   在线     = 正在连接且「有访问权限」（已认证 / 可信任 / 免认证已登录），
-#              ov_rows 按行统计；Preauthenticated 与没碰过门户的设备不算
-#   已认证   = 正在连接且 state=Authenticated/AuthBlocked、不在信任/免认证名单
-#   未认证   = 正在连接但还没通过认证（Preauthenticated 状态）
-#   免认证   = 正在连接且在 preemptivemac 名单
+#   在线     = 正在连着的客户端（无线=hostapd 关联表，有线=邻居表），
+#              黑名单不算。刚连上、还没过门户的设备也是在线，只是算未认证
+#   已认证   = 在线且 state=Authenticated/AuthBlocked、不在信任/免认证名单
+#   未认证   = 在线但还没通过认证（Preauthenticated / 关联了但没碰过门户）
+#   免认证   = 在线且在 preemptivemac 名单且已登录
 #   可信任   = 以 trustedmac 名单为准（离线的信任设备也在名单里）
-# 计数与列表用同一组标记（online / authorized），卡片数与列表条数对得上。
+# 全部按 ROW_TBL 数，与客户端列表同源。
 ov_counts() {
-	local lm st cif onl m2 tr_cfg=0
+	local lm cls onl m2
 	N_AUTH=0
 	N_PRE=0
 	N_TR=0
 	N_UN=0
-	if [ "$CPD_RUNNING" = '1' ]; then
-		while IFS='	' read -r lm st cif; do
-			[ -n "$lm" ] || continue
-			lm=$(mac_lower "$lm") # 名单匹配（mac_in_bl 等）都按小写
-			mac_in_bl "$lm" && continue # 黑名单从各卡片里剔除
-			onl=0
-			printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && onl=1
-			case "$st" in
-				Trusted)
-					[ "$onl" = '1' ] && N_TR=$((N_TR + 1))
-					continue
-					;;
-				Authenticated | AuthBlocked) ;;
-				*)
-					# Preauthenticated：连着算未认证，人走了不占卡片
-					[ "$onl" = '1' ] && N_UN=$((N_UN + 1))
-					continue
-					;;
-			esac
-			[ "$onl" = '1' ] || continue # 离线的已认证客户端不进卡片
-			if mac_in_pm "$lm"; then
-				N_PRE=$((N_PRE + 1))
-			else
-				N_AUTH=$((N_AUTH + 1))
-			fi
-		done <<EOF2
-$CPD_IN
+	while IFS='	' read -r lm cls onl; do
+		[ -n "$lm" ] || continue
+		case "$cls" in
+			bl) continue ;; # 黑名单只进黑名单卡
+			tr) N_TR=$((N_TR + 1)) ;; # 名单为准，离线也在
+			pre) [ "$onl" = '1' ] && N_PRE=$((N_PRE + 1)) ;;
+			auth) [ "$onl" = '1' ] && N_AUTH=$((N_AUTH + 1)) ;;
+			*) [ "$onl" = '1' ] && N_UN=$((N_UN + 1)) ;;
+		esac
+	done <<EOF2
+$ROW_TBL
 EOF2
-	fi
-
-	# 可信任以配置为准（在线的照常算，离线的不漏）
-	for m2 in $TR_MACS; do
-		[ -n "$m2" ] && tr_cfg=$((tr_cfg + 1))
-	done
-	[ "$tr_cfg" -gt "$N_TR" ] && N_TR="$tr_cfg"
 
 	N_BL=0
 	for m2 in $BL_MACS; do
@@ -1354,12 +1394,16 @@ lines_to_json() { # $1=多行文本
 #   sh /usr/lib/opennds/opennds-cpd-api.sh overview selfcheck
 # AP 卡片全 0 / 接入点列不出 SSID 时，看 ap_map / ap_meta / sta_map 哪层为空。
 ov_selfcheck() {
-	local running enabled t sep=''
+	local running enabled t sep='' mtime=''
 	enabled=$(nds_enabled)
 	running=0
 	nds_running && running=1
 	ov_build
-	printf '{"ok":1,"running":%s,"enabled":%s,"tools":{' "$running" "$enabled"
+	# 装的到底是不是刚构建的那版：脚本自身的修改时间（apk 装包时间）。
+	# 上一轮「改了没生效」就是装的旧包，先看这个再看别的。
+	command -v stat >/dev/null 2>&1 && mtime=$(stat -c '%y' "$0" 2>/dev/null | cut -d. -f1)
+	printf '{"ok":1,"build":"%s","running":%s,"enabled":%s,"tools":{' \
+		"$(json_escape "$mtime")" "$running" "$enabled"
 	for t in ubus jsonfilter iw iwinfo timeout ndsctl uci; do
 		printf '%s"%s":%s' "$sep" "$t" "$(command -v "$t" >/dev/null 2>&1 && printf 1 || printf 0)"
 		sep=','
