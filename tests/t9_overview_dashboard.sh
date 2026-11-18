@@ -1,11 +1,13 @@
 #!/bin/sh
 # t9：概览页数据口径（用户现场逐条）
-#   ① 在线 = 已认证 + 免认证已登录 + 可信任；未认证单独一类，不再混进"在线"
-#   ② 卡片数字与列表条目同源：online+authorized 的行数 = counts.online
+#   ① 在线 = 路由器视角「正在连接」（hostapd 关联表为准 + 有线邻居表），
+#     不是 openNDS 的记录数——ndsctl 把客户端留到空闲超时，人走了记录还在
+#   ② 卡片数字与列表条目同源：online+authorized 的行数 = counts.authenticated 等
 #   ③ 无线接入点卡片按 hostapd ubus 关联终端计数（clientif=br-lan 也能数出来）
 #   ④ 客户端列表带 ssid：按 MAC 反查关联表，不依赖 clientif 与 SSID 的直配
 #   ⑤ trusted 客户端 ndsctl 不给 ip 时用邻居表补
 #   ⑥ 同一 MAC 同时在黑名单和信任名单：黑名单优先，应用后被自动清理
+#   ⑦ openNDS 停止后照样能看到在线设备（关联表不经过 openNDS）
 . "$(dirname "$0")/lib.sh"
 tmp_setup t9
 
@@ -47,7 +49,7 @@ fi
 if [ -z "$NDS_NO_HOSTAPD" ] && [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' ]; then
 	cat <<'J'
 {
-	"num_sta": 2,
+	"num_sta": 3,
 	"clients": {
 		"AA:BB:CC:DD:EE:01": {
 			"address": "aa:bb:cc:dd:ee:01",
@@ -56,6 +58,10 @@ if [ -z "$NDS_NO_HOSTAPD" ] && [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' 
 		"22:33:44:55:66:77": {
 			"address": "22:33:44:55:66:77",
 			"aid": "2"
+		},
+		"AA:BB:CC:DD:EE:09": {
+			"address": "aa:bb:cc:dd:ee:09",
+			"aid": "3"
 		}
 	}
 }
@@ -80,7 +86,11 @@ UEOF
 cat >"$S/bin/ip" <<'IEOF'
 #!/bin/sh
 case "$*" in
-	*neigh*) printf '%s\n' '10.0.0.9 dev br-lan lladdr 11:22:33:44:55:66 REACHABLE' ;;
+	*neigh*)
+		printf '%s\n' \
+			'10.0.0.9 dev br-lan lladdr 11:22:33:44:55:66 REACHABLE' \
+			'10.0.0.8 dev br-lan lladdr aa:bb:cc:dd:ee:08 STALE' \
+			'10.0.0.7 dev br-lan lladdr aa:bb:cc:dd:ee:09 REACHABLE' ;;
 	*addr*) printf '%s\n' '2: br-lan    inet 10.0.0.1/24 brd 10.0.0.255 scope global br-lan' ;;
 esac
 IEOF
@@ -100,7 +110,7 @@ case "$1" in
 		[ -n "$NDS_NO_HOSTAPD" ] && TR_CIF='phy2-ap1'
 		cat <<J
 {
-  "client_list_length":"3",
+  "client_list_length":"5",
   "clients":{
     "AA:BB:CC:DD:EE:01":{
       "gatewayname":"OpenNDS",
@@ -185,6 +195,62 @@ case "$1" in
       "download_session_avg":"0.00",
       "upload_this_session":"0",
       "upload_session_avg":"0.00"
+    },
+    "AA:BB:CC:DD:EE:07":{
+      "gatewayname":"OpenNDS",
+      "gatewayaddress":"10.0.0.1",
+      "gatewayfqdn":"status.client",
+      "version":"10.0.0",
+      "client_type":"cpd_can",
+      "mac":"AA:BB:CC:DD:EE:07",
+      "ip":"10.0.0.6",
+      "clientif":"phy2-ap0",
+      "session_start":"1700000000",
+      "session_end":"null",
+      "last_active":"1700000100",
+      "token":"dddd0007",
+      "state":"Authenticated",
+      "custom":"none",
+      "download_rate_limit_threshold":"null",
+      "download_packet_rate":"null",
+      "download_bucket_size":"null",
+      "upload_rate_limit_threshold":"null",
+      "upload_packet_rate":"null",
+      "upload_bucket_size":"null",
+      "download_quota":"null",
+      "upload_quota":"null",
+      "download_this_session":"0",
+      "download_session_avg":"0.00",
+      "upload_this_session":"0",
+      "upload_session_avg":"0.00"
+    },
+    "AA:BB:CC:DD:EE:08":{
+      "gatewayname":"OpenNDS",
+      "gatewayaddress":"10.0.0.1",
+      "gatewayfqdn":"status.client",
+      "version":"10.0.0",
+      "client_type":"cpd_can",
+      "mac":"AA:BB:CC:DD:EE:08",
+      "ip":"10.0.0.8",
+      "clientif":"br-lan",
+      "session_start":"1700000000",
+      "session_end":"null",
+      "last_active":"1700000100",
+      "token":"eeee0008",
+      "state":"Authenticated",
+      "custom":"none",
+      "download_rate_limit_threshold":"null",
+      "download_packet_rate":"null",
+      "download_bucket_size":"null",
+      "upload_rate_limit_threshold":"null",
+      "upload_packet_rate":"null",
+      "upload_bucket_size":"null",
+      "download_quota":"null",
+      "upload_quota":"null",
+      "download_this_session":"0",
+      "download_session_avg":"0.00",
+      "upload_this_session":"0",
+      "upload_session_avg":"0.00"
     }
   },
   "trusted_list_length":"1",
@@ -229,17 +295,20 @@ printf 'dc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/blockedmac"
 out=$(call overview dashboard)
 ck "dashboard 返回 ok" '{"ok":1' "$out"
 
-# ① 统计口径
+# ① 统计口径。在线 = 正在连接：无线关联 4 个（aa01/22:33/11:22/ee09）
+#    + 有线 1 个（ee08，管理接口 + 邻居表）= 5；
+#    ee07 虽在 openNDS 记录里但已不在关联表（人走了）不算；黑名单不算
 counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
-ck "在线=已认证1+可信任1" '"online":2' "$counts"
-ck "已认证=1（不含可信任）" '"authenticated":1' "$counts"
-ck "未认证=1（Preauthenticated 不算在线）" '"unauthenticated":1' "$counts"
+ck "在线=5（无线4+有线1，离线的已认证和黑名单不算）" '"online":5' "$counts"
+ck "已认证=2（ee07 已离线不占卡片）" '"authenticated":2' "$counts"
+ck "未认证=2（Preauthenticated + 没碰过门户的 ee09）" '"unauthenticated":2' "$counts"
 ck "可信任=1（黑名单里的重复条目不算）" '"trusted":1' "$counts"
 ck "黑名单=1" '"blacklist":1' "$counts"
 
-# ② 卡片数与列表同源：同时 online 且 authorized 的行应正好 2 条
+# ② 卡片数与列表同源：在线且 authorized 的行应正好 3 条
+#    （aa01 / 11:22 / ee08；ee09 在线但未认证不算）
 n=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
-ck "列表里 online+authorized 行数=2" '2' "$n"
+ck "列表里 online+authorized 行数=3" '3' "$n"
 
 # ③ 无线接入点计数（ubus 映射：phy2-ap0 / phy2-ap1）
 ap_seg() { printf '%s' "$1" | tr '}' '\n' | grep -F "\"ssid\":\"$2\""; }
@@ -247,7 +316,7 @@ a0=$(ap_seg "$out" '互联网')
 a1=$(ap_seg "$out" 'guest')
 ck "互联网 AP 运行时接口=phy2-ap0" '"iface":"phy2-ap0"' "$a0"
 ck "guest AP 运行时接口=phy2-ap1" '"iface":"phy2-ap1"' "$a1"
-ck "互联网 AP 计数=2（hostapd 关联终端）" '"count":2' "$a0"
+ck "互联网 AP 计数=3（hostapd 关联终端）" '"count":3' "$a0"
 ck "guest AP 计数=1（clientif=br-lan 也按 MAC 查到）" '"count":1' "$a1"
 
 # ④⑤ 客户端行：SSID + 邻居表补 IP（trusted 的 clientif 是 br-lan，SSID 只能靠关联表）
@@ -262,8 +331,26 @@ ck "已认证客户端 apsec=default_radio2" '"apsec":"default_radio2"' "$r1"
 ck "可信任客户端 apsec=wifinet3" '"apsec":"wifinet3"' "$r2"
 ck "可信任客户端用邻居表补到 IP" '"ip":"10.0.0.9"' "$r2"
 ck "可信任客户端 authorized=true" '"authorized":true' "$r2"
-ck "未认证客户端 authorized=false" '"authorized":false' "$r3"
-ck "未认证客户端 online=true" '"online":true' "$r3"
+ck "预授权客户端也算在线（正在连接就是在线）" '"online":true' "$r3"
+ck "预授权客户端 authorized=false" '"authorized":false' "$r3"
+
+# ⑧ 离线判定：ee07 在 openNDS 记录里但已不在关联表 → online=false
+r7=$(seg "$out" 'aa:bb:cc:dd:ee:07')
+ck "已离线客户端（记录还在人走了）online=false" '"online":false' "$r7"
+
+# ⑨ 有线客户端：clientif=管理接口且邻居表里有 → 在线
+r8=$(seg "$out" 'aa:bb:cc:dd:ee:08')
+ck "有线客户端 online=true" '"online":true' "$r8"
+ck "有线客户端 iface=br-lan" '"iface":"br-lan"' "$r8"
+ck "有线客户端 authorized=true" '"authorized":true' "$r8"
+
+# ⑩ openNDS 没记录的设备：连着 WiFi 但没碰过门户，照样出现在列表
+r9=$(seg "$out" 'aa:bb:cc:dd:ee:09')
+ck "门户外设备 online=true" '"online":true' "$r9"
+ck "门户外设备 authenticated=false" '"authenticated":false' "$r9"
+ck "门户外设备按关联表补 ssid=互联网" '"ssid":"互联网"' "$r9"
+ck "门户外设备用邻居表补到 IP" '"ip":"10.0.0.7"' "$r9"
+ck "门户外设备 authorized=false" '"authorized":false' "$r9"
 
 # ⑥ 名单互斥：黑名单里的 MAC 即便写在 trustedmac 里也不算可信任
 r4=$(seg "$out" 'dc:d8:7b:53:e5:5a')
@@ -281,17 +368,26 @@ case "$tr_list" in
 esac
 ck "blockedmac 原样保留" 'dc:d8:7b:53:e5:5a' "$bl_list"
 
+echo "== openNDS 停止：在线照样能看（关联表不经过 openNDS） =="
+out3=$(NDS_RUNNING=0 call overview dashboard)
+counts3=$(printf '%s' "$out3" | grep -o '"counts":{[^}]*}')
+ck "停止后在线=4（无线关联里非黑名单的）" '"online":4' "$counts3"
+ck "停止后没有认证状态分类" '"authenticated":0' "$counts3"
+s9=$(seg "$out3" 'aa:bb:cc:dd:ee:09')
+ck "停止后门户外设备仍在线" '"online":true' "$s9"
+ck "停止后门户外设备 ssid=互联网" '"ssid":"互联网"' "$s9"
+
 echo "== 兜底：hostapd ubus 不可用，退回按 clientif 计数 =="
 # 模拟固件没带 hostapd ubus 对象的机器：关联表拿不到，但装了 iw，
 # openNDS 的 clientif 是真实运行时接口名（phy2-ap0 / phy2-ap1）
 out2=$(NDS_NO_HOSTAPD=1 call overview dashboard)
 b0=$(ap_seg "$out2" '互联网')
 b1=$(ap_seg "$out2" 'guest')
-ck "兜底：互联网 AP 计数=2（clientif=phy2-ap0 的 2 个）" '"count":2' "$b0"
+ck "兜底：互联网 AP 计数=3（clientif=phy2-ap0 的 3 个）" '"count":3' "$b0"
 ck "兜底：guest AP 计数=1（clientif=phy2-ap1）" '"count":1' "$b1"
 r5=$(seg "$out2" 'aa:bb:cc:dd:ee:01')
 ck "兜底：已认证客户端 ssid=互联网（clientif 直配）" '"ssid":"互联网"' "$r5"
 counts2=$(printf '%s' "$out2" | grep -o '"counts":{[^}]*}')
-ck "兜底：在线计数不变" '"online":2' "$counts2"
+ck "兜底：在线=5（关联表拿不到时按 openNDS 记录算）" '"online":5' "$counts2"
 
 done_report

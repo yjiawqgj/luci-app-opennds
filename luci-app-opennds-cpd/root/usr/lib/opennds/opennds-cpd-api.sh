@@ -912,6 +912,54 @@ client_ssid() { # $1=mac（小写） $2=clientif
 	iface_ssid "$cif"
 }
 
+# 邻居表里有没有这个 MAC——有线设备「还连着」的判据（FAILED 的条目不算）
+neigh_has() { # $1=小写 mac
+	command -v ip >/dev/null 2>&1 || return 1
+	ip -4 neigh show 2>/dev/null |
+		grep -i "lladdr $1" | grep -vi failed | grep -q .
+}
+
+# 路由器视角的「正在连接」名单（CONN_ON，小写 MAC 清单）：
+#   无线 = hostapd 关联表（STA_MAP）——权威，openNDS 记不记录都算在线；
+#   有线 = openNDS 记录里 clientif 是管理接口、且邻居表里找得到的；
+#   关联表整体拿不到（没 hostapd ubus 也没 iw）时退回旧行为：openNDS
+#   记录的都算在线——这时没有更准的数据源可用。
+# ndsctl 会把客户端留到空闲超时才清，人早走了记录还在——所以"在线"
+# 不能以 openNDS 记录为准，否则数字永远偏大。
+ov_conn() {
+	local lm cif mif sta_any=0
+	CONN_ON=''
+	printf '%s\n' "$STA_MAP" | grep -q . && sta_any=1
+	if [ "$sta_any" = '1' ]; then
+		while IFS='	' read -r lm cif; do
+			[ -n "$lm" ] || continue
+			CONN_ON="$CONN_ON$lm
+"
+		done <<EOFC1
+$STA_MAP
+EOFC1
+		if [ "$CPD_RUNNING" = '1' ]; then
+			mif=$(managed_iface)
+			while IFS='	' read -r lm st ip cif dkb ukb ss se; do
+				[ -n "$lm" ] || continue
+				lm=$(mac_lower "$lm") # ndsctl 给的 MAC 是大写，统一成小写再比
+				printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && continue
+				# 不在关联表：只有有线（管理接口 + 邻居表有它）才算连着
+				[ -n "$mif" ] || continue
+				[ "$cif" = "$mif" ] || continue
+				neigh_has "$lm" || continue
+				CONN_ON="$CONN_ON$lm
+"
+			done <<EOFC2
+$CPD_IN
+EOFC2
+		fi
+	else
+		# CPD_MACS 已是小写（ov_build 里统一转的）
+		[ "$CPD_RUNNING" = '1' ] && CONN_ON="$CPD_MACS"
+	fi
+}
+
 # 客户端行；$1=state $2=ip $3=iface $4=mac $5=dl_kb $6=ul_kb $7=ss $8=se $9=online(0/1)
 ov_client_row() {
 	local state="$1" ip="$2" cif="$3" lm="$4" dkb="$5" ukb="$6" ss="$7" se="$8"
@@ -1019,7 +1067,7 @@ EOF5
 
 	CPD_PARSED=''
 	CPD_IN=''
-	ONLINE_LOWER=''
+	CPD_MACS=''
 	if [ "$running" = '1' ]; then
 		CPD_PARSED=$(parse_clients)
 		# 空值一律写成 -：POSIX read 把 IFS 里的 tab 当空白，连续两个 tab
@@ -1031,16 +1079,21 @@ EOF5
 				cif = $5; sub(/ .*/, "", cif)
 				print S($2) "\t" S($3) "\t" S($4) "\t" S(cif) "\t" S($9) "\t" S($10) "\t" S($6) "\t" S($7)
 			}')
-		ONLINE_LOWER=$(printf '%s\n' "$CPD_IN" | awk -F'\t' 'NF {print tolower($1)}' | sort -u)
+		CPD_MACS=$(printf '%s\n' "$CPD_IN" | awk -F'\t' 'NF {print tolower($1)}' | sort -u)
 	fi
 
+	ov_conn
 	ov_rows
 	ov_counts
 	ov_aps
 }
 
 ov_rows() {
-	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0
+	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0 onl rif
+	local seen
+	N_ONLINE=0
+	# 已见 MAC：openNDS 记录的 + 关联表里的（后面补名单行时去重用）
+	seen="$CPD_MACS"
 	if [ "$CPD_RUNNING" = '1' ]; then
 		while IFS='	' read -r mac state ip cif dkb ukb ss se; do
 			[ -n "$mac" ] || continue
@@ -1050,7 +1103,17 @@ ov_rows() {
 			[ "$ss" = '-' ] && ss=''
 			[ "$se" = '-' ] && se=''
 			lm=$(mac_lower "$mac")
-			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" 1)"
+			# 在线与否以路由器为准（关联表 / 邻居表）；ndsctl 把客户端留到
+			# 空闲超时才清，人早走了记录还在，按记录算在线永远偏大
+			onl=0
+			printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && onl=1
+			# 无线客户端的接口以关联表为准（clientif 没装 iw 时是 br-lan）
+			rif=$(printf '%s\n' "$STA_MAP" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
+			[ -n "$rif" ] && cif="$rif"
+			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" "$onl")"
+			if [ "$onl" = '1' ] && ! mac_in_bl "$lm"; then
+				N_ONLINE=$((N_ONLINE + 1))
+			fi
 			sep=','
 			n=$((n + 1))
 		done <<EOF2
@@ -1058,11 +1121,31 @@ $CPD_IN
 EOF2
 	fi
 
+	# 关联表里有、openNDS 还没记录的设备：连着 WiFi 但没碰过门户。
+	# 这些行没有认证状态和流量（都给默认值），但 IP / 主机名 / 接入点
+	# 照常从邻居表、租约表、关联表补——openNDS 关了也能看到谁在线。
+	if [ -n "$STA_MAP" ]; then
+		while IFS='	' read -r lm cif; do
+			[ -n "$lm" ] || continue
+			printf '%s\n' "$seen" | grep -qFx "$lm" && continue
+			seen="$seen$lm
+"
+			rows="$rows$sep$(ov_client_row '' '' "$cif" "$lm" 0 0 '' '' 1)"
+			mac_in_bl "$lm" || N_ONLINE=$((N_ONLINE + 1))
+			sep=','
+			n=$((n + 1))
+		done <<EOF2
+$STA_MAP
+EOF2
+	fi
+
 	# 名单补行：trusted / preemptivemac / blockedmac 里不在线的 MAC
 	local supp
 	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS | sort -u | grep -v '^$')
 	for lm in $supp; do
-		printf '%s\n' "$ONLINE_LOWER" | grep -qx "$lm" && continue
+		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
+		seen="$seen$lm
+"
 		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0)"
 		sep=','
 		n=$((n + 1))
@@ -1071,43 +1154,66 @@ EOF2
 	N_ROWS="$n"
 }
 
-# 统计口径：在线 = 有访问权限的在线客户端（已认证 / 免认证已登录 / 可信任），
-# 未认证单独算一类。计数与列表用同一组标记（online / authorized），
-# 不会出现"卡片 2 个、点开只有 1 个"的对不上。
+# 统计口径（在线的判定以路由器为准，见 ov_conn）：
+#   在线     = 正在连接且未拉黑（ov_rows 按行统计，含没碰过门户的设备）
+#   已认证   = 正在连接且 state=Authenticated/AuthBlocked、不在信任/免认证名单
+#   未认证   = 正在连接但没有访问权限（Preauthenticated 状态 + 没碰过门户的）
+#   免认证   = 正在连接且在 preemptivemac 名单
+#   可信任   = 以 trustedmac 名单为准（离线的信任设备也在名单里）
+# 计数与列表用同一组标记（online / authorized），卡片数与列表条数对得上。
 ov_counts() {
-	local lm st cif
-	N_ONLINE=0
+	local lm st cif onl m2 tr_cfg=0
 	N_AUTH=0
 	N_PRE=0
 	N_TR=0
 	N_UN=0
-	while IFS='	' read -r lm st cif; do
-		[ -n "$lm" ] || continue
-		mac_in_bl "$lm" && continue # 黑名单从在线里剔除
-		case "$st" in
-			Trusted)
-				N_TR=$((N_TR + 1))
-				N_ONLINE=$((N_ONLINE + 1))
-				continue
-				;;
-			Authenticated | AuthBlocked) ;;
-			*)
-				N_UN=$((N_UN + 1)) # Preauthenticated：还没通过认证，不算在线
-				continue
-				;;
-		esac
-		if mac_in_pm "$lm"; then
-			N_PRE=$((N_PRE + 1))
-		else
-			N_AUTH=$((N_AUTH + 1))
-		fi
-		N_ONLINE=$((N_ONLINE + 1))
-	done <<EOF2
+	if [ "$CPD_RUNNING" = '1' ]; then
+		while IFS='	' read -r lm st cif; do
+			[ -n "$lm" ] || continue
+			lm=$(mac_lower "$lm") # 名单匹配（mac_in_bl 等）都按小写
+			mac_in_bl "$lm" && continue # 黑名单从各卡片里剔除
+			onl=0
+			printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && onl=1
+			case "$st" in
+				Trusted)
+					[ "$onl" = '1' ] && N_TR=$((N_TR + 1))
+					continue
+					;;
+				Authenticated | AuthBlocked) ;;
+				*)
+					# Preauthenticated：连着算未认证，人走了不占卡片
+					[ "$onl" = '1' ] && N_UN=$((N_UN + 1))
+					continue
+					;;
+			esac
+			[ "$onl" = '1' ] || continue # 离线的已认证客户端不进卡片
+			if mac_in_pm "$lm"; then
+				N_PRE=$((N_PRE + 1))
+			else
+				N_AUTH=$((N_AUTH + 1))
+			fi
+		done <<EOF2
 $CPD_IN
 EOF2
+	fi
+
+	# 关联表里有、openNDS 未记录的：连着但没碰过门户 → 未认证（名单内除外）
+	if [ -n "$STA_MAP" ]; then
+		while IFS='	' read -r lm cif; do
+			[ -n "$lm" ] || continue
+			mac_in_bl "$lm" && continue
+			printf '%s\n' "$CPD_MACS" | grep -qFx "$lm" && continue
+			if mac_in_pm "$lm"; then
+				N_PRE=$((N_PRE + 1))
+			elif ! mac_in_tr "$lm"; then
+				N_UN=$((N_UN + 1))
+			fi
+		done <<EOF2
+$STA_MAP
+EOF2
+	fi
 
 	# 可信任以配置为准（在线的照常算，离线的不漏）
-	local m2 tr_cfg=0
 	for m2 in $TR_MACS; do
 		[ -n "$m2" ] && tr_cfg=$((tr_cfg + 1))
 	done

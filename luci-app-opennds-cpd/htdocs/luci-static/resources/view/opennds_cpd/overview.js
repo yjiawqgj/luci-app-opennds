@@ -469,8 +469,9 @@ return view.extend({
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
-		 * "在线" = 有访问权限的在线客户端（已认证 / 免认证已登录 / 可信任）；
-		 * 还没通过认证的单独归"未认证"。计数与列表用的是后端同一组标记
+		 * "在线" = 路由器视角正在连接的设备（hostapd 关联表为准，openNDS
+		 * 记不记录、跑没跑都算）；后端 online 标记已按路由器判定，
+		 * 黑名单单独一类。计数与列表用的是后端同一组标记
 		 * （online / authorized），不会出现卡片数与列表条数对不上。 */
 		function isOnline(c) { return !!c.online; }
 
@@ -489,7 +490,8 @@ return view.extend({
 				case 'unauth':
 					return online && !c.authorized && !c.blocked;
 				default: /* online */
-					return online && !!c.authorized && !c.blocked;
+					/* 在线 = 正在连接（含没碰过门户的设备），黑名单单独一类 */
+					return online && !c.blocked;
 			}
 		}
 
