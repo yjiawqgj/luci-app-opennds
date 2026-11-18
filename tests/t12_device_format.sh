@@ -198,6 +198,8 @@ PY
 JEOF
 
 # ---- iw：真机格式（iw dev 列表 + info + station dump）----
+# 不用 $'...'（dash / busybox 都不保证支持 ANSI-C 引用），统一用 printf 的
+# 格式串写 \n \t；SSID 按真机原样保留 \xNN 转义（printf 里 \\x 输出 \x）。
 cat >"$S/bin/iw" <<'WEOF'
 #!/bin/sh
 case "$1" in
@@ -205,80 +207,29 @@ case "$1" in
 		case "$2" in
 			'')
 				# 真机：radio 下多个 BSS + 无线管理设备混排
-				printf '%s\n' \
-					'phy#0' \
-					'Interface phy0-ap0' \
-					$'\tifindex 5' \
-					$'\twdev 0x00000002' \
-					$'\taddr 00:11:22:33:44:55' \
-					$'\ttype managed' \
-					'' \
-					'phy#1' \
-					'Interface phy1-ap0' \
-					$'\tifindex 6' \
-					$'\twdev 0x10000002' \
-					$'\taddr 00:11:22:33:44:56' \
-					$'\ttype AP' \
-					$'\tchannel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz' \
-					'' \
-					'phy#2' \
-					'Interface phy2-ap0' \
-					$'\tifindex 9' \
-					$'\twdev 0x20000005' \
-					$'\taddr 00:11:22:33:44:60' \
-					$'\ttype AP' \
-					$'\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz' \
-					'Interface phy2-ap1' \
-					$'\tifindex 10' \
-					$'\twdev 0x20000006' \
-					$'\taddr 00:11:22:33:44:61' \
-					$'\ttype AP' \
-					$'\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz' \
-					'Interface phy2-ap2' \
-					$'\tifindex 11' \
-					$'\twdev 0x20000007' \
-					$'\taddr 00:11:22:33:44:62' \
-					$'\ttype AP' \
-					$'\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz'
-				;;
-			phy1-ap0)
-				:
+				printf 'phy#0\n'
+				printf 'Interface phy0-ap0\n\tifindex 5\n\twdev 0x00000002\n\taddr 00:11:22:33:44:55\n\ttype managed\n\n'
+				printf 'phy#1\n'
+				printf 'Interface phy1-ap0\n\tifindex 6\n\twdev 0x10000002\n\taddr 00:11:22:33:44:56\n\ttype AP\n\tchannel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz\n\n'
+				printf 'phy#2\n'
+				printf 'Interface phy2-ap0\n\tifindex 9\n\twdev 0x20000005\n\taddr 00:11:22:33:44:60\n\ttype AP\n\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz\n'
+				printf 'Interface phy2-ap1\n\tifindex 10\n\twdev 0x20000006\n\taddr 00:11:22:33:44:61\n\ttype AP\n\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz\n'
+				printf 'Interface phy2-ap2\n\tifindex 11\n\twdev 0x20000007\n\taddr 00:11:22:33:44:62\n\ttype AP\n\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz\n'
 				;;
 			phy2-ap0)
-				printf '%s\n' \
-					'Interface phy2-ap0' \
-					$'\tifindex 9' \
-					$'\twdev 0x20000005' \
-					$'\taddr 00:11:22:33:44:60' \
-					$'\tssid \\xe4\\xba\\x92\\xe8\\x81\\x94\\xe7\\xbd\\x91' \
-					$'\ttype AP' \
-					$'\twiphy 2' \
-					$'\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz'
+				printf 'Interface phy2-ap0\n\tifindex 9\n\twdev 0x20000005\n\taddr 00:11:22:33:44:60\n'
+				printf '\tssid \\xe4\\xba\\x92\\xe8\\x81\\x94\\xe7\\xbd\\x91\n'
+				printf '\ttype AP\n\twiphy 2\n\tchannel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz\n'
 				;;
 			phy2-ap1)
-				printf '%s\n' \
-					'Interface phy2-ap1' \
-					$'\tssid guest' \
-					$'\ttype AP' \
-					$'\twiphy 2'
+				printf 'Interface phy2-ap1\n\tssid guest\n\ttype AP\n\twiphy 2\n'
 				;;
 			phy2-ap2)
-				printf '%s\n' \
-					'Interface phy2-ap2' \
-					$'\tssid iot' \
-					$'\ttype AP' \
-					$'\twiphy 2'
-				;;
-			phy1-ap0x)
-				:
+				printf 'Interface phy2-ap2\n\tssid iot\n\ttype AP\n\twiphy 2\n'
 				;;
 			*)
 				# iw dev <if> info
-				printf '%s\n' \
-					"Interface $2" \
-					$'\tssid Home' \
-					$'\ttype AP' \
-					$'\twiphy 1'
+				printf 'Interface %s\n\tssid Home\n\ttype AP\n\twiphy 1\n' "$2"
 				;;
 		esac
 		;;
@@ -286,10 +237,7 @@ case "$1" in
 		# iw dev <if> station dump —— 3 参形态：iw dev phy2-ap0 station dump
 		case "$2" in
 			phy2-ap0)
-				printf '%s\n' \
-					'Station 50:29:f5:ab:3d:bb (on phy2-ap0)' \
-					$'\tauthorized:\tyes' \
-					$'\tauthenticated:\tyes'
+				printf 'Station 50:29:f5:ab:3d:bb (on phy2-ap0)\n\tauthorized:\tyes\n\tauthenticated:\tyes\n'
 				;;
 		esac
 		;;

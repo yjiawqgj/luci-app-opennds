@@ -495,13 +495,27 @@ ap_section_index() { # $1=section id $2=device
 #   ssid \xe4\xba\x92\xe8\x81\x94\xe7\xbd\x91
 # 直接拿去和 uci 里的「互联网」比永远不相等（AP 卡片匹配不到接口、
 # 接入点列也就退回了接口名）。这里把 \xNN 解回原始 UTF-8 字节。
+# 坑：printf %b 对 \xNN 的支持各 shell 不一致（dash 不认 \x，某些版本还会
+# 按宽字符重新编码成 UTF-8 双字节），\0OOO 八进制转义则是 POSIX 都认的，
+# 所以先把 \xNN 换算成 \0OOO 再交给 printf %b。
 ssid_unescape() { # $1=可能带 \xNN 转义的 SSID
 	case "$1" in
 		*\\x*) ;;
 		*) printf '%s' "$1"; return 0 ;;
 	esac
-	# printf %b 会把 % 当格式符，先转义一遍
-	printf '%b' "$(printf '%s' "$1" | sed 's/%/%%/g')"
+	printf '%b' "$(printf '%s' "$1" | awk '{
+		line = $0; out = ""
+		while (match(line, /\\x[0-9a-fA-F][0-9a-fA-F]/)) {
+			h = tolower(substr(line, RSTART + 2, 2))
+			v = 0
+			for (i = 1; i <= 2; i++)
+				v = v * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+			out = out substr(line, 1, RSTART - 1) \
+				sprintf("\\0%d%d%d", int(v / 64), int(v % 64 / 8), v % 8)
+			line = substr(line, RSTART + RLENGTH)
+		}
+		print out line
+	}')"
 }
 
 iface_raw_ssid() { # $1=接口名
