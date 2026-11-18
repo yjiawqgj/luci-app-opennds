@@ -42,7 +42,9 @@ if [ "$1" = 'call' ] && [ "$2" = 'network.wireless' ]; then
 J
 fi
 # hostapd.<ifname> get_clients：关联终端（AP 计数与客户端 SSID 的权威来源）
-if [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' ]; then
+# 设置 NDS_NO_HOSTAPD=1 时模拟"固件没带 hostapd ubus 对象"的机器，
+# 验证 AP 计数退回按 clientif 计数的兜底路径
+if [ -z "$NDS_NO_HOSTAPD" ] && [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' ]; then
 	cat <<'J'
 {
 	"num_sta": 2,
@@ -59,7 +61,7 @@ if [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' ]; then
 }
 J
 fi
-if [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap1' ]; then
+if [ -z "$NDS_NO_HOSTAPD" ] && [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap1' ]; then
 	cat <<'J'
 {
 	"num_sta": 1,
@@ -92,7 +94,11 @@ case "$1" in
 	json)
 		# 与 openNDS src/util.c ndsctl_json_client() 输出格式逐字一致：
 		# 客户端键缩进 4 空格，字段缩进 6 空格，冒号后无空格，最后一个字段无逗号
-		cat <<'J'
+		# 可信任客户端的 clientif：默认 br-lan（没装 iw 的机器）；
+		# NDS_NO_HOSTAPD 场景模拟"装了 iw、clientif 是真实接口名"的机器
+		TR_CIF='br-lan'
+		[ -n "$NDS_NO_HOSTAPD" ] && TR_CIF='phy2-ap1'
+		cat <<J
 {
   "client_list_length":"3",
   "clients":{
@@ -132,7 +138,7 @@ case "$1" in
       "client_type":"cpd_can",
       "mac":"11:22:33:44:55:66",
       "ip":"",
-      "clientif":"br-lan",
+      "clientif":"${TR_CIF}",
       "session_start":"1700000000",
       "session_end":"null",
       "last_active":"1700000100",
@@ -271,5 +277,18 @@ case "$tr_list" in
 	*) echo "  OK   trustedmac 里的黑名单条目已清除" ;;
 esac
 ck "blockedmac 原样保留" 'dc:d8:7b:53:e5:5a' "$bl_list"
+
+echo "== 兜底：hostapd ubus 不可用，退回按 clientif 计数 =="
+# 模拟固件没带 hostapd ubus 对象的机器：关联表拿不到，但装了 iw，
+# openNDS 的 clientif 是真实运行时接口名（phy2-ap0 / phy2-ap1）
+out2=$(NDS_NO_HOSTAPD=1 call overview dashboard)
+b0=$(ap_seg "$out2" '互联网')
+b1=$(ap_seg "$out2" 'guest')
+ck "兜底：互联网 AP 计数=2（clientif=phy2-ap0 的 2 个）" '"count":2' "$b0"
+ck "兜底：guest AP 计数=1（clientif=phy2-ap1）" '"count":1' "$b1"
+r5=$(seg "$out2" 'aa:bb:cc:dd:ee:01')
+ck "兜底：已认证客户端 ssid=互联网（clientif 直配）" '"ssid":"互联网"' "$r5"
+counts2=$(printf '%s' "$out2" | grep -o '"counts":{[^}]*}')
+ck "兜底：在线计数不变" '"online":2' "$counts2"
 
 done_report

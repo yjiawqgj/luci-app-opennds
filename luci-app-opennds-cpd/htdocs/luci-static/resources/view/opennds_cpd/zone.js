@@ -895,7 +895,7 @@ return view.extend({
 		zoneSaveRow.appendChild(zoneHint);
 
 		var wirelessPanel = E('div', { 'class': 'cpd-sec' }, [
-			E('h3', {}, [_('无线区域'), E('span', { 'class': 'cpd-en' }, 'Wireless Zones')]),
+			E('h3', {}, [_('无线区域')]),
 			E('p', { 'class': 'zd-sec-desc mt' },
 				_('以下 Wi-Fi 来自路由器中已创建的无线网络，点击卡片为其配置认证脚本。')),
 			wifiGrid,
@@ -908,7 +908,7 @@ return view.extend({
 		wiredSaveRow.appendChild(wiredHint);
 
 		var wiredPanel = E('div', { 'class': 'cpd-sec' }, [
-			E('h3', {}, [_('有线区域'), E('span', { 'class': 'cpd-en' }, 'Wired Zone')]),
+			E('h3', {}, [_('有线区域')]),
 			E('p', { 'class': 'zd-sec-desc mt' },
 				_('更改网络接口后，原网络接口配置并不会自动删除，需要到下方未匹配里手动删除；如果未删除，切换回来时将会使用上次配置。')),
 			wiredGrid,
@@ -917,7 +917,7 @@ return view.extend({
 		]);
 
 		var unmatchedPanel = E('div', { 'class': 'cpd-sec' }, [
-			E('h3', {}, [_('未匹配'), E('span', { 'class': 'cpd-en' }, 'Unmatched')]),
+			E('h3', {}, [_('未匹配')]),
 			E('p', { 'class': 'zd-sec-desc mt' }, _('以下文件尚未关联到任何区域。')),
 			E('div', { 'class': 'zd-tools' }, [
 				E('button', { 'type': 'button', 'class': 'cbi-button', 'click': openUnmatchedModal }, _('查看')),
@@ -931,7 +931,7 @@ return view.extend({
 		body.appendChild(warnbar);
 
 		body.appendChild(E('div', { 'class': 'cpd-sec' }, [
-			E('h3', {}, [_('区域选择'), E('span', { 'class': 'cpd-en' }, 'Scope')]),
+			E('h3', {}, [_('区域选择')]),
 			E('div', { 'class': 'zd-scope-row' }, [
 				E('label', { 'class': 'zd-scope-label', 'for': 'zd-scope' }, _('区域')),
 				scopeSel

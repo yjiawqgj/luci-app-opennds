@@ -111,12 +111,7 @@ var CSS = '\
 .ovd-dtl-k{color:#9aa6b2;flex:none}\
 .ovd-dtl-v{text-align:right;color:#222a31;min-width:0;overflow-wrap:anywhere}\
 .ovd-dtl-v.mono{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px}\
-.ovd-lock{position:fixed;inset:0;background:rgba(0,0,0,.28);display:none;align-items:center;justify-content:center;z-index:900}\
-.ovd-lock.on{display:flex}\
-.ovd-lock-card{background:#fff;border-radius:10px;padding:22px 30px;text-align:center;min-width:240px;box-shadow:0 12px 36px rgba(20,30,40,.3)}\
-.ovd-lock-main{font-size:15px;font-weight:650;color:#222a31}\
 .ovd-lock-sub{font-size:12.5px;color:#657585;margin-top:6px}\
-.ovd-lock-hint{font-size:11px;color:#9aa6b2;margin-top:10px}\
 @media (max-width:900px){.ovd-stat-grid{grid-template-columns:repeat(4,1fr)}}\
 @media (max-width:560px){.ovd-stat-grid{grid-template-columns:repeat(2,1fr)}.ovd-ap-grid{grid-template-columns:1fr}}\
 ';
@@ -174,36 +169,44 @@ return view.extend({
 
 		var body = E('div', { 'class': 'ovd-page' });
 
-		/* ---------- 锁定遮罩 ---------- */
-		var lockSub = E('div', { 'class': 'ovd-lock-sub' }, '');
-		var lockMask = E('div', { 'class': 'ovd-lock' }, E('div', { 'class': 'ovd-lock-card' }, [
-			E('div', { 'class': 'ovd-lock-main' }, _('正在应用…')),
-			lockSub,
-			E('div', { 'class': 'ovd-lock-hint' }, _('请勿关闭或刷新页面'))
-		]));
+		/* ---------- 应用弹窗（openwrt 原生样式：ui.showModal + 自旋指示器） ---------- */
+		var lockSubText = '';
+		var nativeModalShown = false;
+
+		function lockModalBody() {
+			return [
+				E('p', { 'class': 'spinning' }, _('正在应用…')),
+				E('p', { 'class': 'ovd-lock-sub' }, lockSubText)
+			];
+		}
+
+		function ensureNativeModal() {
+			if (nativeModalShown) return;
+			nativeModalShown = true;
+			/* CPD.modal 内部处理了 LuCI 24.10 showModal 参数变化，统一入口 */
+			CPD.modal('', lockModalBody());
+		}
 
 		function lock(secs) {
 			locked = true;
-			var remain = secs;
-			lockSub.textContent = _('预计还需 %s 秒').format(String(remain));
-			lockMask.classList.add('on');
+			lockSubText = _('预计还需 %s 秒').format(String(secs));
+			ensureNativeModal();
 			if (lockTimer) window.clearInterval(lockTimer);
+			var remain = secs;
 			lockTimer = window.setInterval(function () {
 				remain--;
-				if (remain <= 0) {
-					window.clearInterval(lockTimer);
-					lockTimer = null;
-					lockSub.textContent = _('预计还需 %s 秒').format('0');
-				} else {
-					lockSub.textContent = _('预计还需 %s 秒').format(String(remain));
-				}
+				lockSubText = _('预计还需 %s 秒').format(String(remain < 0 ? 0 : remain));
+				if (!nativeModalShown) return;
+				ui.hideModal();
+				CPD.modal('', lockModalBody());
 			}, 1000);
 		}
 
 		function unlock() {
 			locked = false;
-			lockMask.classList.remove('on');
 			if (lockTimer) { window.clearInterval(lockTimer); lockTimer = null; }
+			nativeModalShown = false;
+			if (typeof ui !== 'undefined' && typeof ui.hideModal === 'function') ui.hideModal();
 		}
 
 		/* ---------- 通用操作执行（锁定 → 接口 → 解锁） ---------- */
@@ -512,9 +515,10 @@ return view.extend({
 			return iface;
 		}
 
-		/* AP 卡片的唯一键：没有运行时接口名时用 section，
-		 * 否则两张 iface 为空的卡片会被当成同一个，点一个同时点亮另一个 */
-		function apKey(a) { return a.iface || a.section || a.ssid || ''; }
+		/* AP 卡片的唯一键：uci section 名是唯一的，放最前面——
+		 * 运行时接口名（phyN-apM）在 ubus 解析失败时可能两张卡拿到同一个值，
+		 * 之前就出现过点一张卡两张同时选中的联动 */
+		function apKey(a) { return a.section || a.iface || a.ssid || ''; }
 
 		function apLabel(key) {
 			for (var i = 0; i < state.aps.length; i++) {
@@ -528,14 +532,19 @@ return view.extend({
 			return apName(c.iface);
 		}
 
+		/* 按接入点筛选客户端：openNDS 的 clientif（get_client_interface.sh）
+		 * 在没装 iw 的机器上是 br-lan 这类网桥名，和 AP 卡片的运行时接口名
+		 * （phyN-apM）对不上——所以先按后端按 MAC 反查关联表得到的 SSID 比，
+		 * SSID 缺失时再退回接口名比对 */
 		function apFilterMatch(c) {
 			if (!state.ap) return true;
 			for (var i = 0; i < state.aps.length; i++) {
 				var a = state.aps[i];
 				if (apKey(a) !== state.ap) continue;
-				return !!a.iface && c.iface === a.iface;
+				if (a.ssid && c.ssid) return c.ssid === a.ssid;
+				return !!a.iface && !!c.iface && c.iface === a.iface;
 			}
-			return c.iface === state.ap;
+			return c.ssid === state.ap || c.iface === state.ap;
 		}
 
 		function filteredClients() {
@@ -1241,7 +1250,6 @@ return view.extend({
 			])));
 		body.appendChild(clientsSec);
 
-		body.appendChild(lockMask);
 		body.appendChild(editMask);
 		body.appendChild(detailMask);
 

@@ -13,11 +13,9 @@ var CSS = '\
 .cpd-page{max-width:none;width:100%;padding:18px 4px 60px;color:var(--text,#222a31)}\
 .cpd-head{padding-bottom:14px;border-bottom:1px solid var(--line,#d7dde3)}\
 .cpd-head h2{font-size:18px;font-weight:650;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0}\
-.cpd-head h2 .cpd-en{font-size:11.5px;font-weight:500;color:#9aa6b2}\
 .cpd-desc{font-size:12.5px;color:var(--muted,#657585);margin-top:6px;line-height:1.6}\
 .cpd-sec{padding:18px 0 6px}\
 .cpd-sec h3{font-size:15px;font-weight:650;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 6px}\
-.cpd-sec h3 .cpd-en{font-size:10.5px;font-weight:500;color:#9aa6b2}\
 .cpd-note{font-size:12.5px;color:var(--muted,#657585);line-height:1.65;max-width:920px}\
 .cpd-warnline{font-size:12.5px;color:var(--red,#c94848);line-height:1.65}\
 .cpd-warnbar{font-size:12.5px;line-height:1.6;padding:9px 12px;border:1px solid var(--amber,#b57d17);border-radius:6px;color:var(--amber,#b57d17);margin-top:8px}\
@@ -295,9 +293,10 @@ var CPD = L.Class.extend({
 			desc ? E('div', { 'class': 'cpd-desc' }, desc) : E([])
 		]);
 	},
-	section: function (title, en) {
+	/* 区块标题不再带英文小字（用户要求所有标题只保留中文） */
+	section: function (title) {
 		return E('div', { 'class': 'cpd-sec' }, [
-			E('h3', {}, [title, E('span', { 'class': 'cpd-en' }, en)])
+			E('h3', {}, [title])
 		]);
 	},
 

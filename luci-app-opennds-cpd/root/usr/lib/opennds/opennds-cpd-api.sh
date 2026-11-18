@@ -815,16 +815,31 @@ ws_iface_map() {
 	'
 }
 
+# ubus 调用统一加超时：hostapd 不应答时 ubus 会一直等，整个 dashboard
+# 请求被拖死，LuCI 20 秒 RPC 超时后前端拿到的就是空数据
+ubus_call() {
+	local secs=3
+	command -v timeout >/dev/null 2>&1 && secs=3 || secs=''
+	if [ -n "$secs" ]; then
+		timeout "$secs" ubus "$@" 2>/dev/null
+	else
+		ubus "$@" 2>/dev/null
+	fi
+}
+
 # hostapd ubus 的关联终端表：mac<TAB>ifname。
 # openNDS 的 clientif 来自 get_client_interface.sh：机器上没装 iw 时退回
 # ip -4 neigh 的设备列（br-lan），永远对不上 phyN-apM —— AP 卡片计数和
 # 客户端 SSID 都不能靠 clientif，得按 MAC 反查关联表。
+# hostapd 的 ubus 对象拿不到时（固件没带 hostapd ubus 支持）退回
+# iw dev <接口> station dump；再拿不到就为空，AP 计数由 ov_aps 兜底。
 ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
 	local ifn
 	[ -n "$1" ] || return 0
 	command -v ubus >/dev/null 2>&1 || return 0
 	for ifn in $(printf '%s\n' "$1" | awk -F'\t' '$1 != "-" && $1 != "" {print $1}'); do
-		ubus call "hostapd.$ifn" get_clients 2>/dev/null |
+		local got
+		got=$(ubus_call call "hostapd.$ifn" get_clients |
 			awk -v i="$ifn" '
 			{
 				s = $0
@@ -837,7 +852,14 @@ ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
 					sub(/^[ \t]*/, "", rest)
 					if (rest ~ /^[ \t]*:[ \t]*\{/) print tolower(k) "\t" i
 				}
-			}'
+			}')
+		if [ -n "$got" ]; then
+			printf '%s\n' "$got"
+		elif command -v iw >/dev/null 2>&1; then
+			# Station xx:xx:… (on phy2-ap0)
+			iw dev "$ifn" station dump 2>/dev/null |
+				awk -v i="$ifn" '/^[ \t]*Station[ \t]/ {print tolower($2) "\t" i}'
+		fi
 	done
 }
 
@@ -971,7 +993,7 @@ ov_build() {
 	CPD_FUP_D=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
 	CPD_WS=''
 	if command -v ubus >/dev/null 2>&1; then
-		CPD_WS=$(ubus call network.wireless status 2>/dev/null)
+		CPD_WS=$(ubus_call call network.wireless status)
 	fi
 	AP_MAP=$(ws_iface_map "$CPD_WS")
 	ov_ap_meta
@@ -1081,23 +1103,37 @@ EOF2
 
 ov_aps() {
 	local ifn ssid sec cnt lm sm sep=''
-	APS_JSON=''
+	# 关联表整体拿不到（hostapd ubus / iw 都失败）时，退回按 openNDS
+	# 的 clientif 计数——装了 iw 的机器上 clientif 就是运行时接口名
+	local sta_any=0
+	printf '%s\n' "$STA_MAP" | grep -q . && sta_any=1
 	while IFS='	' read -r ifn ssid sec; do
 		[ "$ifn" = '-' ] && ifn=''
 		[ "$ssid" = '-' ] && ssid=''
 		[ -n "$ssid$sec" ] || continue
 		cnt=0
 		if [ -n "$ifn" ]; then
-			# 按 hostapd 关联终端计数：clientif（get_client_interface.sh）
-			# 没装 iw 时是 br-lan，对不上 phyN-apM，按它数永远是 0
-			while IFS='	' read -r lm sm; do
-				[ -n "$lm" ] || continue
-				[ "$sm" = "$ifn" ] || continue
-				mac_in_bl "$lm" && continue # 黑名单客户端不计入
-				cnt=$((cnt + 1))
-			done <<EOF2
+			if [ "$sta_any" = '1' ]; then
+				# 按 hostapd 关联终端计数：clientif（get_client_interface.sh）
+				# 没装 iw 时是 br-lan，对不上 phyN-apM，按它数永远是 0
+				while IFS='	' read -r lm sm; do
+					[ -n "$lm" ] || continue
+					[ "$sm" = "$ifn" ] || continue
+					mac_in_bl "$lm" && continue # 黑名单客户端不计入
+					cnt=$((cnt + 1))
+				done <<EOF2
 $STA_MAP
 EOF2
+			elif [ "$CPD_RUNNING" = '1' ]; then
+				while IFS='	' read -r lm st ip cif dkb ukb ss se; do
+					[ -n "$lm" ] || continue
+					[ "$cif" = "$ifn" ] || continue
+					mac_in_bl "$lm" && continue
+					cnt=$((cnt + 1))
+				done <<EOF3
+$CPD_IN
+EOF3
+			fi
 		fi
 		APS_JSON="$APS_JSON$sep{\"iface\":\"$(json_escape "$ifn")\",\"ssid\":\"$(json_escape "$ssid")\",\"section\":\"$(json_escape "$sec")\",\"count\":$cnt}"
 		sep=','
@@ -1630,7 +1666,7 @@ z_status() {
 	# 无线运行时视图只取一次，下面逐个 section 判断用（比每个接口各调一次 ubus 省）
 	CPD_WS=''
 	if command -v ubus >/dev/null 2>&1; then
-		CPD_WS=$(ubus call network.wireless status 2>/dev/null)
+		CPD_WS=$(ubus_call call network.wireless status)
 	fi
 	ws="$CPD_WS"
 	mif=$(managed_iface)
