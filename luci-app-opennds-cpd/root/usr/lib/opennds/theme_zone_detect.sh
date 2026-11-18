@@ -60,6 +60,29 @@ mac_upper() {
 	echo "$1" | tr 'a-z' 'A-Z'
 }
 
+# iw 把非 ASCII 字节转义成 \xNN（中文 SSID 真机上就是
+#   ssid \xe4\xba\x92\xe8\x81\x94\xe7\xbd\x91），不还原就和门户目录名对不上。
+# printf %b 各 shell 对 \xNN 支持不一致，先换算成 POSIX 的 \0OOO 八进制。
+ssid_unescape() { # $1=可能带 \xNN 转义的 SSID
+	case "$1" in
+		*\\x*) ;;
+		*) printf '%s' "$1"; return 0 ;;
+	esac
+	printf '%b' "$(printf '%s' "$1" | awk '{
+		line = $0; out = ""
+		while (match(line, /\\x[0-9a-fA-F][0-9a-fA-F]/)) {
+			h = tolower(substr(line, RSTART + 2, 2))
+			v = 0
+			for (i = 1; i <= 2; i++)
+				v = v * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+			out = out substr(line, 1, RSTART - 1) \
+				sprintf("\\0%d%d%d", int(v / 64), int(v % 64 / 8), v % 8)
+			line = substr(line, RSTART + RLENGTH)
+		}
+		print out line
+	}')"
+}
+
 # Map a runtime wireless interface name (eg phy2-ap0) to its configured SSID
 # by parsing /etc/config/wireless:
 #   phyN-apM  ->  radio N, M-th (0 based) enabled "ap" wifi-iface on radio N
@@ -70,7 +93,10 @@ ssid_from_if() {
 	# scheme and to gaps in it — the uci fallback below counts the M-th
 	# enabled AP on the radio, so disabling an AP in the middle of a radio
 	# shifts every later index and resolves the wrong SSID (or none).
-	live_ssid=$(iw dev "$localif" info 2>/dev/null | awk '/^[ \t]*ssid[ \t]/{sub(/^[ \t]*ssid[ \t]+/, ""); print; exit}')
+	# 注意用 [[:space:]]：`[ \t]` 只在 gawk 下才是制表符，mawk/busybox awk
+	# 的方括号里 "\\t" 是字面的反斜杠和 t——iw 的续行全用 tab 缩进，匹配不上。
+	live_ssid=$(iw dev "$localif" info 2>/dev/null | awk '/^[[:space:]]*ssid[[:space:]]/{sub(/^[[:space:]]*ssid[[:space:]]+/, ""); print; exit}')
+	live_ssid=$(ssid_unescape "$live_ssid")
 	if [ ! -z "$live_ssid" ]; then
 		echo "$live_ssid"
 		return

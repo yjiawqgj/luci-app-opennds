@@ -409,6 +409,23 @@ for p in list(walk('.js')) + list(walk('.sh')):
                           % (rel(p), pat))
 
 # ============================================================
+# awk 正则可移植性：方括号字符类里写 \t 只有 gawk 当制表符，
+# Ubuntu 的 mawk、busybox awk 会把它当成字面的反斜杠和字母 t，
+# 于是"以 tab 缩进的行"永远匹配不上（iw/ubus 的输出全是 tab 缩进）。
+# 一律用 POSIX 的 [[:space:]]。
+# ============================================================
+AWK_CLASS = re.compile(r'\[[^\]\n]*\\[tn][^\]\n]*\]')
+for p in walk('.sh'):
+    for i, line in enumerate(io.open(p, encoding='utf-8'), 1):
+        if '[[:space:]]' in line:
+            continue
+        m = AWK_CLASS.search(line)
+        if m:
+            errors.append('%s:%d: awk 字符类里用了 %s——gawk 之外不当转义'
+                          '（mawk/busybox awk），改用 [[:space:]]'
+                          % (rel(p), i, m.group(0)))
+
+# ============================================================
 # 输出
 # ============================================================
 for w in warnings:

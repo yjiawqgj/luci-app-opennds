@@ -333,16 +333,16 @@ kick_preemptive() {
 # ============================================================
 
 NDSCTL_JSON_AWK='
-/^[ \t]*"[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]"[ \t]*:[ \t]*\{[ \t]*$/ {
+/^[[:space:]]*"[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]"[[:space:]]*:[[:space:]]*\{[[:space:]]*$/ {
 	line = $0
-	sub(/\{[ \t]*$/, "", line)
-	sub(/[ \t]*:[ \t]*$/, "", line)
-	sub(/^[ \t]*"/, "", line)
-	sub(/"[ \t]*$/, "", line)
+	sub(/\{[[:space:]]*$/, "", line)
+	sub(/[[:space:]]*:[[:space:]]*$/, "", line)
+	sub(/^[[:space:]]*"/, "", line)
+	sub(/"[[:space:]]*$/, "", line)
 	cur = line; in_c = 1
 	next
 }
-in_c && /^[ \t]*\}[ \t]*,?[ \t]*$/ {
+in_c && /^[[:space:]]*\}[[:space:]]*,?[[:space:]]*$/ {
 	printf "S\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
 		cur, st[cur], ip[cur], cif[cur], ss[cur], se[cur], la[cur], \
 		dlt[cur], ult[cur], davg[cur], uavg[cur], cty[cur], \
@@ -352,15 +352,15 @@ in_c && /^[ \t]*\}[ \t]*,?[ \t]*$/ {
 }
 in_c {
 	s = $0
-	sub(/^[ \t]+/, "", s)
-	sub(/,[ \t]*$/, "", s)
-	if (match(s, /^"[a-zA-Z_0-9]+"[ \t]*:[ \t]*".*"$/)) {
+	sub(/^[[:space:]]+/, "", s)
+	sub(/,[[:space:]]*$/, "", s)
+	if (match(s, /^"[a-zA-Z_0-9]+"[[:space:]]*:[[:space:]]*".*"$/)) {
 		kv = substr(s, RSTART, RLENGTH)
 		sub(/^"/, "", kv)
 		i = index(kv, "\"")
 		k = (i > 0) ? substr(kv, 1, i - 1) : ""
 		v = (i > 0) ? substr(kv, i + 1) : ""
-		sub(/^[ \t]*:[ \t]*"/, "", v)
+		sub(/^[[:space:]]*:[[:space:]]*"/, "", v)
 		sub(/"$/, "", v)
 		if (k == "state") st[cur] = v
 		else if (k == "ip") ip[cur] = v
@@ -381,12 +381,12 @@ in_c {
 	}
 	next
 }
-/^[ \t]*"trusted"[ \t]*:[ \t]*\[[ \t]*$/ { in_t = 1; next }
-in_t && /^[ \t]*\][ \t]*,?[ \t]*$/ { in_t = 0; next }
+/^[[:space:]]*"trusted"[[:space:]]*:[[:space:]]*\[[[:space:]]*$/ { in_t = 1; next }
+in_t && /^[[:space:]]*\][[:space:]]*,?[[:space:]]*$/ { in_t = 0; next }
 in_t {
 	s = $0
-	sub(/^[ \t]+/, "", s)
-	sub(/,[ \t]*$/, "", s)
+	sub(/^[[:space:]]+/, "", s)
+	sub(/,[[:space:]]*$/, "", s)
 	gsub(/"/, "", s)
 	if (s != "") printf "T\t%s\n", s
 	next
@@ -404,7 +404,7 @@ parse_clients() {
 ssid_for_if() { # $1=运行时接口名
 	local s
 	[ -z "$1" ] && return 1
-	s=$(iw dev "$1" info 2>/dev/null | awk '/^[ \t]*ssid / {print $2; exit}')
+	s=$(iw dev "$1" info 2>/dev/null | awk '/^[[:space:]]*ssid / {print $2; exit}')
 	if [ -n "$s" ]; then
 		printf '%s' "$s"
 		return 0
@@ -521,7 +521,7 @@ ssid_unescape() { # $1=可能带 \xNN 转义的 SSID
 iface_raw_ssid() { # $1=接口名
 	local s=''
 	if command -v iw >/dev/null 2>&1; then
-		s=$(iw dev "$1" info 2>/dev/null | awk '/^[ \t]*ssid / {print $2; exit}')
+		s=$(iw dev "$1" info 2>/dev/null | awk '/^[[:space:]]*ssid / {print $2; exit}')
 		s=$(ssid_unescape "$s")
 	fi
 	if [ -z "$s" ] && command -v iwinfo >/dev/null 2>&1; then
@@ -535,8 +535,8 @@ ap_runtime_if() { # $1=radio $2=ssid $3=序号
 	local radio="$1" want="$2" idx="$3" ifn ssid i
 	ifn=$(iw dev 2>/dev/null | awk -v radio="$radio" '
 		/^phy#[0-9]+$/ { phy = "radio" substr($0, 5) }
-		/^[ \t]*Interface [^ \t]+$/ { ifn = $2 }
-		/^[ \t]*type [ \t]*AP[ \t]*$/ {
+		/^[[:space:]]*Interface [^[:space:]]+$/ { ifn = $2 }
+		/^[[:space:]]*type [[:space:]]*AP[[:space:]]*$/ {
 			if (ifn != "" && phy == radio) print ifn
 			ifn = ""
 		}')
@@ -544,7 +544,7 @@ ap_runtime_if() { # $1=radio $2=ssid $3=序号
 	# 官方 get_client_interface.sh 在没 iw 时直接退 br-lan，SSID/接入点就
 	# 全对不上了——openwrt 的 iwinfo 一直都在，LuCI 无线页用的就是它。
 	if [ -z "$ifn" ] && command -v iwinfo >/dev/null 2>&1; then
-		for i in $(iwinfo 2>/dev/null | awk '/^[A-Za-z0-9_.-]+[ \t]+ESSID:/ {print $1}'); do
+		for i in $(iwinfo 2>/dev/null | awk '/^[A-Za-z0-9_.-]+[[:space:]]+ESSID:/ {print $1}'); do
 			iwinfo "$i" info 2>/dev/null | grep -q 'Mode: Master' || continue
 			ifn="$ifn $i"
 		done
@@ -852,24 +852,24 @@ ws_iface_map() {
 		if (sec != "") printf "%s\t%s\n", sec, ifn
 		sec = ""; ifn = ""
 	}
-	/"interfaces"[ \t]*:[ \t]*\[/ { in_if = 1; depth = 0; sec = ""; ifn = ""; next }
+	/"interfaces"[[:space:]]*:[[:space:]]*\[/ { in_if = 1; depth = 0; sec = ""; ifn = ""; next }
 	!in_if { next }
 	# 空对象 {} 不动层级（真机 radio/interface 的 config 可能是空表）
-	/\{[ \t]*\}[ \t]*,?[ \t]*$/ { next }
+	/\{[[:space:]]*\}[[:space:]]*,?[[:space:]]*$/ { next }
 	# 任何以 { 结尾的行都开对象：netifd 的键序是 section → ifname → config，
 	# config 是嵌套对象（mt76 等驱动的 config 里还会带 ifname 键），
 	# 只认裸 { 的写法会把 config 内容当成本层字段，键序一变就全错
-	/\{[ \t]*$/ { depth++; next }
-	/\}[ \t]*,?[ \t]*$/ {
+	/\{[[:space:]]*$/ { depth++; next }
+	/\}[[:space:]]*,?[[:space:]]*$/ {
 		if (depth == 1) flush()
 		if (depth > 0) depth--
 		next
 	}
-	depth == 1 && /"section"[ \t]*:/ {
-		s = $0; sub(/.*"section"[ \t]*:[ \t]*"/, "", s); sub(/".*/, "", s); sec = s; next
+	depth == 1 && /"section"[[:space:]]*:/ {
+		s = $0; sub(/.*"section"[[:space:]]*:[[:space:]]*"/, "", s); sub(/".*/, "", s); sec = s; next
 	}
-	depth == 1 && /"ifname"[ \t]*:/ {
-		v = $0; sub(/.*"ifname"[ \t]*:[ \t]*"/, "", v); sub(/".*/, "", v); ifn = v; next
+	depth == 1 && /"ifname"[[:space:]]*:/ {
+		v = $0; sub(/.*"ifname"[[:space:]]*:[[:space:]]*"/, "", v); sub(/".*/, "", v); ifn = v; next
 	}
 	'
 }
@@ -909,21 +909,21 @@ ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
 					k = substr(s, RSTART + 1, RLENGTH - 2)
 					# 只要键值是 { 的（clients 对象的键），不要 "address":"<mac>" 这类值
 					rest = substr(s, RSTART + RLENGTH)
-					sub(/^[ \t]*/, "", rest)
-					if (rest ~ /^[ \t]*:[ \t]*\{/) print tolower(k) "\t" i
+					sub(/^[[:space:]]*/, "", rest)
+					if (rest ~ /^[[:space:]]*:[[:space:]]*\{/) print tolower(k) "\t" i
 				}
 			}')
 		fi
 		# ② iw station dump（与官方 get_client_interface.sh 同款）
 		if [ -z "$got" ] && command -v iw >/dev/null 2>&1; then
 			got=$(iw dev "$ifn" station dump 2>/dev/null |
-				awk -v i="$ifn" '/^[ \t]*Station[ \t]/ {print tolower($2) "\t" i}')
+				awk -v i="$ifn" '/^[[:space:]]*Station[[:space:]]/ {print tolower($2) "\t" i}')
 		fi
 		# ③ iwinfo assoclist（openwrt 默认自带，LuCI 无线页用的就是它；
 		#    没有 hostapd ubus 对象 / 没装 iw 的固件也能数出关联终端）
 		if [ -z "$got" ] && command -v iwinfo >/dev/null 2>&1; then
 			got=$(iwinfo "$ifn" assoclist 2>/dev/null |
-				awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[ \t]/ {print tolower($1) "\t" i}')
+				awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[[:space:]]/ {print tolower($1) "\t" i}')
 		fi
 		[ -n "$got" ] && printf '%s\n' "$got"
 	done
