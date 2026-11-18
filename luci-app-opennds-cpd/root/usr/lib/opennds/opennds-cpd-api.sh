@@ -821,13 +821,22 @@ ws_iface_map() {
 	[ -n "$1" ] || return 0
 	printf '%s\n' "$1" | awk '
 	function flush() {
-		if (depth == 1 && sec != "") printf "%s\t%s\n", sec, ifn
+		if (sec != "") printf "%s\t%s\n", sec, ifn
 		sec = ""; ifn = ""
 	}
 	/"interfaces"[ \t]*:[ \t]*\[/ { in_if = 1; depth = 0; sec = ""; ifn = ""; next }
 	!in_if { next }
-	/^[ \t]*\{[ \t]*$/ { depth++; next }
-	/^[ \t]*\}[ \t]*,?[ \t]*$/ { if (depth > 0) { if (depth == 1) flush(); depth-- } next }
+	# 空对象 {} 不动层级（真机 radio/interface 的 config 可能是空表）
+	/\{[ \t]*\}[ \t]*,?[ \t]*$/ { next }
+	# 任何以 { 结尾的行都开对象：netifd 的键序是 section → ifname → config，
+	# config 是嵌套对象（mt76 等驱动的 config 里还会带 ifname 键），
+	# 只认裸 { 的写法会把 config 内容当成本层字段，键序一变就全错
+	/\{[ \t]*$/ { depth++; next }
+	/\}[ \t]*,?[ \t]*$/ {
+		if (depth == 1) flush()
+		if (depth > 0) depth--
+		next
+	}
 	depth == 1 && /"section"[ \t]*:/ {
 		s = $0; sub(/.*"section"[ \t]*:[ \t]*"/, "", s); sub(/".*/, "", s); sec = s; next
 	}
@@ -1296,6 +1305,46 @@ ov_clients() {
 }
 
 # 概览页首屏只发这一个请求：状态 + 客户端列表一次给全
+# 把 TAB 分隔的中间表转成 JSON 字符串数组（每行一项，TAB 显示为 " -> "）
+lines_to_json() { # $1=多行文本
+	[ -n "$1" ] || return 0
+	printf '%s\n' "$1" | awk '
+		NF {
+			s = $0
+			gsub(/\t/, " -> ", s)
+			gsub(/\\/, "\\\\", s)
+			gsub(/"/, "\\\"", s)
+			out = out (out == "" ? "" : ",") "\"" s "\""
+		}
+		END { printf "%s", out }'
+}
+
+# 真机自检：把 dashboard 各环节的中间值一次打出来（只读，不抢锁）。
+# 远程排障用：SSH 到设备上跑
+#   sh /usr/lib/opennds/opennds-cpd-api.sh overview selfcheck
+# AP 卡片全 0 / 接入点列不出 SSID 时，看 ap_map / ap_meta / sta_map 哪层为空。
+ov_selfcheck() {
+	local running enabled t sep=''
+	enabled=$(nds_enabled)
+	running=0
+	nds_running && running=1
+	ov_build
+	printf '{"ok":1,"running":%s,"enabled":%s,"tools":{' "$running" "$enabled"
+	for t in ubus jsonfilter iw iwinfo timeout ndsctl uci; do
+		printf '%s"%s":%s' "$sep" "$t" "$(command -v "$t" >/dev/null 2>&1 && printf 1 || printf 0)"
+		sep=','
+	done
+	printf '},"path":"%s"' "$(json_escape "$PATH")"
+	printf ',"wireless_status_len":%s' "$(printf '%s' "$CPD_WS" | wc -c | tr -d ' ')"
+	printf ',"counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s}' \
+		"$N_ONLINE" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL"
+	printf ',"ap_map":[%s]' "$(lines_to_json "$AP_MAP")"
+	printf ',"ap_meta":[%s]' "$(lines_to_json "$AP_META")"
+	printf ',"sta_map":[%s]' "$(lines_to_json "$STA_MAP")"
+	printf ',"clients":[%s]' "$(lines_to_json "$CPD_IN")"
+	printf ',"aps":[%s]\n' "$(json_escape "$APS_JSON")"
+}
+
 ov_dashboard() {
 	ov_build
 	printf '{"ok":1,%s,"clients":[%s],"count":%s}\n' \
@@ -5205,6 +5254,7 @@ case "$PAGE" in
 		case "$SUB" in
 			status) ov_status ;;
 			dashboard) ov_dashboard ;;
+			selfcheck) ov_selfcheck ;;
 			run_state) ov_run_state ;;
 			set_run) ov_set_run "$1" ;;
 			restart) ov_restart ;;

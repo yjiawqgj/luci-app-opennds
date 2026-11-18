@@ -73,10 +73,7 @@ return view.extend({
 						renderAll();
 					}
 				}, state.preemptEnabled ? _('已启用') : _('已关闭'));
-				sec.appendChild(E('div', { 'style': 'margin-top:10px;display:flex;align-items:center;gap:10px' }, [
-					tgl,
-					E('span', { 'class': 'cpd-note', 'style': 'font-family:monospace' }, 'allow_preemptive_authentication')
-				]));
+				sec.appendChild(tgl);
 				if (!state.preemptEnabled) {
 					sec.appendChild(E('p', { 'class': 'cpd-note', 'style': 'margin-top:6px' },
 						_('当前未启用自动预授权：尚未出现在客户端列表里的设备不会被自动放行')));

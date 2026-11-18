@@ -604,6 +604,7 @@ POSIX sh，输出 JSON（成功 `{"ok":1,…}` / 失败 `{"ok":0,"error":"…"}`
 | 子命令 | 功能 |
 |---|---|
 | `status` | `running`（`ndsctl status` 成败）、`enabled`（openNDS 服务的 uci 启停开关）、`engaged`（门户是否已由本插件接管：`login_option_enabled=='3'` 且 `themespec_path=='/usr/lib/opennds/theme_zone_detect.sh'`，为 `0` 时页头挂一条「门户尚未由本插件接管，以下配置暂不影响客户端」提示条并给区域识别页链接，见《整包集成与打包.md》§9）、`busy`（是否有其它页面正在应用，见 §3.1 第 7 条）、`session_scope`（读 `zone_detect.main.session_scope`，`default`/`override`，键缺失按 `default`——编辑弹窗据此决定「连接时间」是否置灰，见 §4）、统计计数、管理接口/IP、AP 列表（含各自客户端数）、maxclients。**不返回 `allow_preemptive_authentication`**——那是豁免页自己的开关，与本页无关。停用时除 `running`/`enabled`/`engaged`/黑名单条数/maxclients 外，其余计数一律给 0，**不要返回上一轮的缓存** |
+| `selfcheck` | **真机排障用（只读，不抢锁，不在界面上出现）**：一次输出 dashboard 各环节的中间值——`tools`（ubus/jsonfilter/iw/iwinfo/timeout/ndsctl/uci 是否存在）、`path`（脚本看到的 PATH）、`wireless_status_len`（`ubus call network.wireless status` 输出长度，0 = 这一步就没取到）、`ap_map`（ubus 解析出的 section→接口）、`ap_meta`（AP 卡片数据源：接口→SSID→段名）、`sta_map`（关联表 MAC→接口）、`clients`（ndsctl 解析结果）、`counts`、`aps`。SSH 到设备上跑 `sh /usr/lib/opennds/opennds-cpd-api.sh overview selfcheck`，「卡片全 0 / 接入点列不出 SSID」时看哪一层为空，空在哪层就是哪层断的 |
 | `run_state` | 只回 `{running, enabled}`，供开关和状态文字用。轮询它比拉整个 `status` 轻，重启后前端 1 秒一次问到就绪为止 |
 | `set_run <0\|1>` | 写 `opennds.@opennds[0].enabled` + commit，再 `/etc/init.d/opennds stop\|start`；返回执行后的**真实** `{running, enabled}`。停用没停掉（进程还在）就如实回 `running=1`，不许乐观置 0 |
 | `restart` | `/etc/init.d/opennds restart`。返回 0 只代表脚本跑完，就绪与否由前端轮询 `run_state` 判定（最多 20 秒） |
