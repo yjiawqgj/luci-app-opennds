@@ -490,8 +490,21 @@ ap_section_index() { # $1=section id $2=device
 }
 
 # radio 的 AP 运行时接口里，SSID 匹配优先，序号兜底
+# 接口 SSID 直读：iw 优先，没装 iw 用 iwinfo（openwrt 默认自带）
+iface_raw_ssid() { # $1=接口名
+	local s=''
+	if command -v iw >/dev/null 2>&1; then
+		s=$(iw dev "$1" info 2>/dev/null | awk '/^[ \t]*ssid / {print $2; exit}')
+	fi
+	if [ -z "$s" ] && command -v iwinfo >/dev/null 2>&1; then
+		# iwinfo 输出：ESSID: "xxx"；unknown 时不带引号 → $2 为空
+		s=$(iwinfo "$1" info 2>/dev/null | awk -F'"' '/ESSID:/ {print $2; exit}')
+	fi
+	printf '%s' "$s"
+}
+
 ap_runtime_if() { # $1=radio $2=ssid $3=序号
-	local radio="$1" want="$2" idx="$3" ifn ssid
+	local radio="$1" want="$2" idx="$3" ifn ssid i
 	ifn=$(iw dev 2>/dev/null | awk -v radio="$radio" '
 		/^phy#[0-9]+$/ { phy = "radio" substr($0, 5) }
 		/^[ \t]*Interface [^ \t]+$/ { ifn = $2 }
@@ -499,17 +512,26 @@ ap_runtime_if() { # $1=radio $2=ssid $3=序号
 			if (ifn != "" && phy == radio) print ifn
 			ifn = ""
 		}')
+	# 没有 iw 时的兜底：iwinfo 列出全部无线接口，只取 Master（AP）模式的。
+	# 官方 get_client_interface.sh 在没 iw 时直接退 br-lan，SSID/接入点就
+	# 全对不上了——openwrt 的 iwinfo 一直都在，LuCI 无线页用的就是它。
+	if [ -z "$ifn" ] && command -v iwinfo >/dev/null 2>&1; then
+		for i in $(iwinfo 2>/dev/null | awk '/^[A-Za-z0-9_.-]+[ \t]+ESSID:/ {print $1}'); do
+			iwinfo "$i" info 2>/dev/null | grep -q 'Mode: Master' || continue
+			ifn="$ifn $i"
+		done
+	fi
 	# SSID 匹配优先
 	for i in $ifn; do
-		ssid=$(iw dev "$i" info 2>/dev/null | awk '/^[ \t]*ssid / {print $2; exit}')
-		[ "$ssid" = "$want" ] && {
+		ssid=$(iface_raw_ssid "$i")
+		[ -n "$want" ] && [ "$ssid" = "$want" ] && {
 			printf '%s' "$i"
 			return 0
 		}
 	done
 	# 序号兜底
 	[ "$idx" -gt 0 ] 2>/dev/null && {
-		printf '%s' "$ifn" | sed -n "${idx}p"
+		printf '%s\n' "$ifn" | tr ' ' '\n' | sed -n "${idx}p"
 	}
 	return 0
 }
@@ -836,10 +858,11 @@ ubus_call() {
 ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
 	local ifn
 	[ -n "$1" ] || return 0
-	command -v ubus >/dev/null 2>&1 || return 0
 	for ifn in $(printf '%s\n' "$1" | awk -F'\t' '$1 != "-" && $1 != "" {print $1}'); do
-		local got
-		got=$(ubus_call call "hostapd.$ifn" get_clients |
+		local got=''
+		# ① hostapd ubus（权威；ubus_call 带 timeout，hostapd 不应答不会卡死）
+		if command -v ubus >/dev/null 2>&1; then
+			got=$(ubus_call call "hostapd.$ifn" get_clients |
 			awk -v i="$ifn" '
 			{
 				s = $0
@@ -853,13 +876,19 @@ ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
 					if (rest ~ /^[ \t]*:[ \t]*\{/) print tolower(k) "\t" i
 				}
 			}')
-		if [ -n "$got" ]; then
-			printf '%s\n' "$got"
-		elif command -v iw >/dev/null 2>&1; then
-			# Station xx:xx:… (on phy2-ap0)
-			iw dev "$ifn" station dump 2>/dev/null |
-				awk -v i="$ifn" '/^[ \t]*Station[ \t]/ {print tolower($2) "\t" i}'
 		fi
+		# ② iw station dump（与官方 get_client_interface.sh 同款）
+		if [ -z "$got" ] && command -v iw >/dev/null 2>&1; then
+			got=$(iw dev "$ifn" station dump 2>/dev/null |
+				awk -v i="$ifn" '/^[ \t]*Station[ \t]/ {print tolower($2) "\t" i}')
+		fi
+		# ③ iwinfo assoclist（openwrt 默认自带，LuCI 无线页用的就是它；
+		#    没有 hostapd ubus 对象 / 没装 iw 的固件也能数出关联终端）
+		if [ -z "$got" ] && command -v iwinfo >/dev/null 2>&1; then
+			got=$(iwinfo "$ifn" assoclist 2>/dev/null |
+				awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[ \t]/ {print tolower($1) "\t" i}')
+		fi
+		[ -n "$got" ] && printf '%s\n' "$got"
 	done
 }
 
@@ -1090,7 +1119,7 @@ EOF5
 
 ov_rows() {
 	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0 onl rif
-	local seen
+	local seen is_auth
 	N_ONLINE=0
 	# 已见 MAC：openNDS 记录的 + 关联表里的（后面补名单行时去重用）
 	seen="$CPD_MACS"
@@ -1111,31 +1140,22 @@ ov_rows() {
 			rif=$(printf '%s\n' "$STA_MAP" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
 			[ -n "$rif" ] && cif="$rif"
 			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" "$onl")"
-			if [ "$onl" = '1' ] && ! mac_in_bl "$lm"; then
+			# 在线卡只数「连着且有访问权限」的：已认证 / 可信任 / 免认证已登录。
+			# Preauthenticated（还没过门户）与没碰过门户的设备不算——与前端
+			# inFilter 的 online 分支同一口径，卡片数与列表条数对得上。
+			is_auth=0
+			case "$state" in
+				Authenticated | AuthBlocked) is_auth=1 ;;
+			esac
+			mac_in_tr "$lm" && is_auth=1
+			mac_in_bl "$lm" && is_auth=0
+			if [ "$onl" = '1' ] && [ "$is_auth" = '1' ]; then
 				N_ONLINE=$((N_ONLINE + 1))
 			fi
 			sep=','
 			n=$((n + 1))
 		done <<EOF2
 $CPD_IN
-EOF2
-	fi
-
-	# 关联表里有、openNDS 还没记录的设备：连着 WiFi 但没碰过门户。
-	# 这些行没有认证状态和流量（都给默认值），但 IP / 主机名 / 接入点
-	# 照常从邻居表、租约表、关联表补——openNDS 关了也能看到谁在线。
-	if [ -n "$STA_MAP" ]; then
-		while IFS='	' read -r lm cif; do
-			[ -n "$lm" ] || continue
-			printf '%s\n' "$seen" | grep -qFx "$lm" && continue
-			seen="$seen$lm
-"
-			rows="$rows$sep$(ov_client_row '' '' "$cif" "$lm" 0 0 '' '' 1)"
-			mac_in_bl "$lm" || N_ONLINE=$((N_ONLINE + 1))
-			sep=','
-			n=$((n + 1))
-		done <<EOF2
-$STA_MAP
 EOF2
 	fi
 
@@ -1155,9 +1175,10 @@ EOF2
 }
 
 # 统计口径（在线的判定以路由器为准，见 ov_conn）：
-#   在线     = 正在连接且未拉黑（ov_rows 按行统计，含没碰过门户的设备）
+#   在线     = 正在连接且「有访问权限」（已认证 / 可信任 / 免认证已登录），
+#              ov_rows 按行统计；Preauthenticated 与没碰过门户的设备不算
 #   已认证   = 正在连接且 state=Authenticated/AuthBlocked、不在信任/免认证名单
-#   未认证   = 正在连接但没有访问权限（Preauthenticated 状态 + 没碰过门户的）
+#   未认证   = 正在连接但还没通过认证（Preauthenticated 状态）
 #   免认证   = 正在连接且在 preemptivemac 名单
 #   可信任   = 以 trustedmac 名单为准（离线的信任设备也在名单里）
 # 计数与列表用同一组标记（online / authorized），卡片数与列表条数对得上。
@@ -1194,22 +1215,6 @@ ov_counts() {
 			fi
 		done <<EOF2
 $CPD_IN
-EOF2
-	fi
-
-	# 关联表里有、openNDS 未记录的：连着但没碰过门户 → 未认证（名单内除外）
-	if [ -n "$STA_MAP" ]; then
-		while IFS='	' read -r lm cif; do
-			[ -n "$lm" ] || continue
-			mac_in_bl "$lm" && continue
-			printf '%s\n' "$CPD_MACS" | grep -qFx "$lm" && continue
-			if mac_in_pm "$lm"; then
-				N_PRE=$((N_PRE + 1))
-			elif ! mac_in_tr "$lm"; then
-				N_UN=$((N_UN + 1))
-			fi
-		done <<EOF2
-$STA_MAP
 EOF2
 	fi
 
@@ -4504,19 +4509,27 @@ st_iface_exists() { # $1=接口名 → 在 ip -4 -o addr show 里
 	ip -4 -o addr show 2>/dev/null | awk -v n="$1" '$2 == n { f = 1 } END { exit !f }'
 }
 
-# 公平使用策略开关：zone_detect 里存过就以它为准；没存过按 openNDS 现有速率推断
+# 公平使用策略开关（优先级从高到低）：
+#   ① openNDS 配置里 fup_upload/download_throttle_rate 任一 > 0 → 开
+#      （配了限速就是启用了公平使用策略，不管名单里上次存的是什么）
+#   ② 都是 0 时看 zone_detect.main.fup_enabled 上次保存的开关状态
+#      （非首次安装；首次安装没存过 → 关）
 fup_enabled_val() {
 	local v u d
+	u=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
+	d=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
+	int_valid "$u" || u=0
+	int_valid "$d" || d=0
+	if [ "$u" -gt 0 ] 2>/dev/null || [ "$d" -gt 0 ] 2>/dev/null; then
+		printf '1'
+		return 0
+	fi
 	v=$(uci_val 'zone_detect.main.fup_enabled' '')
 	case "$v" in
 		1) printf '1'; return 0 ;;
 		0) printf '0'; return 0 ;;
 	esac
-	u=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
-	d=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
-	int_valid "$u" || u=0
-	int_valid "$d" || d=0
-	if [ "$u" = '0' ] && [ "$d" = '0' ]; then printf '0'; else printf '1'; fi
+	printf '0'
 }
 
 st_fup_split() { # $1=原始值 → stdout "动作|数值"（0/未设/空/脏值 → reject|0）

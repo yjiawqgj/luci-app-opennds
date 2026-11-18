@@ -174,10 +174,17 @@ return view.extend({
 		var nativeModalShown = false;
 
 		function lockModalBody() {
-			return [
-				E('p', { 'class': 'spinning' }, _('正在应用…')),
-				E('p', { 'class': 'ovd-lock-sub' }, lockSubText)
-			];
+			/* 弹窗内容居中均匀分布：LuCI 的 .cbi-modal 默认左对齐，
+			 * 全宽弹窗里文字挤在一边、右边一大片空白 */
+			return E('div', {
+				'style': 'display:flex;flex-direction:column;align-items:center;' +
+					'justify-content:center;gap:16px;padding:22px 10px;text-align:center'
+			}, [
+				E('p', { 'class': 'spinning', 'style': 'margin:0;font-size:15px;font-weight:600' },
+					_('正在应用…')),
+				E('p', { 'class': 'ovd-lock-sub', 'style': 'margin:0;font-size:13px;opacity:.75' },
+					lockSubText)
+			]);
 		}
 
 		function ensureNativeModal() {
@@ -469,9 +476,9 @@ return view.extend({
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
-		 * "在线" = 路由器视角正在连接的设备（hostapd 关联表为准，openNDS
-		 * 记不记录、跑没跑都算）；后端 online 标记已按路由器判定，
-		 * 黑名单单独一类。计数与列表用的是后端同一组标记
+		 * "在线" = 正在连接（路由器视角，hostapd 关联表为准）且有访问权限的
+		 * 设备（已认证 / 可信任 / 免认证已登录）；还没过门户的（未认证）
+		 * 不算在线，单独一类。计数与列表用的是后端同一组标记
 		 * （online / authorized），不会出现卡片数与列表条数对不上。 */
 		function isOnline(c) { return !!c.online; }
 
@@ -490,8 +497,8 @@ return view.extend({
 				case 'unauth':
 					return online && !c.authorized && !c.blocked;
 				default: /* online */
-					/* 在线 = 正在连接（含没碰过门户的设备），黑名单单独一类 */
-					return online && !c.blocked;
+					/* 在线 = 连着且有访问权限；未认证（还没过门户）不算 */
+					return online && !!c.authorized && !c.blocked;
 			}
 		}
 

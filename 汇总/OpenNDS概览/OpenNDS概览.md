@@ -112,25 +112,26 @@ luci-app-opennds-cpd/
   `configure_log_location()` 现探，默认 `/tmp/ndslog/ndslog.log`，设了 `option log_mountpoint`
   就在那个目录下——所以提示里不要把这个路径写死成唯一可能）。执行期间开关和重启
   按钮都禁用，避免连点。
-- 未运行时：已认证/免认证/可信任三张卡归零（`ndsctl json` 直接失败），黑名单卡仍按
-  名单显示条数（名单还在，只是不生效）、最大客户端仍按配置显示；**「在线客户端」卡片
-  不归零**——在线判定不经过 openNDS，hostapd 关联表还在，连着的无线设备照样显示
-  （openNDS 没记录的标为未认证）；未认证卡显示这些设备。行内按钮里名单类（信任/拉黑）
-  仍可用，需要 openNDS 会话的操作（解除认证等）禁用；接入点计数照常。
+- 未运行时：在线/已认证/免认证/未认证/可信任各卡归零（`ndsctl json` 直接失败），
+  黑名单卡仍按名单显示条数（名单还在，只是不生效）、最大客户端仍按配置显示；
+  **接入点卡片计数不归零**——关联表不经过 openNDS，连着的无线设备照样计入。
+  行内按钮里名单类（信任/拉黑）仍可用，需要 openNDS 会话的操作（解除认证等）禁用。
 
 ### 2.2 客户端统计（同时是列表筛选器）
 
-7 张卡片，分类判定逻辑。**"在线"以路由器为准，不以 openNDS 记录为准**：
-ndsctl 会把客户端留到空闲超时才清，人早走了记录还在——按记录算在线永远偏大，
-openNDS 停了还会变成 0。
+7 张卡片，分类判定逻辑。两层判定：
+**「正在连接」以路由器为准**（ndsctl 会把客户端留到空闲超时才清，人早走了记录还在，
+按记录算永远偏大）；**「算不算在线」再看有没有访问权限**——已认证 / 可信任 /
+免认证已登录的连着设备算在线，`Preauthenticated`（还没过门户）与从没碰过门户的
+设备**不算**，未认证单独一类。
 
 | 卡片 | 判定 |
 |---|---|
-| 在线客户端 | **当前真的连着路由器的设备**：无线上以 hostapd 关联表为准（`ubus call hostapd.<接口> get_clients`，退回 `iw station dump`）；有线上以「clientif = 管理接口且邻居表（`ip neigh`）里有它」为准。剔除 `blockedmac` 名单内的。**不管 openNDS 记不记录、跑没跑**——没碰过门户的设备、`Preauthenticated`、可信任、已认证全都算在线。关联表整体拿不到（没 hostapd ubus 也没 iw）时退回按 openNDS 记录算 |
+| 在线客户端 | **正在连接且「有访问权限」的设备** = 已认证 + 免认证已登录 + 可信任。「正在连接」的判定：无线上以 hostapd 关联表为准（`ubus call hostapd.<接口> get_clients`，退 `iw station dump`、再退 `iwinfo assoclist`）；有线上以「clientif = 管理接口且邻居表（`ip neigh`）里有它」为准。剔除 `blockedmac` 名单内的。`Preauthenticated` 与没碰过门户的设备**不算在线**。关联表整体拿不到（没 hostapd ubus 也没 iw/iwinfo）时退回按 openNDS 记录算 |
 | 已认证客户端 | 正在连接，且 `state` 为 `Authenticated` / `AuthBlocked`（超流量被 FUP 限流、身份仍是已认证），且不在 `trustedmac`、`preemptivemac` 名单内。**人走了（不在关联表）不占卡片**，但行还在列表里（online=false） |
 | 免认证客户端 | 正在连接、**在 `preemptivemac` 名单内、且已登录**（`state` 是 `Authenticated` / `AuthBlocked`）。openNDS 的 `client_type` 字段**不能**用来判定——它只在"客户端还没进客户端列表、由预认证流程新建条目"时才是 `preemptive`，正常运行时先被 15 秒扫描收进列表的客户端一律是 `cpd_can`。**判定只看 `state` 和名单，不读任何开关值** |
 | 可信任客户端 | 以 `trustedmac` 名单为准（离线的信任设备也在名单里）；在线且 `state == "Trusted"` 的照常算 |
-| 未认证客户端 | **正在连接但没有访问权限的设备**：`state == "Preauthenticated"` 的，加上「连着 WiFi 但从没碰过门户、openNDS 记录里根本没有」的设备（IP/主机名/接入点由邻居表、租约表、关联表照常补）。这一类是兜底，不要再拿名单做排除条件 |
+| 未认证客户端 | **正在连接但还没有访问权限的设备**（`state == "Preauthenticated"`）。这一类是兜底，不要再拿名单做排除条件。连着 WiFi 但从没碰过门户的设备**不进客户端列表**，只体现在接入点卡片的计数里 |
 | 黑名单 | **以 `opennds.blockedmac` 名单为准**（不是 ndsctl 状态）。名单内 MAC 无论当前是否在线都计数 |
 | 最大客户端 | 静态卡片，取 `uci get opennds.@opennds[0].maxclients`（默认 250） |
 
@@ -151,14 +152,13 @@ openNDS 停了还会变成 0。
 > `Authenticated`，也归 ③ 免认证；没登录成功的（`Preauthenticated`）归 ⑤ 未认证。
 > 这样"名单里有、但没生效"的设备会明明白白显示在未认证里，而不是被当成免认证藏起来。
 
-> **"在线"和这几类的关系**：在线以路由器为准（关联表 / 邻居表，见上表），
+> **"在线"和这几类的关系**：「正在连接」以路由器为准（关联表 / 邻居表，见上表）；
 > 可信任、已认证、未认证三种身份来自 `ndsctl json` 的 `state`（json 里 `clients`
 > 是以 MAC 为键的**对象**，不是数组——遍历时取值、不要按下标），免认证来自
-> `preemptivemac` 名单 + 已登录判定。所以 `在线 ≥ 已认证 + 未认证 + 免认证（在线部分）`，
-> 还包括"连着但没碰过门户、openNDS 记录里根本没有"的设备——四类相加不等于在线
-> 是正常的，不是数据问题。唯一的例外是**列表**：可信任 / 免认证 / 黑名单三张名单会
-> 额外补出"已离线"的行（见本节末尾），这些补出来的行**不计入「在线」**，
-> 只在列表里显示、IP 与接入点留"—"。
+> `preemptivemac` 名单 + 已登录判定。在线 = 未认证以外的连着设备（⑤ 未认证不计入），
+> 即 `在线 = 已认证 + 免认证 + 可信任`（都按「正在连接」限定）。
+> 唯一的例外是**列表**：可信任 / 免认证 / 黑名单三张名单会额外补出"已离线"的行
+> （见本节末尾），这些补出来的行**不计入「在线」**，只在列表里显示、IP 与接入点留"—"。
 
 > **`ndsctl json` 的真实结构**（源码 `src/util.c` 的 `ndsctl_json_all()` /
 > `ndsctl_json_client()`；这层结构 9.x 与 10.x 完全一致，两份 `util*.c` 里
@@ -211,12 +211,13 @@ openNDS 停了还会变成 0。
 >   前端需要的 `authenticated / preauth / trusted / blocked` 四个布尔由后端换算，
 >   前端不解析 openNDS 内部状态。
 
-**这三类视图的行 = `ndsctl` 记录的条目 ∪ 关联表里的设备 ∪ 名单里的条目**：
+**这三类视图的行 = `ndsctl` 记录的条目 ∪ 名单里的条目**：
 `clients` 里 `state=="Trusted"` 的（可信任），`preemptivemac` 名单里当前在 `clients`
-中出现的（免认证），再加上 hostapd 关联表里 openNDS 没记录的设备（未认证），
-最后用两份名单补上没出现的行（即为离线行，`online:false`）；
+中出现的（免认证），再用两份名单补上没出现的行（即为离线行，`online:false`）；
 黑名单只来自 `opennds.blockedmac` 名单。离线行 IP/主机名/接入点显示"—"，状态标签照旧。
 理由：名单是持久的，客户端离线后如果从列表里消失，用户就再也找不到、没法撤销了。
+连着 WiFi 但没碰过门户的设备**不进列表**（ndsctl 里没有它们的会话，
+也没有可操作的状态），只体现在接入点卡片的计数里。
 
 ### 2.3 网络接口
 
@@ -542,8 +543,8 @@ ok 绿 / warn 琥珀 / err 红，与插件其它页面一致）。
 
 | 页面数据 | 来源 |
 |---|---|
-| 客户端列表 | 状态/到期/流量/限速参数来自 `ndsctl json`；**行集合以路由器为准**（hostapd 关联表 ∪ ndsctl 记录 ∪ 名单，见 §2.2/2.5）；主机名从 DHCP 租约（`/tmp/dhcp.leases` 等）或 ndsctl 输出补全 |
-| 在线判定 | 无线：hostapd 关联表（`ubus call hostapd.<接口> get_clients`，退 `iw station dump`），MAC 小写归一后比对；有线：openNDS 记录里 `clientif` == 管理接口且 `ip -4 neigh`（剔除 FAILED）里找得到。关联表整体拿不到时退回按 openNDS 记录算。ndsctl 会把客户端留到空闲超时才清，**不能**拿 `ndsctl json` 里有没有来判在线 |
+| 客户端列表 | 状态/到期/流量/限速参数来自 `ndsctl json`；行集合 = ndsctl 记录 ∪ 名单（见 §2.2/2.5）；主机名从 DHCP 租约（`/tmp/dhcp.leases` 等）或 ndsctl 输出补全 |
+| 在线判定 | 无线：hostapd 关联表（`ubus call hostapd.<接口> get_clients`，退 `iw station dump`、再退 `iwinfo assoclist`），MAC 小写归一后比对；有线：openNDS 记录里 `clientif` == 管理接口且 `ip -4 neigh`（剔除 FAILED）里找得到。关联表整体拿不到时退回按 openNDS 记录算。ndsctl 会把客户端留到空闲超时才清，**不能**拿 `ndsctl json` 里有没有来判「正在连接」；「算不算在线」再叠一层 `authorized`（未认证不计入在线卡） |
 | 客户端接入点 | **优先按 MAC 反查 hostapd 关联表**得到运行时接口（`ws_sta_map`），反查不到再用 `ndsctl json` 的 `clientif`（openNDS 内部调 `/usr/lib/opennds/get_client_interface.sh <mac>` 的结果，`src/util.c` 的 `get_client_interface()`）；它**是原样输出、没有编码**（`get_client_interface()` 走的是 `execute_ret_url_encoded()`，这名字是历史遗留，函数体就是 `popen` + `fread`，不做任何转义），mesh 场景带两段（`phy2-ap0 <mesh节点MAC>`），**按空格取第一段**即可。没装 iw 的机器上它是 `br-lan` 这类网桥名、对不上 `phyN-apM`，所以只能当兜底。SSID 反查：`iw dev <if> info` 直读，读不到才回退 `phyN-apM` 序号映射——与区域识别页/豁免页共用同一份实现 |
 | 运行状态 | `ndsctl status` 成败（不看 init 脚本的 exit code，也不看 `pidof`）；`enabled` 读 `uci -q get opennds.@opennds[0].enabled`（缺省按 1） |
 | 门户接管状态 | `engaged`：`uci -q get opennds.@opennds[0].login_option_enabled` 为 `3` **且** `themespec_path` 等于 `/usr/lib/opennds/theme_zone_detect.sh`；其它情况一律 `0`（口径与区域识别页同源） |
@@ -622,7 +623,8 @@ POSIX sh，输出 JSON（成功 `{"ok":1,…}` / 失败 `{"ok":0,"error":"…"}`
 
 1. shell 通过 `sh -n`；JS 通过语法检查；JSON 可解析。
 2. 冒烟测试：搭 stub 沙箱（stub `ndsctl`/`uci`/`ip`/`get_client_interface.sh`/`/etc/init.d/opennds`），
-   覆盖：status 统计分类计数（含"名单内但未登录"落未认证、四类之和=在线）、clients 字段模型、
+   覆盖：status 统计分类计数（含"名单内但未登录"落未认证、在线=已认证+免认证+可信任、
+   未认证不计入在线）、clients 字段模型、
    筛选/搜索归一化/排序逻辑、每种 client_action 的 ndsctl 调用与持久化写入（含 block 的
    互斥清理）、client_edit 的 preemptivemac 条目格式与重启调用、MAC 校验拦截、
    **写进 preemptivemac 的 MAC 是小写、条目是 `mac=…;` 加 5 个纯数字参数的 6 字段格式**、**无 DHCP 租约时 preauth 返回 `warnings`**、

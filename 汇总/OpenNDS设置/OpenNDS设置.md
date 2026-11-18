@@ -121,6 +121,14 @@ luci-app-opennds-cpd/
 ### 3.3 公平使用策略
 - H2「公平使用策略」。
 - 区块标题下一条红色小字警告：**「下载配额检查优于上传配额检查。」**（照抄）
+- **开关初始状态（`fup_enabled_val`，优先级从高到低）**：
+  ① openNDS 配置里 `fup_upload_throttle_rate` / `fup_download_throttle_rate`
+  **任一 > 0 → 开**（配了限速就是启用了公平使用策略，速率脏值按 0 处理）；
+  ② 都是 0 时看 `zone_detect.main.fup_enabled`（上次「保存/应用」时写入的开关状态，
+  非首次安装按它显示）；
+  ③ 都没有（首次安装）→ 关。
+  开关切换后「保存/应用」会把 `zone_detect.main.fup_enabled` 写成 `1`/`0`，
+  下次进来按上面的优先级显示。
 - 两列网格 `.quota-grid`（窄屏单列），每列：
   - 标签「上传」/「下载」
   - 下拉框 `select`，两个选项：`限速` / `取消认证`
@@ -224,6 +232,7 @@ luci-app-opennds-cpd/
 | 上传/清理目标目录 | `cpd/default/{wireless,wired,blacklist}/` |
 | FUP 上传动作 | `uci -q get opennds.@opennds[0].fup_upload_throttle_rate`；0/空 → 取消认证，>0 → 限速 |
 | FUP 下载动作 | 同上，`fup_download_throttle_rate` |
+| FUP 开关状态 | 见 §3.3：速率 >0 → 开；否则 `zone_detect.main.fup_enabled`；首次安装 → 关 |
 | 当前接管接口 | `uci -q get opennds.@opennds[0].gatewayinterface`，空则默认 `br-lan` |
 | 接口卡片列表 | `ip -4 -o addr show`，取每行 `$2` 为接口名、`$4` 去掉 `/前缀` 为 IP；同名接口只取第一条 IPv4 |
 | 接口高亮 | 配置值是设备名 → 直接比；配置值对不上任何卡片（含有人手工把配置写成 network section 名的情况）→ 试着用 `uci -q get network.<值>.device` 换成设备名再比，只为容错高亮、**不反写配置**；还换不出来就**不高亮任何卡片**，并在网格上方补一行**纯文字提示**（不是卡片、不可点、没有 `aria-pressed`）：「当前配置的接口「<值>」不在本机接口列表里，点击下方任一接口即可切换」。别把它做成一比一复刻的卡片：那张"卡"一旦能点，就会把 `gatewayinterface` 写成 `lan` 这种 section 名，正是 §1 要避免的 |
