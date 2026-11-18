@@ -343,6 +343,11 @@ J
 esac
 NEOF
 
+# 自己造的桩必须补可执行位：Windows（MSYS）上 cat 出来的文件会自动带 x，
+# Linux 上是 644 —— 不补的话 iw/ubus 在 PATH 里根本找不到，
+# 表现就是 AP 卡片 iface 为空、计数全 0（CI 上就是这么红的）。
+chmod +x "$S/bin/"* 2>/dev/null
+
 # openNDS 配置已在上面布置（enabled=1）
 export PATH="$S/bin:$PATH"
 
