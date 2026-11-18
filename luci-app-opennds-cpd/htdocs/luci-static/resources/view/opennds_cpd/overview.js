@@ -541,6 +541,8 @@ return view.extend({
 			for (var i = 0; i < state.aps.length; i++) {
 				var a = state.aps[i];
 				if (apKey(a) !== state.ap) continue;
+				/* 段名最准：同一 SSID 同时开在 2.4G/5G 上是两个段、两张卡片 */
+				if (a.section && c.apsec) return c.apsec === a.section;
 				if (a.ssid && c.ssid) return c.ssid === a.ssid;
 				return !!a.iface && !!c.iface && c.iface === a.iface;
 			}

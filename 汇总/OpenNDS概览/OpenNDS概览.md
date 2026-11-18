@@ -239,7 +239,10 @@ luci-app-opennds-cpd/
   （`c.ssid`）；关联表里没有（离线 / 有线）时再用接口名映射：接口名等于**当前管理接口**
   （uci `gatewayinterface`，取不到用 `ndsctl status` 的 `Managed interface:`）的显示
   `<接口名>（有线）`——**不要写死 `br-lan`**，管理接口能在「openNDS 设置」页换。
-  **按接入点筛选时先比 SSID、SSID 缺失再退回接口名比**：openNDS 的 `clientif`
+  **按接入点筛选时先比段名（`c.apsec` = 客户端所在 AP 的 uci section）、再比 SSID、
+  SSID 缺失才退回接口名**：同一个 SSID 常常同时开在 2.4G 和 5G 上，那是两个段、
+  两张卡片，卡片数量按段统计；只按 SSID 筛会把两个段的客户端都算进来，出现
+  "卡片显示 2 个、点开列表 5 条"。而 openNDS 的 `clientif`
   （`get_client_interface.sh`）在没装 iw 的机器上是 `br-lan` 这类网桥名，
   和卡片的运行时接口名（`phy2-apM`）对不上，只拿接口名比的话卡片上明明有数量、
   点开列表却是空的。

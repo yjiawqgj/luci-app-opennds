@@ -257,6 +257,9 @@ r2=$(seg "$out" '11:22:33:44:55:66')
 r3=$(seg "$out" '22:33:44:55:66:77')
 ck "已认证客户端 ssid=互联网" '"ssid":"互联网"' "$r1"
 ck "可信任客户端按关联表补 ssid=guest" '"ssid":"guest"' "$r2"
+# 同一 SSID 可能同时开在 2.4G/5G 上（两个段名）：列表要带段名，卡片才能精确筛选
+ck "已认证客户端 apsec=default_radio2" '"apsec":"default_radio2"' "$r1"
+ck "可信任客户端 apsec=wifinet3" '"apsec":"wifinet3"' "$r2"
 ck "可信任客户端用邻居表补到 IP" '"ip":"10.0.0.9"' "$r2"
 ck "可信任客户端 authorized=true" '"authorized":true' "$r2"
 ck "未认证客户端 authorized=false" '"authorized":false' "$r3"

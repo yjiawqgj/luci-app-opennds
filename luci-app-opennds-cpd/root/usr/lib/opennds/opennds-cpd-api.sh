@@ -916,7 +916,7 @@ client_ssid() { # $1=mac（小写） $2=clientif
 ov_client_row() {
 	local state="$1" ip="$2" cif="$3" lm="$4" dkb="$5" ukb="$6" ss="$7" se="$8"
 	local onl="${9:-1}"
-	local host ssidv up down auth pre trst blk joined expires lim authorized
+	local host ssidv apsec up down auth pre trst blk joined expires lim authorized
 	host=$(ov_host_for "$lm")
 	dkb="${dkb:-0}"
 	ukb="${ukb:-0}"
@@ -927,6 +927,7 @@ ov_client_row() {
 	# openNDS 对 trusted 客户端不一定填 ip；用邻居表补，别让"在线却没 IP"
 	[ -z "$ip" ] && ip=$(neigh_ip_for "$lm")
 	ssidv=$(client_ssid "$lm" "$cif")
+	apsec=$(printf '%s\n' "$STA_SEC" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
 
 	auth=false
 	pre=false
@@ -954,9 +955,9 @@ ov_client_row() {
 	expires=$(fmt_time "$se")
 	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
 
-	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"limits":%s}' \
+	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","apsec":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"limits":%s}' \
 		"$(json_escape "$host")" "$(json_escape "$ip")" "$(json_escape "$lm")" \
-		"$(json_escape "$cif")" "$(json_escape "$ssidv")" \
+		"$(json_escape "$cif")" "$(json_escape "$ssidv")" "$(json_escape "$apsec")" \
 		"$(json_escape "$expires")" "$(json_escape "$joined")" \
 		"${CPD_AUTHIDLE:-120}" \
 		"$up" "$down" "$auth" "$pre" "$trst" "$blk" \
@@ -969,6 +970,7 @@ ov_client_row() {
 # 页面切进来要等两次串行往返；合并成一次后首屏明显更快。
 ov_build() {
 	local running enabled engaged busy scope='' conf_err=''
+	local sm_mac sm_ifn sm_sec
 	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
 		conf_err=$(uci show opennds 2>&1 >/dev/null)
 	fi
@@ -998,6 +1000,22 @@ ov_build() {
 	AP_MAP=$(ws_iface_map "$CPD_WS")
 	ov_ap_meta
 	STA_MAP=$(ws_sta_map "$AP_META")
+	# MAC → 所属 AP 的 uci 段名。同一个 SSID 常常同时开在 2.4G 和 5G 上，
+	# 那是两个段、两张卡片；卡片数量按段统计，列表也必须按段筛选，
+	# 否则会出现「卡片显示 2 个、点开列表 5 条」的错位。
+	STA_SEC=''
+	if [ -n "$STA_MAP" ]; then
+		while IFS='	' read -r sm_mac sm_ifn; do
+			[ -n "$sm_mac" ] || continue
+			sm_sec=$(printf '%s\n' "$AP_META" |
+				awk -F'\t' -v x="$sm_ifn" '$1 == x && NF >= 3 {print $3; exit}')
+			[ -n "$sm_sec" ] || continue
+			STA_SEC="$STA_SEC$sm_mac	$sm_sec
+"
+		done <<EOF5
+$STA_MAP
+EOF5
+	fi
 
 	CPD_PARSED=''
 	CPD_IN=''
