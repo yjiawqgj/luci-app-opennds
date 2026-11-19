@@ -77,15 +77,16 @@ function ensureToasts() {
 /* ============================================================
  * 「保存并应用」全流程（所有页面共用）
  * ------------------------------------------------------------
- * openwrt 原生的应用流程是：commit → 弹窗显示「正在应用配置更改…」→ 约 5 秒后
- * 刷新页面。openNDS 的 init 脚本没有注册 procd reload trigger，commit 本身
- * 不会让它重启，所以还要补一次 post_apply（重启服务 + 等就绪，十几秒）。
- * 页面先刷新会把这一步变成没人等的孤儿请求：openNDS 停在「未运行」，
- * 概览页再挂一条「等待上一步完成，请稍候重试」。
- * 因此这里接管刷新时机：原生弹窗照旧，但从「正在应用」到「真正应用完」之间
- * 一直由弹窗显示等待状态，确认 openNDS 起来了才刷新页面。
+ * openwrt 原生的应用流程是：commit → 原生弹窗（「正在等待配置被应用…90s」
+ * 倒计时）→ confirm 成功后约 1.5 秒刷新页面。commit 本身不会让 openNDS 重启
+ * （它的 init 没有 procd reload trigger），所以还要补一次 post_apply：
+ * 后端现在把它拆成「秒回的收尾 + 后台 worker」，worker 做部署/重启/等就绪，
+ * 全程可能十几到几十秒，肯定超过原生 1.5 秒的刷新点。
+ * 因此这里接管刷新时机：弹窗文案完全交给原生（不覆盖、不自造提示），
+ * 我们只轮询后端的 apply_state，确认 worker 真正跑完（且 openNDS 在跑，
+ * 或应用前本来就停着）才刷新页面。
  * ============================================================ */
-var APPLY = { active: false, ui: null, resolve: null, reject: null, oldDisplay: null, timer: null, watchdog: null };
+var APPLY = { active: false, ui: null, resolve: null, reject: null, polling: null };
 
 /* 当前会话里待提交的 uci 增量条数（LuCI 24.10 没有 changesCount 属性） */
 function changeCount(ui) {
@@ -95,20 +96,11 @@ function changeCount(ui) {
 	return n;
 }
 
-APPLY.show = function (msg) {
-	var ui = APPLY.ui;
-	if (!ui || !ui.changes || typeof ui.changes.displayStatus !== 'function') return;
-	ui.changes.displayStatus('notice spinning', E('p', {}, msg));
-};
-
 APPLY.start = function (ui) {
 	/* 连点两次「保存并应用」：复用同一次流程，别把 commit 跑两遍 */
 	if (APPLY.promise) return APPLY.promise;
 	APPLY.ui = ui;
 	APPLY.active = true;
-	APPLY.oldDisplay = L.env.apply_display;
-	/* 原生在 uci-applied 之后 apply_display 秒刷新页面 —— 这段等待改由我们掌握 */
-	L.env.apply_display = 60;
 	APPLY.promise = new Promise(function (resolve, reject) {
 		APPLY.resolve = resolve;
 		APPLY.reject = reject;
@@ -118,127 +110,92 @@ APPLY.start = function (ui) {
 			APPLY.active = false;
 			APPLY.ui = null;
 			APPLY.promise = null;
-			L.env.apply_display = APPLY.oldDisplay;
-			APPLY.oldDisplay = null;
 			reject({ error: (e && e.message) || _('应用失败') });
 			return;
 		}
-		/* 兜底：原生流程异常（POST 失败、设备不可达）时不会有 uci-applied 事件 */
-		APPLY.watchdog = window.setTimeout(function () {
-			if (!APPLY.active) return;
-			APPLY.finish({ ok: 0, error: _('应用超时，请刷新页面确认结果') });
-		}, 90000);
 	});
 	return APPLY.promise;
 };
 
 APPLY.finish = function (res) {
-	if (APPLY.timer) { window.clearInterval(APPLY.timer); APPLY.timer = null; }
-	if (APPLY.watchdog) { window.clearTimeout(APPLY.watchdog); APPLY.watchdog = null; }
 	APPLY.active = false;
-	if (APPLY.oldDisplay !== null && APPLY.oldDisplay !== undefined) {
-		L.env.apply_display = APPLY.oldDisplay;
-		APPLY.oldDisplay = null;
-	}
-	var ok = !!(res && res.ok);
 	var resolve = APPLY.resolve, reject = APPLY.reject, ui = APPLY.ui;
 	APPLY.resolve = null;
 	APPLY.reject = null;
 	APPLY.ui = null;
 	APPLY.promise = null;
-	/* 关掉原生弹窗：成功时紧接着刷新页面，失败时要把错误提示露出来 */
-	if (ui && ui.changes && typeof ui.changes.displayStatus === 'function')
+	APPLY.polling = null;
+	if (!resolve && !reject) return;
+	var ok = !!(res && res.ok);
+	if (ok) resolve(res);
+	else reject({ error: (res && res.error) || _('应用失败') });
+	if (ui && ui.changes && typeof ui.changes.displayStatus === 'function' && !ok)
 		ui.changes.displayStatus(false);
-	if (ok) { if (resolve) resolve(res); }
-	else if (reject) reject({ error: (res && res.error) || _('应用失败') });
-	else if (resolve) resolve(res);
 };
 
-/* post_apply 之后确认 openNDS 真的起来了（最多约 20 秒） */
-APPLY.waitRunning = function () {
-	var tries = 0;
-	return new Promise(function (resolve) {
-		var tick = function () {
-			tries++;
-			L.require('opennds_cpd.common').then(function (m) {
-				return m.api('overview', 'run_state');
-			}).then(function (j) {
-				if (j && j.ok && j.running === 1) { resolve(true); return; }
-				if (tries >= 25) { resolve(false); return; }
-				window.setTimeout(tick, 800);
-			}, function () {
-				if (tries >= 25) { resolve(false); return; }
-				window.setTimeout(tick, 800);
-			});
-		};
-		window.setTimeout(tick, 600);
-	});
-};
-
-/* 不是从页脚按钮进来、而是从右上角「未保存的配置」弹窗里点的保存并应用：
- * 同样要等 post_apply 跑完再刷新（原生默认 5 秒就刷，会把重启掐在半路）。 */
-APPLY.runDetached = function () {
-	L.require('ui').then(function (ui) {
-		var ch = ui && ui.changes;
-		var show = function (msg) {
-			if (ch && typeof ch.displayStatus === 'function')
-				ch.displayStatus('notice spinning', E('p', {}, msg));
-		};
-		show(_('正在等待 openNDS 完成重启…'));
-		L.require('opennds_cpd.common').then(function (m) {
-			return m.api('sys', 'post_apply');
-		}).then(function (j) {
-			if (j && j.error) throw { error: j.error };
-			if (j && j.was_running === 0) return true;
-			return APPLY.waitRunning();
-		}).then(function (ok) {
-			if (!ok) throw { error: _('配置已提交，但 openNDS 未能在 20 秒内启动，请查看 openNDS 日志') };
-			show(_('配置已应用，正在刷新页面…'));
-			window.setTimeout(function () {
-				if (window.L && L.env) L.env.apply_display = APPLY.detachedOld || 5;
-				window.location = window.location.href.split('#')[0];
-			}, 400);
-		}, function (e) {
-			if (ch && typeof ch.displayStatus === 'function') ch.displayStatus(false);
-			L.require('opennds_cpd.common').then(function (m) {
-				m.notify((e && e.error) || _('应用失败'), 'err');
-			});
-		});
-	}).catch(function () {});
-};
-
-/* uci-applied 事件：原生 commit 完成的唯一可靠信号 */
+/* uci-applied（原生 confirm 成功）之后的收尾：
+ * 调 sys post_apply（秒回，后台 worker 已在跑）→ 轮询 sys apply_state，
+ * worker 报告完成且 openNDS 状态符合预期才刷新页面。
+ * 弹窗完全由原生流程管理：我们既不写文案、也不关弹窗（失败才关）。 */
 APPLY.onApplied = function () {
+	if (APPLY.polling) return;
+	APPLY.polling = { tries: 0 };
 	L.require('opennds_cpd.common').then(function (m) {
-		if (!APPLY.active) {
-			APPLY.runDetached();
-			return;
-		}
-		APPLY.show(_('正在等待 openNDS 完成重启…'));
-		APPLY.timer = window.setInterval(function () {
-			if (!APPLY.active) return;
-			/* 原生在事件里还会写一条「配置已应用」，这里持续覆盖成等待文案 */
-			APPLY.show(_('正在等待 openNDS 完成重启…'));
-		}, 700);
-		m.api('sys', 'post_apply').then(function (j) {
-			if (j && j.error) throw { error: j.error };
-			/* 应用前本来是停着的：不主动拉起，也不要求它运行 */
-			if (j && j.was_running === 0) return true;
-			return APPLY.waitRunning();
-		}).then(function (ok) {
-			if (!ok) throw { error: _('配置已提交，但 openNDS 未能在 20 秒内启动，请查看 openNDS 日志') };
-			APPLY.show(_('配置已应用，正在刷新页面…'));
-			window.setTimeout(function () {
+		var tick = function () {
+			var st = APPLY.polling;
+			if (!st) return;
+			st.tries++;
+			/* 第一次先派活（post_apply 秒回），之后每秒问一次进度 */
+			var call = (st.tries === 1)
+				? m.api('sys', 'post_apply')
+				: m.api('sys', 'apply_state');
+			call.then(function (j) {
+				if (!APPLY.polling) return;
+				if (j && j.error) throw { error: j.error };
+				if (st.tries === 1) {
+					/* post_apply 已受理：进入轮询 */
+					window.setTimeout(tick, 1000);
+					return;
+				}
+				if (!j || j.done !== 1) {
+					if (st.tries >= 150) {
+						throw { error: _('应用仍在后台进行，请稍后刷新页面查看结果') };
+					}
+					window.setTimeout(tick, 1000);
+					return;
+				}
+				/* worker 完成。busy = 上一轮还在跑，接着等它 */
+				if (j.busy === 1) {
+					window.setTimeout(tick, 1000);
+					return;
+				}
+				if (!j.ok || (j.was_running === 1 && j.running !== 1)) {
+					throw { error: (j && j.error) ||
+						_('配置已提交，但 openNDS 未能启动，请检查 openNDS 日志') };
+				}
+				/* 成功：稍微缓一下再刷新，让页面别闪太快 */
 				APPLY.finish({ ok: 1 });
-				window.location = window.location.href.split('#')[0];
-			}, 400);
-		}, function (e) {
-			APPLY.finish({ ok: 0, error: (e && e.error) || _('应用失败') });
-		});
+				window.setTimeout(function () {
+					window.location = window.location.href.split('#')[0];
+				}, 400);
+			}).catch(function (e) {
+				if (!APPLY.polling) return;
+				APPLY.finish({ ok: 0, error: m.errText(e, _('应用失败')) });
+			});
+		};
+		tick();
 	}).catch(function (e) {
 		APPLY.finish({ ok: 0, error: (e && e.error) || _('应用失败') });
 	});
 };
+
+/* uci-applied 事件：原生 commit + confirm 成功的唯一可靠信号。
+ * 第一件事是把原生刷新推迟（原生紧接着读 apply_display 排刷新定时器），
+ * 剩下的交给 onApplied 轮询。按钮路径与右上角指示器路径共用这里。 */
+document.addEventListener('uci-applied', function () {
+	if (window.L && L.env) L.env.apply_display = 120;
+	APPLY.onApplied();
+});
 
 /* LuCI 模块加载器要求 L.require() 的模块返回 L.Class 子类（加载器实例化后缓存），
  * 因此这里必须是 extend 而非普通对象字面量 */
@@ -703,20 +660,6 @@ var CPD = L.Class.extend({
 			throw { error: _('当前 LuCI 版本不支持原生复位') };
 		});
 	}
-});
-
-/* openwrt 原生「保存并应用」只做 commit + reload_config；openNDS 的 init
- * 脚本没有注册 procd reload trigger，所以 commit 不会让它重启。这里在原生
- * 应用完成（uci-applied）时补一次运行时同步 + 服务重启：
- * 只动运行时，不写任何配置，配置本身已由 openwrt 自己 commit。 */
-document.addEventListener('uci-applied', function () {
-	if (!APPLY.active && window.L && L.env) {
-		/* 同步推迟原生刷新：这个监听是 uci-applied 的第一跳，
-		 * 原生紧接着读 apply_display 决定几秒后刷新页面 */
-		APPLY.detachedOld = L.env.apply_display;
-		L.env.apply_display = 600;
-	}
-	APPLY.onApplied();
 });
 
 return CPD;

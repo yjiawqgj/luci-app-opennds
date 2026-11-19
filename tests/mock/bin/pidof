@@ -1,6 +1,10 @@
 #!/bin/sh
 # pidof 桩：NDS_RUNNING=1（默认）→ opennds 在跑；0 → 找不到进程。
-# 运行判定已改为进程权威（nds_running），用例用这个开关控制两种状态。
+# CPD_PIDOF_CLEAR 指向的文件存在时视为进程已退出（配合 NDS_INIT 桩模拟
+# /etc/init.d/opennds stop 之后进程真的退出）。运行判定是进程权威。
+if [ -n "$CPD_PIDOF_CLEAR" ] && [ -e "$CPD_PIDOF_CLEAR" ]; then
+	exit 1
+fi
 if [ "${NDS_RUNNING:-1}" = '1' ]; then
 	echo 1234
 	exit 0

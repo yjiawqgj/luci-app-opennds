@@ -3,7 +3,9 @@
  * 名单 = /etc/config/opennds 的 blockedmac。openNDS 9.4 起已废弃
  * macmechanism/blockedmaclist，主进程不再读它，真正的拦截由本插件的分发脚本
  * theme_zone_detect.sh 做：命中名单的客户端不认证、只出示黑名单门户。
- * 门户库 = /usr/lib/opennds/cpd/blacklist/，选中项存 zone_detect.main.portal_blacklist。
+ * 门户库 = /usr/lib/opennds/cpd/blacklist/，选中项存
+ * zone_detect.main.portal_blacklist_sel（设置页「默认门户-黑名单」另有独立的
+ * 默认黑名单门户，键 portal_blacklist，黑名单页没选时被拉黑客户端看到它）。
  */
 'use strict';
 'require view';
@@ -148,11 +150,11 @@ return view.extend({
 		/* 保存 = 写 uci 暂存（顶部「未保存的配置」出现，复位可还原），不生效。
 		 * 名单进 opennds.blockedmac（拦截由插件的分发脚本执行，openNDS 9.4 起
 		 * 已废弃 macmechanism/blockedmaclist，主进程不再读这两个选项）；
-		 * 门户选中项进 zone_detect.main.portal_blacklist。 */
+		 * 门户选中项进 zone_detect.main.portal_blacklist_sel。 */
 		function stageMacs(list) {
 			return CPD.stageUci('opennds', '@opennds[0]', 'blockedmac', 'list', list)
 				.then(function () {
-					return CPD.stageUci('zone_detect', 'main', 'portal_blacklist', 'opt',
+					return CPD.stageUci('zone_detect', 'main', 'portal_blacklist_sel', 'opt',
 						state.portal || null);
 				});
 		}
@@ -208,7 +210,7 @@ return view.extend({
 			sel.addEventListener('change', function () {
 				var v = this.value;
 				state.portal = (v === 'default') ? '' : v;
-				CPD.stageUci('zone_detect', 'main', 'portal_blacklist', 'opt', state.portal || null)
+				CPD.stageUci('zone_detect', 'main', 'portal_blacklist_sel', 'opt', state.portal || null)
 					.then(null, function (e) {
 						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
 					});

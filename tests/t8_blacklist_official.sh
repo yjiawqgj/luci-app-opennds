@@ -94,7 +94,7 @@ out=$(call blacklist portal_delete 'name=a.sh')
 ck "删除已上传门户" '"ok":1' "$out"
 [ -f "$BLD/a.sh" ] && { echo "  FAIL a.sh 没被删掉"; fail=1; } || echo "  OK   a.sh 已删除"
 
-uci set zone_detect.main.portal_blacklist=b.sh 2>/dev/null
+uci set zone_detect.main.portal_blacklist_sel=b.sh 2>/dev/null
 out=$(call blacklist portal_delete 'name=b.sh')
 ck "选中中的门户拒绝删除" '正在使用中' "$out"
 [ -f "$BLD/b.sh" ] && echo "  OK   选中中的门户文件保留" || { echo "  FAIL b.sh 被删了"; fail=1; }

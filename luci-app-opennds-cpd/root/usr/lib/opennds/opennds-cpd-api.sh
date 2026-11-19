@@ -247,9 +247,9 @@ ndsctl_mac() { # $1=子命令 $2=小写 mac
 }
 
 # 就绪判据：pidof 有值 且 ndsctl status 能成功。
-# $1 = 轮数（默认 6，总预算约 13 秒：单次 ndsctl 限时 2 秒 + 间隔）。
-# 轮数可调是为了别把 rpcd 的 exec 超时（约 30 秒）撑爆 —— 应用后前端还会
-# 继续轮询运行状态，后端这里不必等太久。
+# $1 = 轮数（默认 6；单轮 = ndsctl 限时 2 秒 + 间隔）。
+# 轮数可调：rpcd exec 的硬上限是 120 秒（前端 XHR 约 20 秒会报超时），
+# 同步路径控制在 20 秒内最好；后台 worker 无此约束，重启后用长预算。
 wait_ready_n() {
 	local i=0 n="${1:-6}"
 	while [ "$i" -lt "$n" ]; do
@@ -292,26 +292,39 @@ ndsctl_run() {
 
 # SR_RESTARTED=1 表示本次真的重启了；0 表示 openNDS 未运行、只写配置没拉起。
 # 决策：应用设置时不主动启动 openNDS，启动只由概览页的启停开关负责。
-SR_RESTARTED=0
+#
+# 重启必须严格顺序化：stop → 等进程真正退出 → 清链 → start → 等就绪。
+# 不能用 /etc/init.d/opennds restart 一把梭：procd 对 stop 的应答是异步的
+# （term_timeout 90 秒，官方 service_stopped 只等 10 秒就返回），旧进程可能
+# 还没退干净 start 就已经把新实例注册进去了 —— 两个 opennds 互相抢端口/链，
+# procd respawn 重试失败后整个服务停在「已停止」，页面上就是「保存并应用后
+# NDS 变未运行」的根因。
+# 等不到进程退出（极少见）才硬杀：此时实例已被 procd delete，不会触发 respawn。
+NDS_INIT="${NDS_INIT:-/etc/init.d/opennds}"
+LIBOPENNDS="${LIBOPENNDS:-/usr/lib/opennds/libopennds.sh}"
 service_restart() {
 	SR_RESTARTED=0
 	nds_running || return 0
 	SR_RESTARTED=1
-	/etc/init.d/opennds restart 9>&- >/dev/null 2>&1
-	wait_ready_n 3 && return 0
-	# 兜底：restart 偶发把服务停在「已停止」（老实例没退干净就起新实例、
-	# 或防火墙链残留导致新实例初始化失败）。这里清干净再起一次。
-	# 时间预算要算死：3 轮 + 最多 3 秒等旧进程退出 + 2 轮，合计远小于
-	# rpcd exec 的 30 秒上限，避免整个请求被 SIGKILL 在重启中途。
-	/etc/init.d/opennds stop 9>&- >/dev/null 2>&1
+	"$NDS_INIT" stop 9>&- >/dev/null 2>&1
 	local i=0
-	while nds_running && [ "$i" -lt 3 ]; do
+	while nds_running && [ "$i" -lt "${CPD_STOP_WAIT:-45}" ]; do
 		sleep 1 2>/dev/null || sleep 1
 		i=$((i + 1))
 	done
-	/usr/lib/opennds/libopennds.sh delete_chains 9>&- >/dev/null 2>&1
-	/etc/init.d/opennds start 9>&- >/dev/null 2>&1
-	wait_ready_n 3
+	if nds_running; then
+		log "openNDS 停止超时（${CPD_STOP_WAIT:-45}s），强制结束进程"
+		kill $(pidof opennds) 2>/dev/null
+		sleep 1 2>/dev/null || sleep 1
+		i=0
+		while nds_running && [ "$i" -lt 5 ]; do
+			sleep 1 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+	fi
+	"$LIBOPENNDS" delete_chains 9>&- >/dev/null 2>&1
+	"$NDS_INIT" start 9>&- >/dev/null 2>&1
+	wait_ready_n "${CPD_READY_WAIT:-24}"
 }
 
 # 预认证队列文件删除：mountpoint 由 configure_log_location() 现探
@@ -3077,7 +3090,9 @@ ndsctl_mac_rc() { # $1=子命令 $2=小写 mac
 # 名单 = /etc/config/opennds 的 blockedmac（由本插件的分发脚本执行拦截：
 # openNDS 9.4.0 起已废弃 macmechanism/blockedmaclist，主进程不再自己读它，
 # 客户端被拒绝认证、只看得到门户，靠 theme_zone_detect.sh 的黑名单分支实现）。
-# 门户库 = /usr/lib/opennds/cpd/blacklist/，兜底 = cpd/default/blacklist/default.sh
+# 门户库 = /usr/lib/opennds/cpd/blacklist/（页内门户选择键 portal_blacklist_sel）；
+# 兜底链 = cpd/default/blacklist/<portal_blacklist>（设置页默认黑名单门户）
+#         → cpd/default/blacklist/default.sh
 # ============================================================
 
 BL_PORTAL_DIR="$CPD_ROOT/blacklist"
@@ -3101,8 +3116,8 @@ bl_portals_scan() {
 	return 0
 }
 
-bl_portal_sel() { # 当前选中的黑名单门户（空 = 兜底 default.sh）
-	uci_val 'zone_detect.main.portal_blacklist' ''
+bl_portal_sel() { # 黑名单页当前选中的门户（空 = 落到设置页的默认黑名单门户）
+	uci_val 'zone_detect.main.portal_blacklist_sel' ''
 }
 
 bl_status() {
@@ -4784,13 +4799,15 @@ EOF2
 # gatewayinterface，外加 cpd/default/<tab>/default.sh 门户文件
 # ============================================================
 
-ST_TABS='|wireless|wired|blacklist|'
+ST_TABS='|wireless|wired|blacklist|global|'
 
-# 门户目录：无线/有线默认门户在 cpd/default/<类型>/；黑名单门户放在
-# cpd/blacklist/（与「客户端黑名单」页共用同一批脚本，两处只是入口不同）。
+# 门户目录：四个 tab 各管一套默认门户（互为覆盖，一次只有一个生效）。
+# 无线/有线/黑名单在 cpd/default/<类型>/；全局门户在 cpd/global/
+# （区域识别页「全局」模式用的那个）。
+# 「客户端黑名单」页的门户库仍在 cpd/blacklist/，由 bl_* 管理，与此处无关。
 st_portal_dir() { # $1=tab
 	case "$1" in
-		blacklist) printf '%s' "$CPD_ROOT/blacklist" ;;
+		global) printf '%s' "$CPD_ROOT/global" ;;
 		*) printf '%s' "$CPD_ROOT/default/$1" ;;
 	esac
 }
@@ -4881,13 +4898,11 @@ st_status() {
 	dwr="${dw#*|}"
 	# 每个类型：当前选中的门户（空=内置 default.sh）+ 可选项（上传时保留的原名）
 	local sel items isep2 pn pk pdir bdir
-	for t in wireless wired blacklist; do
+	for t in wireless wired blacklist global; do
 		sel=$(uci_val "zone_detect.main.portal_$t" '')
 		[ "$sel" = 'default' ] && sel=''
 		pdir=$(st_portal_dir "$t")
-		# 黑名单门户的「内置兜底」在 cpd/default/blacklist/，门户库在 cpd/blacklist/
 		bdir="$pdir"
-		[ "$t" = 'blacklist' ] && bdir="$CPD_ROOT/default/blacklist"
 		[ -n "$sel" ] && ! z_portal_exists "$pdir" "$sel" && sel=''
 		items=''
 		isep2=''
@@ -5055,15 +5070,14 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 			rm -f "$dir/$name.tmp" 2>/dev/null
 			out_err '无法设置执行权限'
 		}
-		# 互斥覆盖：先清掉其它门户，再落位
-		# （黑名单门户是多份脚本的库，由「客户端黑名单」页管理，不做互斥清理）
-		[ "$tab" = 'blacklist' ] || st_clean_portal_dir "$dir" "$name"
+		# 互斥覆盖：先清掉其它门户，再落位（四个 tab 口径一致）
+		st_clean_portal_dir "$dir" "$name"
 		mv "$dir/$name.tmp" "$dir/$name" 2>/dev/null || {
 			rm -f "$dir/$name.tmp" 2>/dev/null
 			out_err '替换门户文件失败'
 		}
 	else
-		[ "$tab" = 'blacklist' ] || st_clean_portal_dir "$dir" "$name"
+		st_clean_portal_dir "$dir" "$name"
 		rm -rf "$dir/$name" 2>/dev/null
 		mv "$tmp" "$dir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
 		[ -d "$dir/$name" ] || out_err '门户文件夹入库失败（目标不是文件夹）'
@@ -5379,16 +5393,101 @@ sys_selftest() {
 		"$(json_escape "$seterr")" "$(json_escape "$readv")" "$(json_escape "$rcerr")"
 }
 
-# 原生「保存并应用」commit 之后调用：只做运行时同步，一个字节的配置都不写
-# （配置已经由 openwrt 自己的 uci apply 提交完毕）。
-# ① 黑名单 MAC：摘信任、清预认证队列、踢下线
-# ② 区域识别模式：把已提交的区域配置部署成门户目录与标记文件
-# ③ 重启 openNDS，让新配置真正加载（它的 init 没有 procd reload trigger，
-#    reload_config 不会动它）
+# 保存并应用的后端收尾
+#
+# 流程：sys post_apply（秒回）→ 派 apply_worker（后台）→ 前端轮询 sys apply_state。
+#
+# 为什么必须后台化：重启 openNDS = 停旧实例（term_timeout 90 秒，通常几秒，
+# 忙时可能十几秒）+ 起新实例 + 等就绪，全程可能超过前端 XHR 的 20 秒
+# （超了就是「XHR request timed out」红横幅）。post_apply 现在只做秒级
+# 收尾就返回，重活全部移进 worker；worker 与 rpcd 完全脱钩（rpcd 超时
+# 只 kill 直接子进程，孤儿不受影响）。状态写 CPD_APPLY_STATE，前端据此
+# 决定何时刷新页面。
+# ① 黑名单 MAC：摘信任、清预认证队列、踢下线（秒级，留在 post_apply 里）
+# ② 区域识别模式：把已提交的区域配置部署成门户目录与标记文件（worker）
+# ③ 重启 openNDS，让新配置真正加载（worker；本来停着的不主动拉起）
+
+CPD_APPLY_STATE="${CPD_APPLY_STATE:-/tmp/opennds_cpd_apply.state}"
+CPD_APPLY_LOCK="${CPD_APPLY_LOCK:-/var/lock/opennds-cpd-apply.lock}"
+
+apply_state_write() { # $1=JSON 整行覆盖
+	printf '%s\n' "$1" >"$CPD_APPLY_STATE" 2>/dev/null
+	return 0
+}
+
+# worker 专用锁：抢不到（上一次还在跑）不报错、静默退出
+worker_lock() {
+	command -v flock >/dev/null 2>&1 || return 1
+	local ld
+	ld=$(dirname "$CPD_APPLY_LOCK")
+	mkdir -p "$ld" 2>/dev/null
+	[ -d "$ld" ] || return 1
+	eval "exec 9>\"\$CPD_APPLY_LOCK\"" 2>/dev/null || return 1
+	flock -n 9 2>/dev/null || return 1
+	return 0
+}
+
+apply_worker() {
+	if ! worker_lock; then
+		# 已有 worker 在跑：状态文件归它管。这里绝不能写 busy/done，
+		# 否则会把正在跑的那一轮的进度（done:0）覆盖成完成，前端会提前刷新。
+		return 0
+	fi
+	local was=0 now=0 deployed=0 zr ok=1 err='' scope
+	# was 从状态文件取（post_apply 在应用后第一时间记录的口径）；
+	# 文件缺失（手工调试）就按当前状态推
+	[ -f "$CPD_APPLY_STATE" ] &&
+		was=$(sed -n 's/.*"was_running":\([01]\).*/\1/p' "$CPD_APPLY_STATE" 2>/dev/null)
+	[ "$was" = '1' ] || was=0
+	log "apply_worker 开始（was_running=$was）"
+	apply_state_write '{"ok":1,"done":0,"phase":"working","was_running":'"$was"'}'
+	# 区域识别模式：把已提交的区域配置部署成门户目录与标记文件。
+	# 判据必须看 z_apply 回的 JSON，不能看退出码 —— out_err 是 exit 0，
+	# 光看退出码会把"什么都没做"当成部署成功。
+	scope=$(uci -q get 'zone_detect.main.scope' 2>/dev/null)
+	if [ "$scope" = 'zone' ]; then
+		if [ -n "$(uci -q get 'zone_detect.main.wireless' 2>/dev/null)" ]; then
+			zr=$( (z_apply wireless) 2>/dev/null )
+			case "$zr" in
+				*'"ok":1'*) deployed=1 ;;
+				*need_confirm*) log 'apply_worker：openNDS 处于停用状态，跳过无线区域部署' ;;
+				*) log "apply_worker：无线区域部署失败：$zr" ;;
+			esac
+		fi
+		if [ -n "$(uci -q get 'zone_detect.main.wired' 2>/dev/null)" ]; then
+			zr=$( (z_apply wired) 2>/dev/null )
+			case "$zr" in
+				*'"ok":1'*) deployed=1 ;;
+				*need_confirm*) log 'apply_worker：openNDS 处于停用状态，跳有线区域部署' ;;
+				*) log "apply_worker：有线区域部署失败：$zr" ;;
+			esac
+		fi
+	fi
+	kick_preemptive
+	# z_apply 内部已经重启过，别再来一次；本来停着的不主动拉起
+	if [ "$deployed" = '0' ] && [ "$was" = '1' ]; then
+		if ! service_restart; then
+			ok=0
+			err='配置已提交，但 openNDS 未能启动，请检查 openNDS 日志'
+		fi
+	fi
+	nds_running && now=1
+	apply_state_write '{"ok":'"$ok"',"done":1,"zone":'"$deployed"',"was_running":'"$was"',"running":'"$now"',"error":"'$(json_escape "$err")'"}'
+	log "apply_worker 完成（ok=$ok was_running=$was running=$now zone=$deployed）"
+	return 0
+}
+
+sys_apply_state() {
+	if [ -s "$CPD_APPLY_STATE" ]; then
+		cat "$CPD_APPLY_STATE"
+	else
+		printf '{"ok":1,"done":1,"idle":1}\n'
+	fi
+	return 0
+}
+
 sys_post_apply() {
-	local m lm scope deployed=0 zr was=0 now=0
-	# 应用前是否在跑：本来停着的话，应用完也不该被拉起（用户口径：启停只由
-	# 概览页的开关负责）。前端靠这两个字段决定要不要等它起来、报不报错。
+	local m lm was=0 now=0 ts
 	nds_running && was=1
 	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：
 	# 用户设备上历史遗留的"既在可信任又在黑名单"会在这里被修正
@@ -5412,48 +5511,27 @@ sys_post_apply() {
 		remove_preauth_queue "$lm"
 		ndsctl_mac deauth "$lm"
 	done
-
-	scope=$(uci -q get 'zone_detect.main.scope' 2>/dev/null)
-	if [ "$scope" = 'zone' ]; then
-		# 用子 shell 跑：z_apply 校验失败会 out_err 直接 exit，
-		# 不隔离的话会把 post_apply 一起带停、连 JSON 都吐不出来。
-		# 判据必须看 z_apply 回的 JSON，不能看退出码 —— out_err 是 exit 0，
-		# 光看退出码会把"什么都没做"当成部署成功。
-		if [ -n "$(uci -q get 'zone_detect.main.wireless' 2>/dev/null)" ]; then
-			zr=$( (z_apply wireless) 2>/dev/null )
-			case "$zr" in
-				*'"ok":1'*) deployed=1 ;;
-				*need_confirm*) log 'post_apply：openNDS 处于停用状态，跳过无线区域部署' ;;
-				*) log "post_apply：无线区域部署失败：$zr" ;;
-			esac
-		fi
-		if [ -n "$(uci -q get 'zone_detect.main.wired' 2>/dev/null)" ]; then
-			zr=$( (z_apply wired) 2>/dev/null )
-			case "$zr" in
-				*'"ok":1'*) deployed=1 ;;
-				*need_confirm*) log 'post_apply：openNDS 处于停用状态，跳有线区域部署' ;;
-				*) log "post_apply：有线区域部署失败：$zr" ;;
-			esac
-		fi
-	fi
-
-	kick_preemptive
 	nds_running && now=1
-	# z_apply 内部已经重启过，别再来一次
-	if [ "$deployed" = '1' ]; then
-		printf '{"ok":1,"restarted":1,"zone":1,"was_running":%s,"running":%s}\n' "$was" "$now"
-		return 0
+	# worker 已经在跑：不再叠加一轮，前端继续等当前这一轮的结果
+	if [ -s "$CPD_APPLY_STATE" ] &&
+		grep -q '"done":0' "$CPD_APPLY_STATE" 2>/dev/null; then
+		ts=$(sed -n 's/.*"ts":\([0-9]*\).*/\1/p' "$CPD_APPLY_STATE" 2>/dev/null)
+		case "$ts" in
+			'' | *[!0-9]*) ts=0 ;;
+		esac
+		if [ $(( $(date +%s) - ts )) -lt 150 ]; then
+			printf '{"ok":1,"bg":1,"already":1,"was_running":%s,"running":%s}\n' "$was" "$now"
+			return 0
+		fi
 	fi
-	if service_restart; then
-		nds_running && now=1
-		printf '{"ok":1,"restarted":%s,"zone":0,"was_running":%s,"running":%s}\n' \
-			"$SR_RESTARTED" "$was" "$now"
-	else
-		nds_running && now=1
-		printf '{"ok":0,"was_running":%s,"running":%s,"error":"%s"}\n' \
-			"$was" "$now" \
-			"$(json_escape '配置已提交，但 openNDS 未能启动，请检查 openNDS 日志')"
-	fi
+	ts=$(date +%s)
+	apply_state_write '{"ok":1,"done":0,"phase":"starting","was_running":'"$was"',"ts":'"$ts"'}'
+	# 派生 worker：双重 fork 成孤儿 + 全部 fd 关闭（stdout 管道不关，
+	# rpcd 的应答会一直等到 EOF）。rpcd 超时只 kill 直接子进程，孤儿不受影响。
+	SELF_PATH="${0:-/usr/lib/opennds/opennds-cpd-api.sh}"
+	( "$SELF_PATH" apply_worker </dev/null >/dev/null 2>&1 & ) 2>/dev/null
+	printf '{"ok":1,"bg":1,"was_running":%s,"running":%s}\n' "$was" "$now"
+	return 0
 }
 
 # 设备原配置里的可信任客户端（随包提供，只读）与当前配置对比，返回缺的那几个。
@@ -5662,8 +5740,12 @@ case "$PAGE" in
 			changes_count) sys_changes_count ;;
 			selftest) sys_selftest ;;
 			post_apply) sys_post_apply ;;
+			apply_state) sys_apply_state ;;
 			*) out_err "sys：未知子命令 $SUB" ;;
 		esac
+		;;
+	apply_worker)
+		apply_worker
 		;;
 	'')
 		out_err '缺少页面名'

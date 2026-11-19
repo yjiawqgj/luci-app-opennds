@@ -1,8 +1,9 @@
 /*
  * openNDS 设置 · openNDS CPD（LuCI view）
- * 照《OpenNDS设置.md》：默认门户（两 tab 上传/清理 default.sh，即时动作不进快照）+
- * 公平使用策略（限速/取消认证，取消认证写 0）+ 网络接口（前端切换只改状态，
- * gatewayinterface 只在「应用」写盘）；保存 = 内存快照，应用 = 后端写三键 + 重启。
+ * 照《OpenNDS设置.md》：默认门户（无线/有线/黑名单/全局四个 tab，上传即互斥覆盖、
+ * 清理回落内置 default.sh，即时动作不进快照）+ 公平使用策略（限速/取消认证，
+ * 取消认证写 0）+ 网络接口（前端切换只改状态，gatewayinterface 只在「应用」写盘）；
+ * 保存 = 内存快照，应用 = 后端写三键 + 重启。
  */
 'use strict';
 'require view';
@@ -11,7 +12,10 @@
 'require dom';
 
 var CPD = null;
-var TAB_NAMES = { wireless: _('无线区域'), wired: _('有线区域'), blacklist: _('黑名单') };
+var TAB_NAMES = {
+	wireless: _('无线区域'), wired: _('有线区域'),
+	blacklist: _('黑名单'), global: _('全局门户')
+};
 
 return view.extend({
 	load: function () {
@@ -23,7 +27,8 @@ return view.extend({
 			portals: {
 				wireless: { sel: '', items: [], builtin: false },
 				wired: { sel: '', items: [], builtin: false },
-				blacklist: { sel: '', items: [], builtin: false }
+				blacklist: { sel: '', items: [], builtin: false },
+				global: { sel: '', items: [], builtin: false }
 			},
 			upAction: 'reject', upRate: '',
 			downAction: 'reject', downRate: '',
@@ -121,14 +126,14 @@ return view.extend({
 
 		/* 本页上传的默认门户实际落盘目录（区域各自的门户在 cpd/wireless/<区域>/、cpd/wired/<接口>/，由区域识别页管理） */
 		function portalPath(tab) {
-			/* 黑名单门户是脚本库，与「客户端黑名单」页共用同一目录 */
-			if (tab === 'blacklist') return '/usr/lib/opennds/cpd/blacklist/';
+			/* 全局门户：区域识别页「全局」模式用的门户 */
+			if (tab === 'global') return '/usr/lib/opennds/cpd/global/';
 			return '/usr/lib/opennds/cpd/default/' + tab + '/';
 		}
 
 		function renderPortalTabs() {
 			portalBox.innerHTML = '';
-			var tabs = ['wireless', 'wired', 'blacklist'];
+			var tabs = ['wireless', 'wired', 'blacklist', 'global'];
 			/* 与顶部页面切换同风格：无背景色，选中只加粗 + 下划线，不改变文字颜色 */
 			var tabRow = E('div', { 'role': 'tablist',
 				'style': 'display:flex;flex-wrap:wrap;border-bottom:1px solid #e3e9ee;margin-top:16px' });
@@ -145,9 +150,7 @@ return view.extend({
 			var cur = portalInfo(state.tab);
 			/* 门户不再做「选择」：该类型下只允许存在一个门户（文件或文件夹），
 			 * 后传的覆盖先传的，这里只显示当前生效的那一个 */
-			var curName = (state.tab === 'blacklist')
-				? (cur.sel || '')
-				: (cur.sel || (cur.items && cur.items.length ? cur.items[0] : ''));
+			var curName = cur.sel || (cur.items && cur.items.length ? cur.items[0] : '');
 
 			var tools = E('div', {
 				'style': 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px'
@@ -161,41 +164,12 @@ return view.extend({
 				}, _('清理'))
 			]);
 
-			var extra = [];
-			if (state.tab === 'blacklist') {
-				var opts = [E('option', { value: 'default' }, _('默认门户'))];
-				(cur.items || []).forEach(function (n) {
-					opts.push(E('option', { value: n, 'title': n }, shortName(n)));
-				});
-				var blSel = E('select', {
-					'class': 'cpd-input',
-					'style': 'max-width:320px;min-width:190px;height:36px;padding:0 8px;line-height:34px'
-				}, opts);
-				blSel.value = cur.sel || 'default';
-				if (blSel.value !== (cur.sel || 'default')) blSel.value = 'default';
-				/* 选择立即落成 uci 暂存：右上角马上出现「未保存的配置」 */
-				blSel.addEventListener('change', function () {
-					var v = blSel.value;
-					if (v === 'default') v = '';
-					CPD.stageUci('zone_detect', 'main', 'portal_blacklist', 'opt', v)
-						.then(null, function (e) {
-							CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
-						});
-				});
-				extra.push(E('div', { 'class': 'cpd-field', 'style': 'margin-top:16px' }, [
-					E('label', {}, _('门户选择')),
-					blSel,
-					E('p', { 'class': 'cpd-note', 'style': 'margin-top:6px' },
-						_('门户目录：%s').format(portalPath('blacklist')))
-				]));
-			}
-
 			portalBox.appendChild(E('div', {}, [
 				tabRow,
 				E('div', { 'style': 'padding-top:22px' }, [
 					tools
 				])
-			].concat(extra)));
+			]));
 		}
 
 		/* 名字规则与后端 name_ok 口径一致：ASCII 限 [A-Za-z0-9._- ]，其余须为中文（多字节） */

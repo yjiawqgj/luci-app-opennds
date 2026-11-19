@@ -12,9 +12,13 @@
 #   source below. This dispatcher therefore:
 #
 #   0. If the client MAC is in the plugin blacklist (opennds blockedmac), it is
-#      served /usr/lib/opennds/cpd/blacklist/<selected portal> (fallback
-#      cpd/default/blacklist/default.sh) instead of a zone portal, so it never
+#      served /usr/lib/opennds/cpd/blacklist/<selected portal>; when that is
+#      empty it falls to the Settings-page default blacklist portal
+#      (cpd/default/blacklist/<portal_blacklist>, else default.sh), so it never
 #      gets the zone portal's authenticate button and stays offline.
+#   0b. When zone_detect.main.scope is "global" (zone detection disabled on the
+#       zone page), every non-blacklisted client is served the global portal:
+#       cpd/global/<portal_global>, else cpd/global/default.sh.
 #   1. Uses get_client_interface.sh to find the local interface the client
 #      is connected to (by client MAC).
 #   2. If the interface is a local wireless interface (found in "iw dev"),
@@ -45,6 +49,7 @@
 CPD_ROOT="/usr/lib/opennds/cpd"
 ZONE_ROOT_WIRELESS="$CPD_ROOT/wireless"
 ZONE_ROOT_WIRED="$CPD_ROOT/wired"
+ZONE_ROOT_GLOBAL="$CPD_ROOT/global"
 DEFAULT_ROOT="$CPD_ROOT/default"
 MARKERS="/usr/lib/opennds/zone_markers"
 ZONE_DETECT_CONFIG="/etc/config/zone_detect"
@@ -204,11 +209,29 @@ type_default_portal() {
 	[ -f "$td_dir/default.sh" ] && echo "$td_dir/default.sh"
 }
 
-# ---- Zone detection -------------------------------------------------------
+# ---- Global mode (zone detection disabled) ---------------------------------
 
 zone_type=""
 zone_name=""
 clientif=""
+
+if [ "$zone_type" != "blacklist" ] && [ -f "$ZONE_DETECT_CONFIG" ] &&
+	[ "$(uci -q get zone_detect.main.scope 2>/dev/null)" = "global" ]; then
+	# 全局模式：不做区域识别，直接出全局门户
+	# 设置页「默认门户-全局」选的（cpd/global/<portal_global>）→ 内置 default.sh
+	zone_type="global"
+	zone_name=""
+	gname=$(uci -q get zone_detect.main.portal_global 2>/dev/null)
+	if [ ! -z "$gname" ] && [ "$gname" != "default" ]; then
+		portal=$(portal_from_name "$ZONE_ROOT_GLOBAL" "$gname")
+	fi
+	if [ -z "$portal" ] && [ -f "$ZONE_ROOT_GLOBAL/default.sh" ]; then
+		portal="$ZONE_ROOT_GLOBAL/default.sh"
+	fi
+	zone_debug "global mode, portal=$portal"
+fi
+
+# ---- Zone detection -------------------------------------------------------
 
 if [ -z "$zone_type" ]; then
 	if [ ! -z "$clientmac" ]; then
@@ -263,10 +286,21 @@ if [ ! -z "$clientmac" ]; then
 	for bmac in $(uci -q get opennds.@opennds[0].blockedmac 2>/dev/null); do
 		[ ! -z "$bmac" ] || continue
 		if [ "$(mac_upper "$bmac")" = "$(mac_upper "$clientmac")" ]; then
-			bname=$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)
-			blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
-			if [ -z "$blportal" ] && [ -f "$DEFAULT_ROOT/blacklist/default.sh" ]; then
-				blportal="$DEFAULT_ROOT/blacklist/default.sh"
+			# ①「客户端黑名单」页选中的门户（cpd/blacklist/）
+			bname=$(uci -q get zone_detect.main.portal_blacklist_sel 2>/dev/null)
+			if [ ! -z "$bname" ] && [ "$bname" != "default" ]; then
+				blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+			fi
+			# ② 兼容上一版构建：旧键 portal_blacklist 曾指向 cpd/blacklist/
+			if [ -z "$blportal" ]; then
+				bname=$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)
+				if [ ! -z "$bname" ] && [ "$bname" != "default" ]; then
+					blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+				fi
+			fi
+			# ③ 设置页「默认门户-黑名单」选的默认门户（cpd/default/blacklist/）
+			if [ -z "$blportal" ]; then
+				blportal=$(type_default_portal blacklist)
 			fi
 			zone_type="blacklist"
 			zone_name=""
@@ -321,8 +355,11 @@ if [ ! -z "$zone_name" ]; then
 		portal=$(type_default_portal "$zone_type")
 	fi
 else
-	# No zone name (unknown interface): type default only.
-	portal=$(type_default_portal "$zone_type")
+	# No zone name (unknown interface, or global mode where the portal was
+	# already picked above): type default only - but never clobber a portal
+	# the global branch already resolved (cpd/global/), the type lookup
+	# (cpd/default/global/) has no directory for it and would wipe it.
+	[ -z "$portal" ] && portal=$(type_default_portal "$zone_type")
 fi
 
 fi

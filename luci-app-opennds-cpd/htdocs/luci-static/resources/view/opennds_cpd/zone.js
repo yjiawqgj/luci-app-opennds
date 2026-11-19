@@ -253,14 +253,19 @@ return view.extend({
 			renderAll();
 		});
 
-		/* 全局模式：openNDS 自带的登录方式，不做区域识别 */
+		/* 全局模式：不做区域识别，直接出「设置页 → 默认门户-全局」选的门户。
+		 * 不再使用 openNDS 默认登陆模式 1，而是和区域模式一样走 ThemeSpec
+		 * （login_option_enabled=3），由 theme_zone_detect.sh 按 scope=global
+		 * 分发出 cpd/global/ 里的全局门户。 */
 		function handleDefaultSave(quiet) {
 			return Promise.all([
-				CPD.stageUci('opennds', '@opennds[0]', 'login_option_enabled', 'opt', '1'),
+				CPD.stageUci('opennds', '@opennds[0]', 'login_option_enabled', 'opt', '3'),
+				CPD.stageUci('opennds', '@opennds[0]', 'themespec_path', 'opt',
+					'/usr/lib/opennds/theme_zone_detect.sh'),
 				CPD.stageUci('zone_detect', 'main', 'scope', 'opt', 'global')
 			]).then(function () {
 				state.scope = 'global';
-				state.loginOptionEnabled = '1';
+				state.loginOptionEnabled = '3';
 				state.snapshot = uiSnapshot();
 				renderAll();
 			}, function (e) {
