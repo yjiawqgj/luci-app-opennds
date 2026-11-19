@@ -5529,7 +5529,8 @@ sys_post_apply() {
 	# 派生 worker：双重 fork 成孤儿 + 全部 fd 关闭（stdout 管道不关，
 	# rpcd 的应答会一直等到 EOF）。rpcd 超时只 kill 直接子进程，孤儿不受影响。
 	SELF_PATH="${0:-/usr/lib/opennds/opennds-cpd-api.sh}"
-	( "$SELF_PATH" apply_worker </dev/null >/dev/null 2>&1 & ) 2>/dev/null
+	# 经 sh 启动：不依赖执行位（SFTP/某些安装方式可能把权限弄丢）
+	( sh "$SELF_PATH" apply_worker </dev/null >/dev/null 2>&1 & ) 2>/dev/null
 	printf '{"ok":1,"bg":1,"was_running":%s,"running":%s}\n' "$was" "$now"
 	return 0
 }
