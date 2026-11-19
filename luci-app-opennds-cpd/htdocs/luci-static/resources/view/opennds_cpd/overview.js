@@ -27,7 +27,7 @@ var CSS = '\
 .ovd-switch .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}\
 .ovd-switch[aria-checked="true"]{background:#2e9468;border-color:#2e9468}\
 .ovd-switch[aria-checked="true"] .knob{transform:translateX(18px)}\
-.ovd-stat-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-top:14px}\
+.ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
 .ovd-stat.selected{border-color:#2274a5;background:#e7f1f8}\
@@ -132,6 +132,7 @@ function esc(s) {
 
 var TITLES = {
 	online: _('在线客户端'),
+	wired: _('有线客户端'),
 	auth: _('已认证客户端'),
 	unauth: _('未认证客户端'),
 	preauth: _('免认证客户端'),
@@ -476,12 +477,11 @@ return view.extend({
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
-		 * "在线" = 路由器视角正在连着的设备（hostapd 关联表 / 有线邻居表），
-		 * 不管有没有过门户：刚连上还没打开浏览器的设备也算在线，只是算未认证。
-		 * 这样接入点卡片数出来的「已连接客户端」点开就有对应条目。
-		 * 计数与列表用的是后端同一组标记（online / authorized），不会错位。 */
-		function isOnline(c) { return !!c.online; }
-
+		 * 「在线客户端」是身份卡：只算「正在连着且有访问权限」的设备
+		 * （已认证 / 免认证已登录 / 可信任）；未认证不算在线，黑名单更不算。
+		 * 「有线客户端」和无线接入点卡片一样是连接卡：连着就算，不分身份。
+		 * 点接入点卡片时列表也不按身份过滤（看该 AP 上的全部客户端），
+		 * 操作按钮的可用性只由客户端身份决定（见 renderList）。 */
 		function inFilter(c) {
 			var online = !!c.online;
 			switch (state.filter) {
@@ -496,9 +496,15 @@ return view.extend({
 					return online && !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
 				case 'unauth':
 					return online && !c.authorized && !c.blocked;
+				case 'wired':
+					/* 有线卡 = 连着的有线设备，不分身份（与 AP 卡片同口径） */
+					return online && !!c.wired && !c.blocked;
+				case '':
+					/* 接入点筛选模式：不看身份（filteredClients 里另有 online 限定） */
+					return true;
 				default: /* online */
-					/* 在线 = 当前连着；黑名单不算 */
-					return online && !c.blocked;
+					/* 在线 = 连着且有访问权限；未认证（还没过门户）不算 */
+					return online && !!c.authorized && !c.blocked;
 			}
 		}
 
@@ -562,7 +568,12 @@ return view.extend({
 		}
 
 		function filteredClients() {
-			var b = state.clients.filter(inFilter).filter(apFilterMatch);
+			/* 接入点筛选模式：该 AP 上「正在连着」的全部客户端（不分身份，
+			 * 与卡片按关联表计数同一口径），黑名单除外 */
+			var b = state.clients.filter(function (c) {
+				if (state.ap) return apFilterMatch(c) && !!c.online && !c.blocked;
+				return inFilter(c);
+			});
 			var q = normSearch(state.query);
 			if (q) {
 				b = b.filter(function (c) {
@@ -590,6 +601,7 @@ return view.extend({
 			var n = state.counts;
 			var defs = [
 				{ k: 'online', label: _('在线客户端'), num: n.online },
+				{ k: 'wired', label: _('有线'), num: n.wired },
 				{ k: 'auth', label: _('已认证客户端'), num: n.authenticated },
 				{ k: 'preauth', label: _('免认证客户端'), num: n.preauth },
 				{ k: 'trusted', label: _('可信任客户端'), num: n.trusted },
@@ -670,7 +682,9 @@ return view.extend({
 				b.addEventListener('click', function () {
 					var key = b.getAttribute('data-ap');
 					state.ap = (state.ap === key) ? null : key;
-					state.filter = 'online';
+					/* 接入点筛选模式不套身份过滤：列表显示该 AP 上的全部
+					 * 在线客户端（含未认证），按钮可用性由身份决定 */
+					state.filter = '';
 					renderStats();
 					renderAps();
 					renderList();
@@ -731,7 +745,11 @@ return view.extend({
 
 		function renderList() {
 			var items = filteredClients();
-			listTitle.textContent = TITLES[state.filter] || TITLES.online;
+			if (state.ap) {
+				listTitle.textContent = _('接入点 %s').format(apLabel(state.ap));
+			} else {
+				listTitle.textContent = TITLES[state.filter] || TITLES.online;
+			}
 			listCount.textContent = _('共 %s 个').format(String(items.length)) +
 				(state.ap ? ' · ' + _('接入点 %s').format(apLabel(state.ap)) : '');
 			updateSortUI();
@@ -742,22 +760,28 @@ return view.extend({
 				return;
 			}
 
-			var unauthView = (state.filter === 'unauth');
-			var blackView = (state.filter === 'blacklist');
-			var disView = unauthView || blackView;
-
+			/* 操作按钮的可用性只由客户端身份决定（黑名单 > 可信任 > 免认证 >
+			 * 已认证 > 未认证），与当前在哪个卡片/接入点视图无关：
+			 *   详情   —— 黑名单客户端置灰（其余身份都可见）
+			 *   编辑   —— 只有免认证身份可编辑单独限额（限额存在 preemptivemac
+			 *             条目里，其它身份没有条目可改）；可信任整行不显示
+			 *   免认证/可信任 —— 黑名单客户端置灰（必须先解除拉黑）
+			 *   解除认证 —— 只有已认证/免认证身份可点；未认证没有会话可解除，
+			 *             可信任要先移除可信任，黑名单要先解除拉黑
+			 *   拉黑/解除拉黑 —— 永远可用（身份切换的入口） */
 			tbody.innerHTML = items.map(function (c) {
-				var preAct = c.preauth ? 'unpreauth' : 'preauth';
-				var preLabel = c.preauth ? _('移除免认证') : _('免认证');
-				var trustAct = c.trusted ? 'untrust' : 'trust';
-				var trustLabel = c.trusted ? _('移除可信任') : _('可信任客户端');
+				var blocked = !!c.blocked, trusted = !!c.trusted;
+				var authed = !!c.authenticated, pre = !!c.preauth;
+				var preAct = pre ? 'unpreauth' : 'preauth';
+				var preLabel = pre ? _('移除免认证') : _('免认证');
+				var trustAct = trusted ? 'untrust' : 'trust';
+				var trustLabel = trusted ? _('移除可信任') : _('可信任客户端');
 				var tg = tagOf(c);
 				var tags = '<span class="ovd-tag ' + tg[0] + '">' + tg[1] + '</span>';
-				/* 可信任整行特例：不渲染编辑/免认证，解除认证置灰（黑名单视图下置灰见 disView） */
-				var editHTML = (c.trusted && !blackView) ? '' :
+				var editHTML = trusted ? '' :
 					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
-					(disView ? ' disabled' : '') + '>' + _('编辑') + '</button>';
-				var deauthDis = (c.trusted || (!c.authenticated && !c.preauth)) ? ' disabled' : '';
+					((!pre || blocked) ? ' disabled' : '') + '>' + _('编辑') + '</button>';
+				var deauthDis = (blocked || trusted || (!authed && !pre)) ? ' disabled' : '';
 				return '<tr>' +
 					'<td><div class="ovd-host"><span class="ovd-host-name">' +
 					esc(c.host || '—') + '</span><div class="ovd-tags">' + tags + '</div></div></td>' +
@@ -766,17 +790,17 @@ return view.extend({
 					'<td>' + esc(clientAp(c)) + '</td>' +
 					'<td><div class="ovd-acts">' +
 					'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
-					(disView ? ' disabled' : '') + '>' + _('详情') + '</button>' +
+					(blocked ? ' disabled' : '') + '>' + _('详情') + '</button>' +
 					'<button type="button" class="ovd-rowbtn" data-act="' + preAct + '" data-mac="' + esc(c.mac) + '"' +
-					(blackView ? ' disabled' : '') + '>' + preLabel + '</button>' +
+					(blocked ? ' disabled' : '') + '>' + preLabel + '</button>' +
 					'<button type="button" class="ovd-rowbtn" data-act="' + trustAct + '" data-mac="' + esc(c.mac) + '"' +
-					(blackView ? ' disabled' : '') + '>' + trustLabel + '</button>' +
+					(blocked ? ' disabled' : '') + '>' + trustLabel + '</button>' +
 					editHTML +
 					'<button type="button" class="ovd-rowbtn danger" data-act="deauth" data-mac="' + esc(c.mac) + '"' +
 					deauthDis + '>' + _('解除认证') + '</button>' +
-					'<button type="button" class="ovd-rowbtn' + (blackView ? '' : ' danger') +
-					'" data-act="' + (blackView ? 'unblock' : 'block') + '" data-mac="' + esc(c.mac) + '">' +
-					(blackView ? _('解除拉黑') : _('拉黑')) + '</button>' +
+					'<button type="button" class="ovd-rowbtn' + (blocked ? '' : ' danger') +
+					'" data-act="' + (blocked ? 'unblock' : 'block') + '" data-mac="' + esc(c.mac) + '">' +
+					(blocked ? _('解除拉黑') : _('拉黑')) + '</button>' +
 					'</div></td></tr>';
 			}).join('');
 
@@ -847,18 +871,17 @@ return view.extend({
 			}
 		};
 
-		/* 断开 / 拉黑二次确认后立即生效；其余动作只写增量，等 openwrt「保存并应用」 */
+		/* 断言文案照演示页。所有动作（含断开 / 拉黑）都只写 uci 暂存，
+		 * 等 openwrt 底部「保存并应用」一起生效——它是本页所有变更的总开关。 */
 		var ACTION_TOAST = {
 			preauth: _('让「%s」免认证'),
 			unpreauth: _('取消「%s」的免认证'),
 			trust: _('把「%s」设为可信任客户端'),
 			untrust: _('取消「%s」的可信任状态'),
-			deauth: _('已断开「%s」'),
-			block: _('已拉黑「%s」'),
-			unblock: _('把「%s」移出黑名单')
+			deauth: _('待应用：断开「%s」'),
+			block: _('待应用：拉黑「%s」'),
+			unblock: _('待应用：把「%s」移出黑名单')
 		};
-		/* 这两个是即时动作：不走暂存、不等「保存并应用」 */
-		var ACTION_IMMEDIATE = { deauth: true, block: true };
 
 		function askAction(act, row) {
 			var d = CONFIRM_TEXT[act];
@@ -869,80 +892,127 @@ return view.extend({
 				return;
 			}
 			var h = row.host || row.mac;
-			/* 即时动作（断开 / 拉黑）确认后立刻执行；其余动作要说明「还需点保存并应用」 */
-			var msg = d.msg(h);
-			if (!ACTION_IMMEDIATE[act])
-				msg += ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。');
+			var msg = d.msg(h) + ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。');
 			CPD.confirm(d.title, msg, d.ok, d.danger, function () {
 				performAction(act, row);
 			});
 		}
 
-		/* 只暂存的动作：直接把结果名单交给 openwrt 的 uci 增量（与其它页面同一条通道），
-		 * 这样右上角一定会出现「未保存的配置: N」，点开就是原生 diff 弹窗 */
+		/* 所有动作都落成 uci 暂存（右上角「未保存的配置」随之出现）：
+		 * 名单类用 stageListEdit 在「当前暂存值」上做增删——连续操作多个
+		 * 客户端是叠加，不会互相覆盖；断开（解除认证）暂存到
+		 * zone_detect.main.pending_deauth，应用后由后端 post_apply 执行踢下线。 */
+		function pmIndexOf(arr, lm) {
+			for (var i = 0; i < arr.length; i++) {
+				var m = String(arr[i]).split(';')[0].replace(/^mac=/i, '').toLowerCase();
+				if (m === lm) return i;
+			}
+			return -1;
+		}
+
 		function stageAction(act, mac) {
 			var lm = String(mac || '').toLowerCase();
-			function low(x) { return String(x || '').toLowerCase(); }
-			function macOf(e) { return low(String(e).split(';')[0].replace(/^mac=/i, '')); }
-			if (act === 'unblock') {
-				return CPD.api('blacklist', 'status').then(function (j) {
-					var list = (j.macs || []).filter(function (m) { return low(m) !== lm; });
-					return CPD.stageUci('opennds', '@opennds[0]', 'blockedmac', 'list', list);
-				});
+			function pmDefault() {
+				return 'mac=' + lm + ';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0';
 			}
-			return CPD.api('exempt', 'status').then(function (j) {
-				var tr = (j.trusted || []).map(low);
-				var pre = (j.preempt || []).map(function (e) {
-					return { mac: macOf(e), raw: String(e) };
-				});
-				if (act === 'trust') {
-					tr = tr.filter(function (m) { return m !== lm; }).concat([lm]);
-					pre = pre.filter(function (e) { return e.mac !== lm; });
-				} else if (act === 'untrust') {
-					tr = tr.filter(function (m) { return m !== lm; });
-				} else if (act === 'preauth') {
-					tr = tr.filter(function (m) { return m !== lm; });
-					if (!pre.some(function (e) { return e.mac === lm; }))
-						pre = pre.concat([{ mac: lm, raw: 'mac=' + lm.toUpperCase() +
-							';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0' }]);
-				} else if (act === 'unpreauth') {
-					pre = pre.filter(function (e) { return e.mac !== lm; });
-				}
-				return CPD.stageUci('opennds', '@opennds[0]', 'trustedmac', 'list', tr)
-					.then(function () {
-						return CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list',
-							pre.map(function (e) { return e.raw; }));
+			switch (act) {
+				case 'deauth':
+					/* 踢下线是运行时动作，没有对应的配置项：暂存到
+					 * zone_detect.main.pending_deauth，应用后 post_apply 执行。
+					 * 它同时会撤掉免认证条目（否则重连又自动登录）。 */
+					return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
+						if (arr.indexOf(lm) >= 0) return null;
+						return arr.concat([lm]);
+					}).then(function () {
+						return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
+							var i = pmIndexOf(arr, lm);
+							if (i < 0) return null;
+							arr = arr.slice();
+							arr.splice(i, 1);
+							return arr;
+						});
 					});
-			});
+				case 'block':
+					/* 拉黑 = blockedmac 追加 + 从另两个名单摘除（互斥）。
+					 * macmechanism 没设置时补成官方 'block' 语义（与后端同一口径）。 */
+					return CPD.stageListEdit('opennds', '@opennds[0]', 'blockedmac', function (arr) {
+						if (arr.map(function (x) { return x.toLowerCase(); }).indexOf(lm) >= 0) return null;
+						return arr.concat([lm]);
+					}).then(function (changed) {
+						var p = CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
+							var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
+							return out.length === arr.length ? null : out;
+						});
+						p = p.then(function () {
+							return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
+								var i = pmIndexOf(arr, lm);
+								if (i < 0) return null;
+								arr = arr.slice();
+								arr.splice(i, 1);
+								return arr;
+							});
+						});
+						if (changed !== null) {
+							/* 这次真的往 blockedmac 写了增量才检查 macmechanism */
+							p = p.then(function () {
+								return CPD.api('blacklist', 'status').then(function (j) {
+									if (j && j.mechanism) return null;
+									return CPD.stageUci('opennds', '@opennds[0]', 'macmechanism', 'opt', 'block');
+								});
+							});
+						}
+						return p;
+					});
+				case 'unblock':
+					return CPD.stageListEdit('opennds', '@opennds[0]', 'blockedmac', function (arr) {
+						var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
+						return out.length === arr.length ? null : out;
+					});
+				case 'trust':
+					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
+						if (arr.map(function (x) { return x.toLowerCase(); }).indexOf(lm) >= 0) return arr;
+						return arr.concat([lm]);
+					}).then(function () {
+						return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
+							var i = pmIndexOf(arr, lm);
+							if (i < 0) return null;
+							arr = arr.slice();
+							arr.splice(i, 1);
+							return arr;
+						});
+					});
+				case 'untrust':
+					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
+						var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
+						return out.length === arr.length ? null : out;
+					});
+				case 'preauth':
+					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
+						var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
+						return out.length === arr.length ? null : out;
+					}).then(function () {
+						return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
+							if (pmIndexOf(arr, lm) >= 0) return null;
+							return arr.concat([pmDefault()]);
+						});
+					});
+				case 'unpreauth':
+					return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
+						var i = pmIndexOf(arr, lm);
+						if (i < 0) return null;
+						arr = arr.slice();
+						arr.splice(i, 1);
+						return arr;
+					});
+			}
+			return Promise.reject({ error: _('未知操作：%s').format(act) });
 		}
 
 		function performAction(act, row) {
-			var h = row.host || row.mac;
-			var immediate = !!ACTION_IMMEDIATE[act];
-			if (!immediate) {
-				/* 只暂存：不弹任何横幅，右上角「未保存的配置」就是反馈 */
-				stageAction(act, row.mac).then(function () {
-					refresh();
-				}, function (e) {
-					CPD.notify(CPD.errText(e, _('记录失败')), 'err');
-				});
-				return;
-			}
-			/* 断开 / 拉黑：不受 openwrt 三个按钮控制，二次确认后立即生效 */
-			runOp(act === 'block' ? 15 : 5, function () {
-				return CPD.api('overview', 'client_action', [act, row.mac]);
-			}, {
-				onok: function (j) {
-					/* 无 DHCP 租约等 warnings：只显示 warn，不报成功 */
-					if (j.warnings && j.warnings.length) {
-						CPD.showWarnings(j.warnings);
-						refresh();
-						return;
-					}
-					CPD.clearNotice();
-					CPD.notify(ACTION_TOAST[act].format(h), act === 'block' ? 'warn' : 'ok');
-					refresh();
-				}
+			stageAction(act, row.mac).then(function () {
+				refresh();
+			}, function (e) {
+				CPD.notify(CPD.errText(e, _('记录失败')), 'err');
 			});
 		}
 
@@ -1052,23 +1122,25 @@ return view.extend({
 		}
 
 		/* 单客户端限额：改写 preemptivemac 里该 MAC 的条目（custom= 原样保留）。
-		 * 与其它页面共用同一条 uci 增量通道，保存后右上角出现「未保存的配置」。 */
+		 * 与其它页面共用同一条 uci 增量通道，保存后右上角出现「未保存的配置」。
+		 * 用 stageListEdit 在当前暂存值上改写——不读后端已提交名单，
+		 * 连续的暂存操作（先设可信任再改限额）不会互相覆盖。 */
 		function stageEditLimits(lm, v) {
-			function macOf(e) { return String(e).split(';')[0].replace(/^mac=/i, '').toLowerCase(); }
-			return CPD.api('exempt', 'status').then(function (j) {
+			return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
 				var found = false;
-				var out = (j.preempt || []).map(function (e) {
-					if (macOf(e) !== lm) return String(e);
+				var out = arr.map(function (e) {
+					var m = String(e).split(';')[0].replace(/^mac=/i, '').toLowerCase();
+					if (m !== lm) return String(e);
 					found = true;
 					var custom = '';
-					var m = /;custom=([\s\S]*)$/.exec(String(e));
-					if (m) custom = ';custom=' + m[1];
+					var mm = /;custom=([\s\S]*)$/.exec(String(e));
+					if (mm) custom = ';custom=' + mm[1];
 					return 'mac=' + lm + ';sessiontimeout=' + v.sessiontimeout +
 						';uploadrate=' + v.uploadrate + ';downloadrate=' + v.downloadrate +
 						';uploadquota=' + v.uploadquota + ';downloadquota=' + v.downloadquota + custom;
 				});
 				if (!found) throw { error: _('该客户端不在授权名单里，无法设置单独限制') };
-				return CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list', out);
+				return out;
 			});
 		}
 

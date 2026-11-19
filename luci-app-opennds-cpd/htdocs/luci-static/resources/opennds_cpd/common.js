@@ -452,6 +452,53 @@ var CPD = L.Class.extend({
 		});
 	},
 
+	/* 列表增量编辑：fn(当前值数组) → 新值数组。当前值读的是 LuCI 会话里的
+	 * 暂存态（uci.get 反映本地未保存修改），所以连续多次操作是叠加而不是
+	 * 互相覆盖 —— 之前概览页连续给两个客户端设可信任，第二次用后端返回的
+	 * 已提交名单整个重写，第一次的暂存就被冲掉了。
+	 * fn 返回 null/undefined 表示「没变」，不写无效增量。 */
+	stageListEdit: function (conf, sid, opt, fn) {
+		var self = this;
+		var LC = window.L;
+		if (!LC || typeof LC.require !== 'function')
+			return Promise.reject({ error: _('当前页面环境不支持 uci 模块') });
+		var wrote = false;
+		return LC.require('uci').then(function (uci) {
+			return uci.load(conf).then(function () {
+				if (!self.ensureSection(uci, conf, sid))
+					throw { error: _('配置节不存在且无法新建：%s').format(conf + '.' + sid) };
+				if (typeof uci.resolveSID === 'function' && uci.resolveSID(conf, sid) == null)
+					throw { error: _('配置节不存在：%s').format(conf + '.' + sid) };
+				var cur = uci.get(conf, sid, opt);
+				var arr = Array.isArray(cur) ? cur.map(String) : (cur == null ? [] : [String(cur)]);
+				var next = fn(arr);
+				if (next == null) return null;
+				next = next.map(String);
+				if (arr.length === next.length && arr.join('\n') === next.join('\n'))
+					return null;
+				uci.set(conf, sid, opt, next.length ? next : null);
+				wrote = true;
+				return uci.save();
+			}, function (e) {
+				try { uci.unload(conf); } catch (e2) {}
+				throw { error: _('配置文件 %s 不存在或无法读取，无法写入该配置').format(conf) };
+			}).then(function () {
+				if (!wrote) return null;
+				return uci.changes().then(function (ch) {
+					if (ch && ch[conf]) return null;
+					throw {
+						error: _('配置未能写入：%s.%s.%s（会话增量里没有这条记录）')
+							.format(conf, sid, opt)
+					};
+				});
+			});
+		}).then(function () {
+			return self.notifyChanges();
+		}, function (e) {
+			throw { error: self.errText(e, _('暂存配置失败')) };
+		});
+	},
+
 	/* 保存并应用：交给 openwrt 原生的变更应用流程
 	 * （commit + /sbin/reload_config，带原生「正在应用配置更改…」提示与页面刷新）。
 	 * openNDS 的 init 脚本没有注册 procd reload trigger，所以 commit 之后

@@ -71,6 +71,12 @@ return view.extend({
 				'click': function () {
 					state.fupEnabled = !state.fupEnabled;
 					renderFupSwitch();
+					/* 开关切换立即落成 uci 暂存：右上角马上出现「未保存的配置」，
+					 * 与 openwrt 原生按钮逻辑接轨（保存/保存并应用/复位都能接管它） */
+					CPD.stageUci('zone_detect', 'main', 'fup_enabled',
+						'opt', state.fupEnabled ? '1' : '0').then(null, function (e) {
+							CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+						});
 				}
 			}, E('span', {
 				'style': 'position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;' +

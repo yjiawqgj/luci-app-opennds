@@ -71,6 +71,12 @@ return view.extend({
 					'click': function () {
 						state.preemptEnabled = state.preemptEnabled ? 0 : 1;
 						renderAll();
+						/* 开关切换立即落成 uci 暂存：右上角马上出现「未保存的配置」，
+						 * 与 openwrt 原生按钮逻辑接轨（保存/保存并应用/复位都能接管它） */
+						CPD.stageUci('opennds', '@opennds[0]', 'allow_preemptive_authentication',
+							'opt', String(state.preemptEnabled)).then(null, function (e) {
+								CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+							});
 					}
 				}, state.preemptEnabled ? _('已启用') : _('已关闭'));
 				sec.appendChild(tgl);

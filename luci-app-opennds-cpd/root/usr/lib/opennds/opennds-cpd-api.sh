@@ -993,16 +993,20 @@ neigh_has() { # $1=小写 mac
 		grep -i "lladdr $1" | grep -vi failed | grep -q .
 }
 
-# 路由器视角的「正在连接」名单（CONN_ON，小写 MAC 清单）：
+# 路由器视角的「正在连接」名单（CONN_ON，小写 MAC 清单）与有线子集（WIRED_ON）：
 #   无线 = hostapd 关联表（STA_MAP）——权威，openNDS 记不记录都算在线；
-#   有线 = openNDS 记录里 clientif 是管理接口、且邻居表里找得到的；
+#   有线 = 不在关联表、但邻居表（ip neigh）里找得到的 openNDS 记录。
+#     clientif 是什么（空、br-lan）都不重要：ARP 表里有它 = 正在跟路由器说话，
+#     又不在无线关联表里 = 走的有线。之前还要求 clientif == 管理接口，
+#     真机上 clientif 经常是空的，有线客户端就全漏了。
 #   关联表整体拿不到（没 hostapd ubus 也没 iw）时退回旧行为：openNDS
-#   记录的都算在线——这时没有更准的数据源可用。
+#   记录的都算在线——这时没有更准的数据源可用；有线按 clientif == 管理接口判。
 # ndsctl 会把客户端留到空闲超时才清，人早走了记录还在——所以"在线"
 # 不能以 openNDS 记录为准，否则数字永远偏大。
 ov_conn() {
 	local lm cif mif sta_any=0
 	CONN_ON=''
+	WIRED_ON=''
 	# openNDS 没运行时不需要显示在线（用户口径：只在其开启时显示）
 	[ "$CPD_RUNNING" = '1' ] || return 0
 	printf '%s\n' "$STA_MAP" | grep -q . && sta_any=1
@@ -1015,20 +1019,17 @@ ov_conn() {
 $STA_MAP
 EOFC1
 		if [ "$CPD_RUNNING" = '1' ]; then
-			mif=$(managed_iface)
 			while IFS='	' read -r lm st ip cif dkb ukb ss se; do
 				[ -n "$lm" ] || continue
 				lm=$(mac_lower "$lm") # ndsctl 给的 MAC 是大写，统一成小写再比
+				# 在无线关联表里的不是有线
+				printf '%s\n' "$STA_MAP" | awk -F'	' -v m="$lm" '$1 == m {found=1; exit} END{exit !found}' && continue
 				printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && continue
-				# 不在关联表：有线（clientif 是管理接口、且邻居表里找得到）
-				[ -n "$mif" ] || continue
-				# clientif 为空（官方脚本探不到接口）时用邻居表的设备名补
-				case "$cif" in
-					'' | '-') cif=$(neigh_dev_for "$lm") ;;
-				esac
-				[ "$cif" = "$mif" ] || continue
+				# 不在关联表：邻居表里找得到才算连着（有线）
 				neigh_has "$lm" || continue
 				CONN_ON="$CONN_ON$lm
+"
+				WIRED_ON="$WIRED_ON$lm
 "
 			done <<EOFC2
 $CPD_IN
@@ -1037,13 +1038,26 @@ EOFC2
 	else
 		# CPD_MACS 已是小写（ov_build 里统一转的）
 		[ "$CPD_RUNNING" = '1' ] && CONN_ON="$CPD_MACS"
+		# 退化（拿不到关联表）：有线 = clientif 是管理接口的记录
+		mif=$(managed_iface)
+		[ -n "$mif" ] || return 0
+		while IFS='	' read -r lm st ip cif dkb ukb ss se; do
+			[ -n "$lm" ] || continue
+			case "$cif" in
+				"$mif") WIRED_ON="$WIRED_ON$(mac_lower "$lm")
+" ;;
+			esac
+		done <<EOFC3
+$CPD_IN
+EOFC3
 	fi
 }
 
 # 客户端行；$1=state $2=ip $3=iface $4=mac $5=dl_kb $6=ul_kb $7=ss $8=se $9=online(0/1)
+# $10=wired(0/1)：有线在线（不在无线关联表、邻居表里找得到）
 ov_client_row() {
 	local state="$1" ip="$2" cif="$3" lm="$4" dkb="$5" ukb="$6" ss="$7" se="$8"
-	local onl="${9:-1}"
+	local onl="${9:-1}" wir="${10:-0}"
 	local host ssidv apsec up down auth pre trst blk joined expires lim authorized
 	host=$(ov_host_for "$lm")
 	dkb="${dkb:-0}"
@@ -1088,44 +1102,29 @@ ov_client_row() {
 	expires=$(fmt_time "$se")
 	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
 
-	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","apsec":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"limits":%s}' \
+	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","apsec":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"wired":%s,"limits":%s}' \
 		"$(json_escape "$host")" "$(json_escape "$ip")" "$(json_escape "$lm")" \
 		"$(json_escape "$cif")" "$(json_escape "$ssidv")" "$(json_escape "$apsec")" \
 		"$(json_escape "$expires")" "$(json_escape "$joined")" \
 		"${CPD_AUTHIDLE:-120}" \
 		"$up" "$down" "$auth" "$pre" "$trst" "$blk" \
 		"$( [ "$onl" = '1' ] && printf 'true' || printf 'false' )" \
-		"$authorized" "$lim"
+		"$authorized" \
+		"$( [ "$wir" = '1' ] && printf 'true' || printf 'false' )" \
+		"$lim"
 }
 
 # 一次构建仪表盘全部数据：CPD_IN / ROWS_JSON / COUNTS_* / APS_JSON
 # 之前 status 与 clients 是两个请求、各解析一次 ndsctl、各跑一遍 uci，
 # 页面切进来要等两次串行往返；合并成一次后首屏明显更快。
-ov_build() {
-	local running enabled engaged busy scope='' conf_err=''
+# 无线侧预读（ov_build / ex_clients 共用）：
+#   CPD_WS   network.wireless status 原文
+#   AP_MAP   uci section → 运行时接口
+#   AP_META  iface<TAB>ssid<TAB>section（当前启用的 AP）
+#   STA_MAP  mac<TAB>iface（hostapd 关联表，权威）
+#   STA_SEC  mac<TAB>section（同一 SSID 开在 2.4G/5G 是两个段，按段区分）
+ov_wireless_prep() {
 	local sm_mac sm_ifn sm_sec
-	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
-		conf_err=$(uci show opennds 2>&1 >/dev/null)
-	fi
-	enabled=$(nds_enabled)
-	engaged=$(nds_engaged)
-	busy=$(busy_probe)
-	scope=$(uci_val 'zone_detect.main.session_scope' 'default')
-	running=0
-	nds_running && running=1
-	CPD_RUNNING="$running"
-	CPD_ENABLED="$enabled"
-	CPD_ENGAGED="$engaged"
-	CPD_BUSY="$busy"
-	CPD_SCOPE="$scope"
-	CPD_CONFERR="$conf_err"
-
-	ov_load_lists
-	# 预读：租约表 / 空闲超时 / FUP 速率（每个客户端再查就太慢了）
-	CPD_LEASE_MAP=$(ov_lease_map)
-	CPD_AUTHIDLE=$(uci_val 'opennds.@opennds[0].authidletimeout' '120')
-	CPD_FUP_U=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
-	CPD_FUP_D=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
 	CPD_WS=''
 	if command -v ubus >/dev/null 2>&1; then
 		CPD_WS=$(ubus_call call network.wireless status)
@@ -1149,6 +1148,33 @@ ov_build() {
 $STA_MAP
 EOF5
 	fi
+}
+
+ov_build() {
+	local running enabled engaged busy scope='' conf_err=''
+	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
+		conf_err=$(uci show opennds 2>&1 >/dev/null)
+	fi
+	enabled=$(nds_enabled)
+	engaged=$(nds_engaged)
+	busy=$(busy_probe)
+	scope=$(uci_val 'zone_detect.main.session_scope' 'default')
+	running=0
+	nds_running && running=1
+	CPD_RUNNING="$running"
+	CPD_ENABLED="$enabled"
+	CPD_ENGAGED="$engaged"
+	CPD_BUSY="$busy"
+	CPD_SCOPE="$scope"
+	CPD_CONFERR="$conf_err"
+
+	ov_load_lists
+	# 预读：租约表 / 空闲超时 / FUP 速率（每个客户端再查就太慢了）
+	CPD_LEASE_MAP=$(ov_lease_map)
+	CPD_AUTHIDLE=$(uci_val 'opennds.@opennds[0].authidletimeout' '120')
+	CPD_FUP_U=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
+	CPD_FUP_D=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
+	ov_wireless_prep
 
 	CPD_PARSED=''
 	CPD_IN=''
@@ -1175,9 +1201,9 @@ EOF5
 
 # 每个客户端行算出唯一的「身份」（前端 tagOf / inFilter 用的是同一组标记）：
 #   bl=黑名单  tr=可信任  pre=免认证  auth=已认证  unauth=未认证
-# 同时记下行是否在线（onl）。ROW_TBL = "mac<TAB>身份<TAB>onl" 每行一条，
-# ov_counts 只按这张表数数——卡片数字与列表条目永远同源，不会再出现
-# 「卡片 3、点开列表 0 条」这种错位。
+# 同时记下行是否在线（onl）与是否有线（wir）。ROW_TBL =
+# "mac<TAB>身份<TAB>onl<TAB>wir" 每行一条，ov_counts 只按这张表数数——
+# 卡片数字与列表条目永远同源，不会再出现「卡片 3、点开列表 0 条」这种错位。
 ov_row_class() { # $1=state $2=小写 mac → 打印 bl|tr|pre|auth|unauth
 	local is_auth=0
 	case "$1" in
@@ -1194,7 +1220,7 @@ ov_row_class() { # $1=state $2=小写 mac → 打印 bl|tr|pre|auth|unauth
 }
 
 ov_rows() {
-	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0 onl rif
+	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0 onl rif wir
 	local seen cls
 	N_ONLINE=0
 	ROW_TBL=''
@@ -1212,13 +1238,15 @@ ov_rows() {
 			# 在线与否以路由器为准（关联表 / 邻居表）；ndsctl 把客户端留到
 			# 空闲超时才清，人早走了记录还在，按记录算在线永远偏大
 			onl=0
+			wir=0
 			printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && onl=1
+			printf '%s\n' "$WIRED_ON" | grep -qFx "$lm" && wir=1
 			# 无线客户端的接口以关联表为准（clientif 没装 iw 时是 br-lan）
 			rif=$(printf '%s\n' "$STA_MAP" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
 			[ -n "$rif" ] && cif="$rif"
-			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" "$onl")"
+			rows="$rows$sep$(ov_client_row "$state" "$ip" "$cif" "$lm" "$dkb" "$ukb" "$ss" "$se" "$onl" "$wir")"
 			cls=$(ov_row_class "$state" "$lm")
-			ROW_TBL="$ROW_TBL$lm	$cls	$onl
+			ROW_TBL="$ROW_TBL$lm	$cls	$onl	$wir
 "
 			sep=','
 			n=$((n + 1))
@@ -1235,9 +1263,9 @@ EOF2
 			printf '%s\n' "$seen" | grep -qFx "$lm" && continue
 			seen="$seen$lm
 "
-			rows="$rows$sep$(ov_client_row '' '' "$rif" "$lm" 0 0 '' '' 1)"
+			rows="$rows$sep$(ov_client_row '' '' "$rif" "$lm" 0 0 '' '' 1 0)"
 			cls=$(ov_row_class '' "$lm")
-			ROW_TBL="$ROW_TBL$lm	$cls	1
+			ROW_TBL="$ROW_TBL$lm	$cls	1	0
 "
 			sep=','
 			n=$((n + 1))
@@ -1253,21 +1281,24 @@ EOF4
 		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
 		seen="$seen$lm
 "
-		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0)"
+		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0 0)"
 		cls=$(ov_row_class '' "$lm")
-		ROW_TBL="$ROW_TBL$lm	$cls	0
+		ROW_TBL="$ROW_TBL$lm	$cls	0	0
 "
 		sep=','
 		n=$((n + 1))
 	done
 
-	# 在线 = 路由器视角「正在连着」且不在黑名单的行。与前端 inFilter 的
-	# online 分支同一口径（online && !blocked），卡片数 = 列表条数。
-	while IFS='	' read -r lm cls onl; do
+	# 在线 = 路由器视角「正在连着」且「有访问权限」（已认证 / 可信任 /
+	# 免认证已登录）。未认证与黑名单不算在线——在线卡是身份卡，不是
+	# 连接数；刚连上还没过门户的设备归「未认证」卡。与前端 inFilter 的
+	# online 分支同一口径（online && authorized && !blocked）。
+	while IFS='	' read -r lm cls onl wir; do
 		[ -n "$lm" ] || continue
 		[ "$onl" = '1' ] || continue
-		[ "$cls" = 'bl' ] && continue
-		N_ONLINE=$((N_ONLINE + 1))
+		case "$cls" in
+			auth | pre | tr) N_ONLINE=$((N_ONLINE + 1)) ;;
+		esac
 	done <<EOF9
 $ROW_TBL
 EOF9
@@ -1276,21 +1307,24 @@ EOF9
 	N_ROWS="$n"
 }
 
-# 统计口径（在线的判定以路由器为准，见 ov_conn）：
-#   在线     = 正在连着的客户端（无线=hostapd 关联表，有线=邻居表），
-#              黑名单不算。刚连上、还没过门户的设备也是在线，只是算未认证
+# 统计口径：
+#   在线     = 正在连着且有访问权限（已认证 / 免认证已登录 / 可信任）；
+#              未认证与黑名单不算，有线客户端照算（见 ov_conn）
+#   有线     = 正在连着的有线客户端，不分身份（黑名单除外）——与无线接入点
+#              卡片按关联表计数同一口径：卡片数的是「连着多少设备」
 #   已认证   = 在线且 state=Authenticated/AuthBlocked、不在信任/免认证名单
 #   未认证   = 在线但还没通过认证（Preauthenticated / 关联了但没碰过门户）
 #   免认证   = 在线且在 preemptivemac 名单且已登录
 #   可信任   = 以 trustedmac 名单为准（离线的信任设备也在名单里）
 # 全部按 ROW_TBL 数，与客户端列表同源。
 ov_counts() {
-	local lm cls onl m2
+	local lm cls onl wir m2
 	N_AUTH=0
 	N_PRE=0
 	N_TR=0
 	N_UN=0
-	while IFS='	' read -r lm cls onl; do
+	N_WIRED=0
+	while IFS='	' read -r lm cls onl wir; do
 		[ -n "$lm" ] || continue
 		case "$cls" in
 			bl) continue ;; # 黑名单只进黑名单卡
@@ -1299,6 +1333,8 @@ ov_counts() {
 			auth) [ "$onl" = '1' ] && N_AUTH=$((N_AUTH + 1)) ;;
 			*) [ "$onl" = '1' ] && N_UN=$((N_UN + 1)) ;;
 		esac
+		# 有线卡：连着的有线设备，不分身份（黑名单上面已经 continue 掉了）
+		[ "$onl" = '1' ] && [ "$wir" = '1' ] && N_WIRED=$((N_WIRED + 1))
 	done <<EOF2
 $ROW_TBL
 EOF2
@@ -1354,10 +1390,10 @@ ov_status_fields() { # 输出 status 的 JSON 片段（不含外层花括号）
 	local mif mip=''
 	mif=$(managed_iface)
 	[ -n "$mif" ] && mip=$(iface_ip "$mif")
-	printf '"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
+	printf '"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
 		"$CPD_RUNNING" "$CPD_ENABLED" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
 		"$(json_escape "$CPD_SCOPE")" "$(json_escape "$CPD_CONFERR")" \
-		"$N_ONLINE" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL" \
+		"$N_ONLINE" "$N_WIRED" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
 		"$(json_escape "$mif")" "$(json_escape "$mip")" \
 		"[${APS_JSON}]"
@@ -1410,8 +1446,8 @@ ov_selfcheck() {
 	done
 	printf '},"path":"%s"' "$(json_escape "$PATH")"
 	printf ',"wireless_status_len":%s' "$(printf '%s' "$CPD_WS" | wc -c | tr -d ' ')"
-	printf ',"counts":{"online":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s}' \
-		"$N_ONLINE" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL"
+	printf ',"counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s}' \
+		"$N_ONLINE" "$N_WIRED" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL"
 	printf ',"ap_map":[%s]' "$(lines_to_json "$AP_MAP")"
 	printf ',"ap_meta":[%s]' "$(lines_to_json "$AP_META")"
 	printf ',"sta_map":[%s]' "$(lines_to_json "$STA_MAP")"
@@ -2602,20 +2638,27 @@ ex_parse_macs() { # $1=串 $2=输出变量名
 	eval "$var=\$out"
 }
 
-# 接口 → 网络区域（共用反查逻辑：iw 直读 → uci 序号映射；非无线 → 管理接口）
-ex_zone_for() { # $1=运行时接口名（可空）
-	local ifn="$1" s mif
-	[ -n "$ifn" ] || ifn=$(managed_iface)
-	[ -n "$ifn" ] || return 1
-	if iw dev "$ifn" info >/dev/null 2>&1; then
-		s=$(ssid_for_if "$ifn") && {
-			printf '%s' "$s"
-			return 0
-		}
-		return 1
+# 客户端 → 网络区域显示（与概览页「接入点」列同一口径）：
+#   ① MAC 反查无线关联表（STA_MAP）→ AP 的 SSID——最准，ndsctl 的 clientif
+#      在没装 iw 的机器上是 br-lan，靠它判无线/有线永远是错的
+#   ② clientif 本身是无线接口（iw dev <if> info 成功）→ 显示接口名，
+#      不能标成有线
+#   ③ 其余按有线：管理接口名 +（有线），如 br-lan（有线）；管理接口取不到时
+#      退回 clientif 原样
+ex_zone_for() { # $1=小写 mac $2=ndsctl clientif
+	local s mif
+	s=$(client_ssid "$1" "$2")
+	[ -n "$s" ] && { printf '%s' "$s"; return 0; }
+	if [ -n "$2" ] && iw dev "$2" info >/dev/null 2>&1; then
+		printf '%s' "$2"
+		return 0
 	fi
 	mif=$(managed_iface)
-	[ "$ifn" = "$mif" ] && printf '%s' "$ifn"
+	if [ -n "$mif" ]; then
+		printf '%s（有线）' "$mif"
+	else
+		[ -n "$2" ] && printf '%s' "$2"
+	fi
 	return 0
 }
 
@@ -2657,6 +2700,8 @@ ex_common() {
 ex_clients() {
 	local running=0 srow
 	nds_running && running=1
+	# 网络区域要按 MAC 反查无线关联表（与概览页同一口径），先做无线预读
+	ov_wireless_prep
 	local out='' sep='' seen='|'
 	if [ "$running" = '1' ]; then
 		local mac lm ip cif zone host
@@ -2666,7 +2711,7 @@ ex_clients() {
 			[ -n "$mac" ] || continue
 			lm=$(mac_lower "$mac")
 			cif="${cif%% *}"
-			zone=$(ex_zone_for "$cif")
+			zone=$(ex_zone_for "$lm" "$cif")
 			host=$(ov_host_for "$lm")
 			# trusted 客户端 ndsctl 不一定给 ip：邻居表兜底，
 			# 否则"可信任列表里在线设备不显示 IP"
@@ -5208,6 +5253,18 @@ sys_post_apply() {
 	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：
 	# 用户设备上历史遗留的"既在可信任又在黑名单"会在这里被修正
 	sys_dedup_lists
+	# 概览页「解除认证」走暂存：待踢的 MAC 记在 zone_detect.main.pending_deauth，
+	# openwrt「保存并应用」commit 之后在这里执行（踢下线 + 清预认证队列），然后清掉
+	for m in $(list_of 'zone_detect.main.pending_deauth'); do
+		[ -n "$m" ] || continue
+		lm=$(mac_lower "$m")
+		remove_preauth_queue "$lm"
+		ndsctl_mac deauth "$lm"
+	done
+	if [ -n "$(uci -q get 'zone_detect.main.pending_deauth' 2>/dev/null)" ]; then
+		uci -q delete 'zone_detect.main.pending_deauth'
+		uci commit zone_detect
+	fi
 	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		[ -n "$m" ] || continue
 		lm=$(mac_lower "$m")

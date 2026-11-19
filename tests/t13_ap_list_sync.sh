@@ -6,8 +6,9 @@
 #     ndsctl   只有 1 条：5A:B9:A5:A2:06:0F Preauthenticated，clientif 为空
 #     sta_map  3 条（66:0e… / 0c:93… / 50:29…）全都挂在 phy2-ap0
 #   ① 关联表里有、ndsctl 没记录的设备必须出行（否则卡片数与列表条数对不上）
-#   ② 在线 = 正在连着（不要求已过门户），这类行算「未认证」
-#   ③ 有线客户端 clientif 为空时用邻居表的设备名兜底（列表显示 br-lan（有线））
+#   ② 在线 = 连着且有访问权限；没过门户的算「未认证」，不进在线卡
+#   ③ 有线客户端 clientif 为空时用邻居表的设备名兜底（列表显示 br-lan（有线）），
+#      且要进「有线」卡片（连接卡，不分身份）
 . "$(dirname "$0")/lib.sh"
 tmp_setup t13
 
@@ -216,12 +217,19 @@ ck "有线客户端 ip 保留" '"ip":"10.10.10.68"' "$r5"
 
 echo "== 统计卡片 =="
 counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
-ck "在线=4（3 个无线关联 + 1 个有线）" '"online":4' "$counts"
+ck "在线=0（都没过门户：在线卡只算有访问权限的）" '"online":0' "$counts"
+ck "有线=1（br-lan 邻居表里的那条 Preauth）" '"wired":1' "$counts"
 ck "未认证=4（都没过门户）" '"unauthenticated":4' "$counts"
 ck "已认证=0" '"authenticated":0' "$counts"
 
-echo "== 在线卡 = 列表条数 =="
+echo "== 有线标记 =="
+ck "有线客户端行 wired=true" '"online":true,"authorized":false,"wired":true' "$r5"
+n_wd=$(printf '%s' "$out" | grep -o '"wired":true' | wc -l | tr -d ' ')
+ck "列表 wired=true 行数=1" '1' "$n_wd"
+
+echo "== 连接卡 = 列表条数 =="
+# 未认证卡与有线卡都是「连着就算」的口径，各自与列表条数同源
 n_on=$(printf '%s' "$out" | grep -o '"online":true' | wc -l | tr -d ' ')
-ck "列表 online=true 行数=4（=在线卡）" '4' "$n_on"
+ck "列表 online=true 行数=4（=未认证卡）" '4' "$n_on"
 
 done_report

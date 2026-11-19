@@ -127,7 +127,10 @@ luci-app-opennds-cpd/
   ② 都是 0 时看 `zone_detect.main.fup_enabled`（上次「保存/应用」时写入的开关状态，
   非首次安装按它显示）；
   ③ 都没有（首次安装）→ 关。
-  开关切换后「保存/应用」会把 `zone_detect.main.fup_enabled` 写成 `1`/`0`，
+  开关切换**立即写 uci 暂存**（前端 `stageUci` 写 `zone_detect.main.fup_enabled`），
+  右上角马上出现「未保存的配置: N」，与 openwrt 原生三按钮接轨（2026-11-19 用户定调；
+  「保存 / 保存并应用 / 复位」都能接管它）；「保存/应用」会再按当前开关状态写一次（值没变
+  时 `stageUci` 不造无效增量）。
   下次进来按上面的优先级显示。
 - 两列网格 `.quota-grid`（窄屏单列），每列：
   - 标签「上传」/「下载」

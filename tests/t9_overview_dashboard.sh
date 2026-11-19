@@ -295,22 +295,25 @@ printf 'dc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/blockedmac"
 out=$(call overview dashboard)
 ck "dashboard 返回 ok" '{"ok":1' "$out"
 
-# ① 统计口径。在线 = 路由器视角「正在连着」（hostapd 关联表 + 有线邻居表），
-#    不管有没有过门户：aa01 + 11:22 + 22:33 + ee08 + ee09 = 5；
+# ① 统计口径。在线 = 连着且有访问权限（已认证 / 免认证已登录 / 可信任）：
+#    aa01 + 11:22（无线）+ ee08（有线）= 3；22:33、ee09 没过门户 → 只进未认证卡；
 #    ee07 已离线（记录在人不在）不算；黑名单不算
 counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
-ck "在线=5（连着就算：已认证/可信任/未认证都算，离线与黑名单不算）" '"online":5' "$counts"
+ck "在线=3（有访问权限才算在线；未认证/离线/黑名单不算）" '"online":3' "$counts"
+ck "有线=1（ee08：不在关联表、邻居表里有）" '"wired":1' "$counts"
 ck "已认证=2（ee07 已离线不占卡片）" '"authenticated":2' "$counts"
 ck "未认证=2（22:33 未过门户 + ee09 门户外关联设备）" '"unauthenticated":2' "$counts"
 ck "可信任=1（黑名单里的重复条目不算）" '"trusted":1' "$counts"
 ck "黑名单=1" '"blacklist":1' "$counts"
 
-# ② 卡片数与列表同源：在线（非黑名单）的行应正好 5 条
+# ② 卡片数与列表同源：online 行 = 未认证卡 2 条 + 在线卡 3 条
 n=$(printf '%s' "$out" | grep -o '"online":true' | wc -l | tr -d ' ')
-ck "列表里 online=true 的行数=5（=在线卡）" '5' "$n"
+ck "列表里 online=true 的行数=5（在线卡 3 + 未认证卡 2）" '5' "$n"
 # 有权限的仍是 3 条（aa01 / 11:22 / ee08）：未认证的两条不算 authorized
 n2=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
-ck "列表里 online+authorized 行数=3" '3' "$n2"
+ck "列表里 online+authorized 行数=3（=在线卡）" '3' "$n2"
+n3=$(printf '%s' "$out" | grep -o '"wired":true' | wc -l | tr -d ' ')
+ck "列表里 wired=true 的行数=1（=有线卡）" '1' "$n3"
 
 # ③ 无线接入点计数（ubus 映射：phy2-ap0 / phy2-ap1）
 ap_seg() { printf '%s' "$1" | tr '}' '\n' | grep -F "\"ssid\":\"$2\""; }
@@ -340,11 +343,12 @@ ck "预授权客户端 authorized=false（不计入在线卡）" '"authorized":f
 r7=$(seg "$out" 'aa:bb:cc:dd:ee:07')
 ck "已离线客户端（记录还在人走了）online=false" '"online":false' "$r7"
 
-# ⑨ 有线客户端：clientif=管理接口且邻居表里有 → 在线
+# ⑨ 有线客户端：不在关联表、邻居表里有 → 在线，且进「有线」卡
 r8=$(seg "$out" 'aa:bb:cc:dd:ee:08')
 ck "有线客户端 online=true" '"online":true' "$r8"
 ck "有线客户端 iface=br-lan" '"iface":"br-lan"' "$r8"
 ck "有线客户端 authorized=true" '"authorized":true' "$r8"
+ck "有线客户端 wired=true" '"wired":true' "$r8"
 
 # ⑩ 连着但没碰过门户的设备（ee09，hostapd 有关联、ndsctl 没记录）：
 #    必须出现在客户端列表里（未认证）——否则 AP 卡片显示 3、点开却是空的
@@ -396,6 +400,6 @@ ck "兜底：guest AP 计数=1（clientif=phy2-ap1）" '"count":1' "$b1"
 r5=$(seg "$out2" 'aa:bb:cc:dd:ee:01')
 ck "兜底：已认证客户端 ssid=互联网（clientif 直配）" '"ssid":"互联网"' "$r5"
 counts2=$(printf '%s' "$out2" | grep -o '"counts":{[^}]*}')
-ck "兜底：在线=5（关联表拿不到时按 openNDS 记录算）" '"online":5' "$counts2"
+ck "兜底：在线=4（关联表拿不到时按 openNDS 记录算：aa01/11:22/ee07/ee08）" '"online":4' "$counts2"
 
 done_report
