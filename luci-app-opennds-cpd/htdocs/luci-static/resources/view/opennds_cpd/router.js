@@ -25,7 +25,7 @@ return view.extend({
 			snapshot: null
 		};
 		var body = E('div', { 'class': 'cpd-page' });
-		var panel, stateLine;
+		var panel;
 
 		/* ---------- 渲染 ---------- */
 		function renderAll() {
@@ -39,18 +39,17 @@ return view.extend({
 			chk.checked = state.takeoverOff;
 			chk.addEventListener('change', function () {
 				state.takeoverOff = chk.checked;
-				stateLine.textContent = state.takeoverOff
-					? _('当前状态：已关闭接管')
-					: _('当前状态：接管未关闭');
+				/* 勾选立即落成 uci 暂存：右上角马上出现「未保存的配置」 */
+				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough',
+					'opt', state.takeoverOff ? '1' : '0').then(null, function (e) {
+						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+					});
 			});
-			stateLine = E('p', { 'class': 'cpd-state' },
-				state.takeoverOff ? _('当前状态：已关闭接管') : _('当前状态：接管未关闭'));
 			sec1.appendChild(E('div', {}, [
 				E('label', { 'style': 'display:inline-flex;align-items:center;gap:9px;padding:8px 0;cursor:pointer' }, [
 					chk, E('span', {}, _('关闭接管'))
 				]),
-				E('p', { 'class': 'cpd-note' }, _('如果你不知道该功能作用，请保持默认。')),
-				stateLine
+				E('p', { 'class': 'cpd-note' }, _('如果你不知道该功能作用，请保持默认。'))
 			]));
 			body.appendChild(sec1);
 
@@ -150,7 +149,11 @@ return view.extend({
 				state.draft = value;
 				state.editing = false;
 				renderPanel();
-				/* 不弹横幅：确认改完是用户自己的动作，配置要等底部「保存」写入 */
+				/* 确定即落成 uci 暂存：右上角马上出现「未保存的配置」，
+				 * 点开就是原生 diff，由底部「保存并应用」提交 */
+				stageRules(j.rules || []).then(null, function (e2) {
+					CPD.notify(CPD.errText(e2, _('暂存配置失败')), 'err');
+				});
 			}).catch(function (e) {
 				CPD.toast((e && e.error) || _('校验失败'), 'err');
 			});
@@ -168,6 +171,15 @@ return view.extend({
 			return state.saved;
 		}
 
+		/* 规则列表 + 接管开关 → uci 暂存（右上角「未保存的配置」由它产生） */
+		function stageRules(rules) {
+			return Promise.all([
+				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router', 'list', rules || []),
+				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough', 'opt',
+					state.takeoverOff ? '1' : '0')
+			]);
+		}
+
 		function stageRouter() {
 			var text = currentText().replace(/\r\n/g, '\n');
 			return CPD.api('router', 'validate', ['text_b64=' + CPD.b64encode(text)])
@@ -179,11 +191,7 @@ return view.extend({
 						.filter(function (l) { return l; }).join('\n');
 					state.draft = state.saved;
 					if (state.editing) { state.editing = false; renderPanel(); }
-					return Promise.all([
-						CPD.stageUci('opennds', '@opennds[0]', 'users_to_router', 'list', j.rules || []),
-						CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough', 'opt',
-							state.takeoverOff ? '1' : '0')
-					]);
+					return stageRules(j.rules || []);
 				});
 		}
 

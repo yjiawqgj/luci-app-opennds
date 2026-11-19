@@ -242,16 +242,9 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 顶部提示条（busy；「未接管」横幅已按用户要求移除） ---------- */
-		var warnbar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' }, '');
-
+		/* ---------- 顶部提示条（只剩「配置无法解析」这一种；忙碌状态不挂在页面上：
+		 * 保存并应用期间由原生弹窗显示等待状态，直到后端跑完才关闭） ---------- */
 		function renderWarnbar() {
-			if (state.busy) {
-				warnbar.textContent = _('等待上一步完成，请稍候重试');
-				warnbar.style.display = '';
-			} else {
-				warnbar.style.display = 'none';
-			}
 			renderConfBar();
 		}
 
@@ -1309,7 +1302,6 @@ return view.extend({
 		/* ---------- 组装页面 ---------- */
 		body.appendChild(E('div', { 'class': 'cpd-head' },
 			E('h2', {}, _('openNDS 概览'))));
-		body.appendChild(warnbar);
 		body.appendChild(confBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [

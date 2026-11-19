@@ -12,7 +12,7 @@
     "depends": { "acl": [ "luci-app-opennds-cpd" ] }
   },
   "admin/services/opennds-cpd/zone": {
-    "title": "区域识别",
+    "title": "网络区域识别",
     "order": 20,
     "action": { "type": "view", "path": "opennds_cpd/zone" },
     "depends": { "acl": [ "luci-app-opennds-cpd" ] }
@@ -24,7 +24,7 @@
     "depends": { "acl": [ "luci-app-opennds-cpd" ] }
   },
   "admin/services/opennds-cpd/exempt": {
-    "title": "客户端豁免管理",
+    "title": "特权客户端",
     "order": 40,
     "action": { "type": "view", "path": "opennds_cpd/exempt" },
     "depends": { "acl": [ "luci-app-opennds-cpd" ] }
@@ -54,7 +54,7 @@
     "depends": { "acl": [ "luci-app-opennds-cpd" ] }
   },
   "admin/services/opennds-cpd/settings": {
-    "title": "openNDS 设置",
+    "title": "设置",
     "order": 80,
     "action": { "type": "view", "path": "opennds_cpd/settings" },
     "depends": { "acl": [ "luci-app-opennds-cpd" ] }

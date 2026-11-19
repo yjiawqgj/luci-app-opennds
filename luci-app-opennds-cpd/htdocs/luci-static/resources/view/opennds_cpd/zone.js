@@ -140,16 +140,8 @@ return view.extend({
 
 		var body = E('div', { 'class': 'cpd-page' });
 
-		/* ---------- 提示条（仅 busy；「尚未接管门户」横幅已按用户要求移除） ---------- */
-		var warnbar = E('div', { 'class': 'cpd-warnbar', 'style': 'display:none' }, '');
-		function renderWarnbar() {
-			if (state.busy) {
-				warnbar.textContent = _('等待上一步完成，请稍候重试');
-				warnbar.style.display = '';
-			} else {
-				warnbar.style.display = 'none';
-			}
-		}
+		/* 忙碌提示不再挂在页面上：保存并应用期间由原生弹窗显示等待状态，
+		 * 直到后端真正跑完才关闭（见 common.js 的 APPLY 流程） */
 
 		/* ---------- 数据 ---------- */
 		function upKey(type, zone) { return type + '|' + zone; }
@@ -173,7 +165,6 @@ return view.extend({
 				state.wired = j.wired || null;
 				unmatchedCount.textContent =
 					_('共 %s 个未匹配文件').format(String(j.unmatched || 0));
-				renderWarnbar();
 				var jobs = [];
 				state.wireless.forEach(function (c) {
 					if (zoneNameOk(c.ssid)) jobs.push(loadUploaded('wireless', c.ssid));
@@ -369,7 +360,7 @@ return view.extend({
 					return (state.zoneDraft[s] || '') === saved;
 				});
 				if (!same) return { text: _('有未保存的修改'), kind: 'dirty' };
-				return { text: _('已保存'), kind: 'ok' };
+				return null;   /* 已保存不再提示：没有待处理的改动就什么都不显示 */
 			}
 			var any = uniqueSsids().some(function (s) { return !!state.zoneDraft[s]; });
 			if (any) return { text: _('有未保存的修改'), kind: 'dirty' };
@@ -409,14 +400,6 @@ return view.extend({
 				renderWifiCards();
 				renderHints();
 			});
-			var parts = [];
-			if (card && card.disabled) {
-				parts.push(_('该 Wi-Fi 当前为禁用状态，所选脚本会在启用后生效。'));
-			}
-			var d = state.zoneDraft[state.active] || '';
-			parts.push(d ?
-				_('已选择 %s，仅对当前选中的 Wi-Fi 生效。').format(d) :
-				_('尚未选择脚本，选择结果仅对当前选中的 Wi-Fi 生效。'));
 
 			zoneConfig.appendChild(E('div', { 'class': 'zd-tools' }, [
 				E('button', { 'type': 'button', 'class': 'cbi-button',
@@ -432,10 +415,7 @@ return view.extend({
 			]));
 			zoneConfig.appendChild(E('div', { 'class': 'zd-row' }, [
 				E('div', { 'class': 'zd-row-label' }, _('认证')),
-				E('div', { 'class': 'zd-row-ctrl' }, [
-					authSel,
-					E('p', { 'class': 'zd-state-line' }, parts.join(' '))
-				])
+				E('div', { 'class': 'zd-row-ctrl' }, [authSel])
 			]));
 		}
 
@@ -501,7 +481,7 @@ return view.extend({
 			if ((state.wiredDraft || '') !== state.wiredSaved) {
 				return { text: _('有未保存的修改'), kind: 'dirty' };
 			}
-			return { text: _('已保存'), kind: 'ok' };
+			return null;   /* 同上：已保存不再提示 */
 		}
 
 		function renderWiredConfig() {
@@ -928,7 +908,6 @@ return view.extend({
 		body.appendChild(CPD.pageHead(
 			_('网络区域识别'), 'Network Zone Detection',
 			_('选择配置模式，为 Wi-Fi 区域选择认证脚本。')));
-		body.appendChild(warnbar);
 
 		body.appendChild(E('div', { 'class': 'cpd-sec' }, [
 			E('h3', {}, [_('区域选择')]),

@@ -50,7 +50,7 @@ return view.extend({
 		function renderAll() {
 			body.innerHTML = '';
 			body.appendChild(CPD.pageHead(
-				_('客户端豁免管理'), 'openNDS · LuCI',
+				_('特权客户端'), 'openNDS · LuCI',
 				_('为指定客户端提供信任或预先授权：可绕过正常认证，或跳过门户认证但保留流量统计与管理。')));
 			body.appendChild(renderBlock('trusted'));
 			body.appendChild(renderBlock('preempt'));
@@ -309,11 +309,13 @@ return view.extend({
 						('mac=' + m + ';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0');
 				});
 			}
-			/* 编辑框下的「确定」只退出编辑态，不写任何配置；
-			 * 配置由页面底部的 openwrt「保存 / 保存并应用」写入 */
+			/* 编辑框下的「确定」：立即落成 uci 暂存（右上角出现「未保存的配置」），
+			 * 真正生效仍由底部「保存 / 保存并应用」提交 */
 			state.editing[which] = false;
 			renderAll();
-			/* 静默退出编辑态：不弹任何横幅 */
+			stageExempt().then(null, function (e) {
+				CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+			});
 		}
 
 		/* 把当前名单与开关落成 uci 暂存（顶部出现「未保存的配置」） */
@@ -341,7 +343,10 @@ return view.extend({
 						state.preempt = state.preempt.filter(function (e) { return macOf(e) !== mac; });
 					}
 					renderAll();
-					/* 静默：删除只改内存，等 openwrt「保存 / 保存并应用」 */
+					/* 删除同样立即落成暂存，右上角可以看到这条增量 */
+					stageExempt().then(null, function (e) {
+						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+					});
 				}
 			);
 		}

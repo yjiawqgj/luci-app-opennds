@@ -46,4 +46,46 @@ ck "rates>0 优先于上次保存的关 → 开" '"fupEnabled":1' "$(fe)"
 mk_conf abc 0 1
 ck "rates 脏值按 0 → 看上次状态（开）" '"fupEnabled":1' "$(fe)"
 
+echo "== 默认门户：黑名单 tab（用户口径：设置页要能管黑名单门户） =="
+mkdir -p "$CPD_ROOT/blacklist" "$CPD_ROOT/default/wireless" "$S/up/up1"
+printf 'x\n' >"$CPD_ROOT/blacklist/old.sh"
+printf '#!/bin/sh\n' >"$S/up/up1/mybl.sh"
+out=$(call settings upload_default blacklist up1 file mybl.sh)
+ck "上传黑名单门户返回 ok" '"ok":1' "$out"
+if [ -f "$CPD_ROOT/blacklist/mybl.sh" ]; then
+	echo "  OK   文件落在 cpd/blacklist/mybl.sh"
+else
+	echo "  FAIL 文件没落到 cpd/blacklist"; fail=1
+fi
+if [ -f "$CPD_ROOT/blacklist/old.sh" ]; then
+	echo "  OK   黑名单门户库不做互斥清理（old.sh 仍在）"
+else
+	echo "  FAIL 黑名单门户库被互斥清空了"; fail=1
+fi
+
+call settings portal_save blacklist mybl.sh >/dev/null
+ck "门户选择写入 portal_blacklist" 'mybl.sh' "$(uci -q get zone_detect.main.portal_blacklist)"
+
+st=$(call settings status)
+ck "status 带回 blacklist 类型" '"blacklist":{' "$st"
+ck "status 里黑名单选中项正确" '"sel":"mybl.sh"' "$st"
+
+out=$(call settings clean_default blacklist mybl.sh)
+ck "清理黑名单门户 removed=1" '"removed":1' "$out"
+if [ -z "$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)" ]; then
+	echo "  OK   清理后选择回落到内置默认门户"
+else
+	echo "  FAIL 清理后 portal_blacklist 没清掉"; fail=1
+fi
+
+echo "== 无线/有线仍然写各自的目录（不能被黑名单改动带偏） =="
+mkdir -p "$S/up/up2"
+printf '#!/bin/sh\n' >"$S/up/up2/wl.sh"
+call settings upload_default wireless up2 file wl.sh >/dev/null
+if [ -f "$CPD_ROOT/default/wireless/wl.sh" ]; then
+	echo "  OK   无线门户仍落在 cpd/default/wireless/"
+else
+	echo "  FAIL 无线门户落错目录"; fail=1
+fi
+
 done_report

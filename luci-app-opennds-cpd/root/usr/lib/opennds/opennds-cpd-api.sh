@@ -246,11 +246,13 @@ ndsctl_mac() { # $1=子命令 $2=小写 mac
 	return 0
 }
 
-# 就绪判据：pidof 有值 且 ndsctl status 能成功，最多 15 秒（30 次 × 0.5 秒）
-wait_ready() {
-	# 总预算约 13 秒（6 次 × 单次限时 2 秒 + 间隔），别把 20 秒的 RPC 超时撑爆
-	local i=0
-	while [ "$i" -lt 6 ]; do
+# 就绪判据：pidof 有值 且 ndsctl status 能成功。
+# $1 = 轮数（默认 6，总预算约 13 秒：单次 ndsctl 限时 2 秒 + 间隔）。
+# 轮数可调是为了别把 rpcd 的 exec 超时（约 30 秒）撑爆 —— 应用后前端还会
+# 继续轮询运行状态，后端这里不必等太久。
+wait_ready_n() {
+	local i=0 n="${1:-6}"
+	while [ "$i" -lt "$n" ]; do
 		if [ -n "$(pidof opennds 2>/dev/null)" ] &&
 			NDSCTL_TIMEOUT=2 ndsctl_run status >/dev/null 2>&1; then
 			return 0
@@ -260,6 +262,8 @@ wait_ready() {
 	done
 	return 1
 }
+
+wait_ready() { wait_ready_n 6; }
 
 nds_running() { # openNDS 进程在跑 → 0
 	pidof opennds >/dev/null 2>&1 && return 0
@@ -294,7 +298,20 @@ service_restart() {
 	nds_running || return 0
 	SR_RESTARTED=1
 	/etc/init.d/opennds restart 9>&- >/dev/null 2>&1
-	wait_ready
+	wait_ready_n 3 && return 0
+	# 兜底：restart 偶发把服务停在「已停止」（老实例没退干净就起新实例、
+	# 或防火墙链残留导致新实例初始化失败）。这里清干净再起一次。
+	# 时间预算要算死：3 轮 + 最多 3 秒等旧进程退出 + 2 轮，合计远小于
+	# rpcd exec 的 30 秒上限，避免整个请求被 SIGKILL 在重启中途。
+	/etc/init.d/opennds stop 9>&- >/dev/null 2>&1
+	local i=0
+	while nds_running && [ "$i" -lt 3 ]; do
+		sleep 1 2>/dev/null || sleep 1
+		i=$((i + 1))
+	done
+	/usr/lib/opennds/libopennds.sh delete_chains 9>&- >/dev/null 2>&1
+	/etc/init.d/opennds start 9>&- >/dev/null 2>&1
+	wait_ready_n 3
 }
 
 # 预认证队列文件删除：mountpoint 由 configure_log_location() 现探
@@ -2737,6 +2754,31 @@ ex_zone_for() { # $1=小写 mac $2=ndsctl clientif
 	return 0
 }
 
+# 名单里配了、但 openNDS 记录里没有的客户端（可信任客户端基本都属于这种：
+# openNDS 根本不为它们建会话）。「网络区域」不能只看 ndsctl：
+#   ① 无线关联表里有它 → 无线，显示所属 AP 的 SSID
+#   ② 邻居表里能找到它 → 有线，显示管理接口，如 br-lan（有线）
+#   ③ 都找不到 → 离线，区域留空（返回非 0）
+ex_zone_listed() { # $1=小写 mac → stdout 区域名
+	local lm="$1" s dev mif ifn
+	ifn=$(printf '%s\n' "$STA_MAP" | awk -F'\t' -v m="$lm" '$1 == m && NF >= 2 {print $2; exit}')
+	if [ -n "$ifn" ]; then
+		s=$(client_ssid "$lm" "$ifn")
+		[ -n "$s" ] || s="$ifn"
+		printf '%s' "$s"
+		return 0
+	fi
+	mif=$(managed_iface)
+	dev=$(neigh_dev_for "$lm")
+	# 只认管理接口上的邻居：WAN 侧的网关也在全局邻居表里，
+	# 不按 dev 过滤会把运营商网关当成"有线客户端"标出来
+	if [ -n "$dev" ] && { [ -z "$mif" ] || [ "$dev" = "$mif" ]; }; then
+		printf '%s（有线）' "$dev"
+		return 0
+	fi
+	return 1
+}
+
 # 豁免页公共数据：名单/开关一次取齐 + 租约表预读（每个客户端再 fork
 # 一遍 uci/awk 就是豁免页"切进来要等 2~3 秒"的元凶）
 ex_common() {
@@ -2798,19 +2840,22 @@ ex_clients() {
 $srow
 EOF2
 	fi
-	# 名单里配了但不在线的：ip -4 neigh 兜底补 IP（zone 未知）；
+	# 名单里配了但不在线的：ip -4 neigh 兜底补 IP；区域按关联表/邻居表判断
+	# （可信任客户端不在 ndsctl 里，靠 openNDS 记录永远显示不出区域）；
 	# 主机名照官方 dhcp_check 从 DHCP 租约查 —— 租约与 openNDS 是否在跑无关
-	local lm
+	local lm zon onl nip hosto
 	for lm in $EX_TLIST $(printf '%s\n' $EX_PENTRIES | sed -n 's/^mac=//p' | cut -d';' -f1); do
 		lm=$(mac_lower "$lm") 2>/dev/null || continue
 		case "$seen" in
 			*"|$lm|"*) continue ;;
 		esac
-		local nip hosto
+		zon=''
+		onl=0
+		zon=$(ex_zone_listed "$lm") && onl=1
 		nip=$(ip -4 neigh show 2>/dev/null |
 			awk -v m="$lm" 'tolower($4) == "lladdr" && tolower($5) == m {print $1; exit}')
 		hosto=$(ov_host_for "$lm")
-		out="$out$sep\"$(json_escape "$lm")\":{\"host\":\"$(json_escape "$hosto")\",\"ip\":\"$(json_escape "$nip")\",\"zone\":\"\",\"online\":0}"
+		out="$out$sep\"$(json_escape "$lm")\":{\"host\":\"$(json_escape "$hosto")\",\"ip\":\"$(json_escape "$nip")\",\"zone\":\"$(json_escape "$zon")\",\"online\":$onl}"
 		sep=','
 		seen="$seen$lm|"
 	done
@@ -4739,7 +4784,16 @@ EOF2
 # gatewayinterface，外加 cpd/default/<tab>/default.sh 门户文件
 # ============================================================
 
-ST_TABS='|wireless|wired|'
+ST_TABS='|wireless|wired|blacklist|'
+
+# 门户目录：无线/有线默认门户在 cpd/default/<类型>/；黑名单门户放在
+# cpd/blacklist/（与「客户端黑名单」页共用同一批脚本，两处只是入口不同）。
+st_portal_dir() { # $1=tab
+	case "$1" in
+		blacklist) printf '%s' "$CPD_ROOT/blacklist" ;;
+		*) printf '%s' "$CPD_ROOT/default/$1" ;;
+	esac
+}
 
 st_tab_ok() { # $1=tab（白名单防目录穿越）
 	case "$ST_TABS" in
@@ -4796,7 +4850,8 @@ st_fup_split() { # $1=原始值 → stdout "动作|数值"（0/未设/空/脏值
 
 # 列某类型的可选门户（不含内置 default.sh）→ "name<TAB>kind" 行
 st_portal_items() { # $1=tab
-	local d="$CPD_ROOT/default/$1" f b
+	local d f b
+	d=$(st_portal_dir "$1")
 	[ -d "$d" ] || return 0
 	for f in "$d"/*; do
 		[ -e "$f" ] || continue
@@ -4825,11 +4880,15 @@ st_status() {
 	dwa="${dw%%|*}"
 	dwr="${dw#*|}"
 	# 每个类型：当前选中的门户（空=内置 default.sh）+ 可选项（上传时保留的原名）
-	local sel items isep2 pn pk
-	for t in wireless wired; do
+	local sel items isep2 pn pk pdir bdir
+	for t in wireless wired blacklist; do
 		sel=$(uci_val "zone_detect.main.portal_$t" '')
 		[ "$sel" = 'default' ] && sel=''
-		[ -n "$sel" ] && ! z_portal_exists "$CPD_ROOT/default/$t" "$sel" && sel=''
+		pdir=$(st_portal_dir "$t")
+		# 黑名单门户的「内置兜底」在 cpd/default/blacklist/，门户库在 cpd/blacklist/
+		bdir="$pdir"
+		[ "$t" = 'blacklist' ] && bdir="$CPD_ROOT/default/blacklist"
+		[ -n "$sel" ] && ! z_portal_exists "$pdir" "$sel" && sel=''
 		items=''
 		isep2=''
 		while IFS='	' read -r pn pk; do
@@ -4840,7 +4899,7 @@ st_status() {
 $(st_portal_items "$t")
 EOF3
 		pj="$pj$sep\"$t\":{\"sel\":\"$(json_escape "$sel")\",\"builtin\":$(
-			[ -f "$CPD_ROOT/default/$t/default.sh" ] && printf 'true' || printf 'false'
+			[ -f "$bdir/default.sh" ] && printf 'true' || printf 'false'
 		),\"items\":[$items]}"
 		sep=','
 	done
@@ -4986,7 +5045,8 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 		[ -f "$tmp/theme.sh" ] || out_err '只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'
 	fi
 	acquire_lock
-	local dir="$CPD_ROOT/default/$tab"
+	local dir
+	dir=$(st_portal_dir "$tab")
 	mkdir -p "$dir" 2>/dev/null || out_err '无法创建目标目录'
 	if [ "$kind" = 'file' ]; then
 		# 原子覆盖：先落同盘 .tmp 再 mv（避免 source 时读到半截文件）
@@ -4996,13 +5056,14 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 			out_err '无法设置执行权限'
 		}
 		# 互斥覆盖：先清掉其它门户，再落位
-		st_clean_portal_dir "$dir" "$name"
+		# （黑名单门户是多份脚本的库，由「客户端黑名单」页管理，不做互斥清理）
+		[ "$tab" = 'blacklist' ] || st_clean_portal_dir "$dir" "$name"
 		mv "$dir/$name.tmp" "$dir/$name" 2>/dev/null || {
 			rm -f "$dir/$name.tmp" 2>/dev/null
 			out_err '替换门户文件失败'
 		}
 	else
-		st_clean_portal_dir "$dir" "$name"
+		[ "$tab" = 'blacklist' ] || st_clean_portal_dir "$dir" "$name"
 		rm -rf "$dir/$name" 2>/dev/null
 		mv "$tmp" "$dir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
 		[ -d "$dir/$name" ] || out_err '门户文件夹入库失败（目标不是文件夹）'
@@ -5034,7 +5095,7 @@ st_portal_save() { # $1=tab $2=门户名（default/空 = 内置 default.sh）
 			;;
 		*)
 			name_ok "$2" 31 || out_err '门户名非法'
-			z_portal_exists "$CPD_ROOT/default/$1" "$2" || out_err '门户不存在'
+			z_portal_exists "$(st_portal_dir "$1")" "$2" || out_err '门户不存在'
 			uci_w set "zone_detect.$real.portal_$1"="$2" || sys_stage_fail
 			;;
 	esac
@@ -5050,7 +5111,8 @@ st_clean_default() { # $1=tab $2=门户名（保留原名的那个文件/文件�
 		default.sh) out_err '内置默认门户不能清理' ;;
 	esac
 	acquire_lock
-	local dir="$CPD_ROOT/default/$tab" sel removed=0 existed=0
+	local dir sel removed=0 existed=0
+	dir=$(st_portal_dir "$tab")
 	if [ -e "$dir/$name" ]; then
 		existed=1
 		rm -rf "$dir/$name" 2>/dev/null
@@ -5324,7 +5386,10 @@ sys_selftest() {
 # ③ 重启 openNDS，让新配置真正加载（它的 init 没有 procd reload trigger，
 #    reload_config 不会动它）
 sys_post_apply() {
-	local m lm scope deployed=0 zr
+	local m lm scope deployed=0 zr was=0 now=0
+	# 应用前是否在跑：本来停着的话，应用完也不该被拉起（用户口径：启停只由
+	# 概览页的开关负责）。前端靠这两个字段决定要不要等它起来、报不报错。
+	nds_running && was=1
 	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：
 	# 用户设备上历史遗留的"既在可信任又在黑名单"会在这里被修正
 	sys_dedup_lists
@@ -5373,15 +5438,21 @@ sys_post_apply() {
 	fi
 
 	kick_preemptive
+	nds_running && now=1
 	# z_apply 内部已经重启过，别再来一次
-	[ "$deployed" = '1' ] && {
-		printf '{"ok":1,"restarted":1,"zone":1}\n'
+	if [ "$deployed" = '1' ]; then
+		printf '{"ok":1,"restarted":1,"zone":1,"was_running":%s,"running":%s}\n' "$was" "$now"
 		return 0
-	}
+	fi
 	if service_restart; then
-		printf '{"ok":1,"restarted":%s,"zone":0}\n' "$SR_RESTARTED"
+		nds_running && now=1
+		printf '{"ok":1,"restarted":%s,"zone":0,"was_running":%s,"running":%s}\n' \
+			"$SR_RESTARTED" "$was" "$now"
 	else
-		printf '{"ok":0,"error":"配置已提交，但 openNDS 未能启动，请检查日志"}\n'
+		nds_running && now=1
+		printf '{"ok":0,"was_running":%s,"running":%s,"error":"%s"}\n' \
+			"$was" "$now" \
+			"$(json_escape '配置已提交，但 openNDS 未能启动，请检查 openNDS 日志')"
 	fi
 }
 

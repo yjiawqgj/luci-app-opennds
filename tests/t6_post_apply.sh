@@ -54,4 +54,12 @@ else
 	echo "  OK   后端无额外机制残留"
 fi
 
+echo "== C7 post_apply 回报运行状态（前端据此决定等多久、要不要报错） =="
+out=$(NDS_RUNNING=1 sh "$API" sys post_apply 2>/dev/null)
+ck "运行中：was_running=1" '"was_running":1' "$out"
+ck "运行中：running=1" '"running":1' "$out"
+out=$(NDS_RUNNING=0 sh "$API" sys post_apply 2>/dev/null)
+ck "本来停着：was_running=0" '"was_running":0' "$out"
+ck "本来停着：不主动拉起（running=0）" '"running":0' "$out"
+
 done_report

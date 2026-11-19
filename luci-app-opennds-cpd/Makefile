@@ -8,7 +8,7 @@ LUCI_PKGARCH:=all
 
 PKG_NAME:=luci-app-opennds-cpd
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
 
@@ -26,7 +26,9 @@ define Package/$(PKG_NAME)/postinst
 	chmod 755 /usr/lib/opennds/opennds-cpd-api.sh
 	chmod 755 /usr/lib/opennds/theme_zone_detect.sh
 	mkdir -p /usr/lib/opennds/cpd/wireless /usr/lib/opennds/cpd/wired
+	mkdir -p /usr/lib/opennds/cpd/blacklist
 	mkdir -p /usr/lib/opennds/cpd/default/wireless /usr/lib/opennds/cpd/default/wired
+	mkdir -p /usr/lib/opennds/cpd/default/blacklist
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache
 }

@@ -172,14 +172,17 @@ return view.extend({
 			return state.macs;
 		}
 
-		/* 编辑框下的「确定」：只做校验并退出编辑态，不写配置 */
+		/* 编辑框下的「确定」：校验 + 立即落成 uci 暂存（右上角出现「未保存的配置」），
+		 * 真正生效仍要按底部的「保存 / 保存并应用」 */
 		function saveMacs(ta) {
 			var p = parseMacs(ta);
 			if (p.error) { CPD.notify(p.error, 'err'); if (ta) ta.focus(); return Promise.resolve(); }
 			state.macs = p.list;
 			state.editing = false;
 			renderMacs();
-			return Promise.resolve();
+			return stageMacs(state.macs).then(null, function (e) {
+				CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+			});
 		}
 
 		/* ---------- 门户 ---------- */
@@ -201,10 +204,14 @@ return view.extend({
 			}, opts);
 			sel.value = state.portal || 'default';
 			if (sel.value !== (state.portal || 'default')) sel.value = 'default';
-			/* 门户切换只改本页状态，配置由底部 openwrt「保存 / 保存并应用」写入 */
+			/* 切换即落成 uci 暂存：右上角马上出现「未保存的配置」 */
 			sel.addEventListener('change', function () {
 				var v = this.value;
 				state.portal = (v === 'default') ? '' : v;
+				CPD.stageUci('zone_detect', 'main', 'portal_blacklist', 'opt', state.portal || null)
+					.then(null, function (e) {
+						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+					});
 			});
 			portalBox.appendChild(E('div', { 'class': 'cpd-field' }, [
 				E('label', {}, _('门户选择')),
