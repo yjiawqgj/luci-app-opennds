@@ -90,7 +90,8 @@ case "$*" in
 		printf '%s\n' \
 			'10.0.0.9 dev br-lan lladdr 11:22:33:44:55:66 REACHABLE' \
 			'10.0.0.8 dev br-lan lladdr aa:bb:cc:dd:ee:08 STALE' \
-			'10.0.0.7 dev br-lan lladdr aa:bb:cc:dd:ee:09 REACHABLE' ;;
+			'10.0.0.7 dev br-lan lladdr aa:bb:cc:dd:ee:09 REACHABLE' \
+			'10.0.0.20 dev br-lan lladdr aa:bb:cc:dd:ee:20 REACHABLE' ;;
 	*addr*) printf '%s\n' '2: br-lan    inet 10.0.0.1/24 brd 10.0.0.255 scope global br-lan' ;;
 esac
 IEOF
@@ -289,31 +290,31 @@ printf 'opennds' >"$MOCK_UCI_ROOT/opennds/opennds/.type"
 printf '1' >"$MOCK_UCI_ROOT/opennds/opennds/enabled"
 printf 'br-lan' >"$MOCK_UCI_ROOT/opennds/opennds/gatewayinterface"
 printf 'block' >"$MOCK_UCI_ROOT/opennds/opennds/macmechanism"
-printf '11:22:33:44:55:66\ndc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/trustedmac"
+printf '11:22:33:44:55:66\ndc:d8:7b:53:e5:5a\naa:bb:cc:dd:ee:20' >"$MOCK_UCI_ROOT/opennds/opennds/trustedmac"
 printf 'dc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/blockedmac"
 
-out=$(call overview dashboard)
+out=$(sh "$API" overview dashboard 2>/j/tmp/dbg.err)
 ck "dashboard 返回 ok" '{"ok":1' "$out"
 
 # ① 统计口径。在线 = 连着且有访问权限（已认证 / 免认证已登录 / 可信任）：
-#    aa01 + 11:22（无线）+ ee08（有线）= 3；22:33、ee09 没过门户 → 只进未认证卡；
+#    aa01 + 11:22（无线）+ ee08 + ee20（有线）= 4；22:33、ee09 没过门户 → 只进未认证卡；
 #    ee07 已离线（记录在人不在）不算；黑名单不算
 counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
-ck "在线=3（有访问权限才算在线；未认证/离线/黑名单不算）" '"online":3' "$counts"
-ck "有线=1（ee08：不在关联表、邻居表里有）" '"wired":1' "$counts"
+ck "在线=4（有访问权限才算在线；未认证/离线/黑名单不算）" '"online":4' "$counts"
+ck "有线=2（ee08 记录 + ee20 可信任台式机：ndsctl 里没有它）" '"wired":2' "$counts"
 ck "已认证=2（ee07 已离线不占卡片）" '"authenticated":2' "$counts"
 ck "未认证=2（22:33 未过门户 + ee09 门户外关联设备）" '"unauthenticated":2' "$counts"
-ck "可信任=1（黑名单里的重复条目不算）" '"trusted":1' "$counts"
+ck "可信任=2（11:22 + ee20；黑名单里的重复条目不算）" '"trusted":2' "$counts"
 ck "黑名单=1" '"blacklist":1' "$counts"
 
-# ② 卡片数与列表同源：online 行 = 未认证卡 2 条 + 在线卡 3 条
+# ② 卡片数与列表同源：online 行 = 未认证卡 2 条 + 在线卡 4 条
 n=$(printf '%s' "$out" | grep -o '"online":true' | wc -l | tr -d ' ')
-ck "列表里 online=true 的行数=5（在线卡 3 + 未认证卡 2）" '5' "$n"
-# 有权限的仍是 3 条（aa01 / 11:22 / ee08）：未认证的两条不算 authorized
+ck "列表里 online=true 的行数=6（在线卡 4 + 未认证卡 2）" '6' "$n"
+# 有权限的是 4 条（aa01 / 11:22 / ee08 / ee20）：未认证的两条不算 authorized
 n2=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
-ck "列表里 online+authorized 行数=3（=在线卡）" '3' "$n2"
+ck "列表里 online+authorized 行数=4（=在线卡）" '4' "$n2"
 n3=$(printf '%s' "$out" | grep -o '"wired":true' | wc -l | tr -d ' ')
-ck "列表里 wired=true 的行数=1（=有线卡）" '1' "$n3"
+ck "列表里 wired=true 的行数=2（=有线卡）" '2' "$n3"
 
 # ③ 无线接入点计数（ubus 映射：phy2-ap0 / phy2-ap1）
 ap_seg() { printf '%s' "$1" | tr '}' '\n' | grep -F "\"ssid\":\"$2\""; }
@@ -350,6 +351,15 @@ ck "有线客户端 iface=br-lan" '"iface":"br-lan"' "$r8"
 ck "有线客户端 authorized=true" '"authorized":true' "$r8"
 ck "有线客户端 wired=true" '"wired":true' "$r8"
 
+# ⑨b 可信任有线台式机（ee20）：ndsctl json 里根本没有（trusted 不过门户），
+#    只在邻居表里——按 openNDS 记录找有线永远找不到它（真机反馈：有线卡 0）
+r20=$(seg "$out" 'aa:bb:cc:dd:ee:20')
+ck "可信任有线台式机出行" '"mac":"aa:bb:cc:dd:ee:20"' "$r20"
+ck "可信任有线台式机 online=true" '"online":true' "$r20"
+ck "可信任有线台式机 wired=true" '"wired":true' "$r20"
+ck "可信任有线台式机 trusted=true" '"trusted":true' "$r20"
+ck "可信任有线台式机进在线卡" '"authorized":true' "$r20"
+
 # ⑩ 连着但没碰过门户的设备（ee09，hostapd 有关联、ndsctl 没记录）：
 #    必须出现在客户端列表里（未认证）——否则 AP 卡片显示 3、点开却是空的
 r9=$(seg "$out" 'aa:bb:cc:dd:ee:09')
@@ -385,7 +395,16 @@ echo "== openNDS 停止：接入点卡片照常计数，客户端列表清空 ==
 out3=$(NDS_RUNNING=0 call overview dashboard)
 counts3=$(printf '%s' "$out3" | grep -o '"counts":{[^}]*}')
 ck "停止后在线=0（openNDS 没在管，不判在线）" '"online":0' "$counts3"
+ck "停止后已认证=0" '"authenticated":0' "$counts3"
+ck "停止后未认证=0" '"unauthenticated":0' "$counts3"
+ck "停止后可信任卡仍按名单显示" '"trusted":2' "$counts3"
+ck "停止后有线卡仍按邻居表显示（不依赖 ndsctl）" '"wired":2' "$counts3"
 ck "停止后黑名单卡仍按名单显示" '"blacklist":1' "$counts3"
+# 关联表里的设备照样出行（AP 卡片点开要有列表，不依赖 openNDS）
+seg3() { printf '%s' "$1" | tr '{' '\n' | grep -F "\"mac\":\"$2\""; }
+r3s=$(seg3 "$out3" 'aa:bb:cc:dd:ee:01')
+ck "停止后关联设备仍出行" '"mac":"aa:bb:cc:dd:ee:01"' "$r3s"
+ck "停止后关联设备 online=true（人连着）" '"online":true' "$r3s"
 s0=$(ap_seg "$out3" '互联网')
 ck "停止后 AP 计数不变（关联表不经过 openNDS）" '"count":3' "$s0"
 

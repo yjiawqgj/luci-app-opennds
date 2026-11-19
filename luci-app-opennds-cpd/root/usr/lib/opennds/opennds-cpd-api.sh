@@ -894,47 +894,67 @@ ubus_call() {
 	fi
 }
 
+# 单个 AP 的关联终端表：mac<TAB>ifname。查询次序：
+# ① hostapd ubus（权威；ubus_call 带 timeout，hostapd 不应答不会卡死）
+# ② iw station dump（与官方 get_client_interface.sh 同款）
+# ③ iwinfo assoclist（openwrt 默认自带，LuCI 无线页用的就是它；
+#    没有 hostapd ubus 对象 / 没装 iw 的固件也能数出关联终端）
+ws_sta_one() { # $1=运行时接口名
+	local ifn="$1" got=''
+	if command -v ubus >/dev/null 2>&1; then
+		got=$(ubus_call call "hostapd.$ifn" get_clients |
+		awk -v i="$ifn" '
+		{
+			s = $0
+			m = "[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:" \
+				"[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]"
+			if (match(s, "\"" m "\"")) {
+				k = substr(s, RSTART + 1, RLENGTH - 2)
+				# 只要键值是 { 的（clients 对象的键），不要 "address":"<mac>" 这类值
+				rest = substr(s, RSTART + RLENGTH)
+				sub(/^[[:space:]]*/, "", rest)
+				if (rest ~ /^[[:space:]]*:[[:space:]]*\{/) print tolower(k) "\t" i
+			}
+		}')
+	fi
+	if [ -z "$got" ] && command -v iw >/dev/null 2>&1; then
+		got=$(iw dev "$ifn" station dump 2>/dev/null |
+			awk -v i="$ifn" '/^[[:space:]]*Station[[:space:]]/ {print tolower($2) "\t" i}')
+	fi
+	if [ -z "$got" ] && command -v iwinfo >/dev/null 2>&1; then
+		got=$(iwinfo "$ifn" assoclist 2>/dev/null |
+			awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[[:space:]]/ {print tolower($1) "\t" i}')
+	fi
+	[ -n "$got" ] && printf '%s\n' "$got"
+}
+
 # hostapd ubus 的关联终端表：mac<TAB>ifname。
 # openNDS 的 clientif 来自 get_client_interface.sh：机器上没装 iw 时退回
 # ip -4 neigh 的设备列（br-lan），永远对不上 phyN-apM —— AP 卡片计数和
 # 客户端 SSID 都不能靠 clientif，得按 MAC 反查关联表。
 # hostapd 的 ubus 对象拿不到时（固件没带 hostapd ubus 支持）退回
 # iw dev <接口> station dump；再拿不到就为空，AP 计数由 ov_aps 兜底。
+# 各 AP 并行查：hostapd 不应答时单次要等 3 秒超时，串行跑 4 个 AP 最坏
+# 12 秒——整个 dashboard 被拖慢，卡片十几秒才刷新（真机反馈）。
 ws_sta_map() { # $1=AP_META（每行 iface<TAB>ssid<TAB>section）
-	local ifn
+	local ifn ifaces tmpd=''
 	[ -n "$1" ] || return 0
-	for ifn in $(printf '%s\n' "$1" | awk -F'\t' '$1 != "-" && $1 != "" {print $1}'); do
-		local got=''
-		# ① hostapd ubus（权威；ubus_call 带 timeout，hostapd 不应答不会卡死）
-		if command -v ubus >/dev/null 2>&1; then
-			got=$(ubus_call call "hostapd.$ifn" get_clients |
-			awk -v i="$ifn" '
-			{
-				s = $0
-				m = "[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:" \
-					"[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]"
-				if (match(s, "\"" m "\"")) {
-					k = substr(s, RSTART + 1, RLENGTH - 2)
-					# 只要键值是 { 的（clients 对象的键），不要 "address":"<mac>" 这类值
-					rest = substr(s, RSTART + RLENGTH)
-					sub(/^[[:space:]]*/, "", rest)
-					if (rest ~ /^[[:space:]]*:[[:space:]]*\{/) print tolower(k) "\t" i
-				}
-			}')
-		fi
-		# ② iw station dump（与官方 get_client_interface.sh 同款）
-		if [ -z "$got" ] && command -v iw >/dev/null 2>&1; then
-			got=$(iw dev "$ifn" station dump 2>/dev/null |
-				awk -v i="$ifn" '/^[[:space:]]*Station[[:space:]]/ {print tolower($2) "\t" i}')
-		fi
-		# ③ iwinfo assoclist（openwrt 默认自带，LuCI 无线页用的就是它；
-		#    没有 hostapd ubus 对象 / 没装 iw 的固件也能数出关联终端）
-		if [ -z "$got" ] && command -v iwinfo >/dev/null 2>&1; then
-			got=$(iwinfo "$ifn" assoclist 2>/dev/null |
-				awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[[:space:]]/ {print tolower($1) "\t" i}')
-		fi
-		[ -n "$got" ] && printf '%s\n' "$got"
+	ifaces=$(printf '%s\n' "$1" | awk -F'\t' '$1 != "-" && $1 != "" {print $1}')
+	[ -n "$ifaces" ] || return 0
+	tmpd=$(mktemp -d 2>/dev/null) || tmpd=''
+	if [ -z "$tmpd" ]; then
+		# 拿不到临时目录（极少数只读 /tmp）退回串行
+		for ifn in $ifaces; do
+			ws_sta_one "$ifn"
+		done
+		return 0
+	fi
+	for ifn in $ifaces; do
+		ws_sta_one "$ifn" >"$tmpd/$ifn" 2>/dev/null &
 	done
+	wait
+	cat "$tmpd"/* 2>/dev/null
+	rm -rf "$tmpd"
 }
 
 # 当前启用的 AP 列表：AP_META 每行 iface<TAB>ssid<TAB>section
@@ -993,24 +1013,36 @@ neigh_has() { # $1=小写 mac
 		grep -i "lladdr $1" | grep -vi failed | grep -q .
 }
 
+# 管理接口上邻居表里的全部在线设备 MAC（小写，剔除 FAILED）：
+# 有线在线 = 管理接口的邻居表 − 无线关联表。ARP 表里有它 = 正在跟路由器说话。
+# 只认 $1（管理接口）这个 dev：WAN 口的网关 MAC 也在全局邻居表里，不按
+# dev 过滤会把运营商网关当成"有线客户端"。不依赖 ndsctl——openNDS 没运行、
+# 设备也没碰过门户，邻居表照样看得到它（可信任 / 有线台式机就是这种）。
+neigh_mac_list() { # $1=管理接口（可空 = 不过滤 dev，退化场景才用）
+	local mif="$1"
+	command -v ip >/dev/null 2>&1 || return 0
+	ip -4 neigh show 2>/dev/null |
+		awk -v d="$mif" 'tolower($4) == "lladdr" && $6 != "FAILED" && (d == "" || $3 == d) {print tolower($5)}'
+}
+
 # 路由器视角的「正在连接」名单（CONN_ON，小写 MAC 清单）与有线子集（WIRED_ON）：
-#   无线 = hostapd 关联表（STA_MAP）——权威，openNDS 记不记录都算在线；
-#   有线 = 不在关联表、但邻居表（ip neigh）里找得到的 openNDS 记录。
-#     clientif 是什么（空、br-lan）都不重要：ARP 表里有它 = 正在跟路由器说话，
-#     又不在无线关联表里 = 走的有线。之前还要求 clientif == 管理接口，
-#     真机上 clientif 经常是空的，有线客户端就全漏了。
-#   关联表整体拿不到（没 hostapd ubus 也没 iw）时退回旧行为：openNDS
-#   记录的都算在线——这时没有更准的数据源可用；有线按 clientif == 管理接口判。
+#   无线 = hostapd 关联表（STA_MAP）——权威，openNDS 记不记录、跑不跑都算在线
+#   （关联表是 WiFi 驱动层面的，不经过 openNDS）；
+#   有线 = 管理接口的邻居表 − 无线关联表。ARP 表里有它 = 正在跟路由器说话，
+#     又不在无线关联表里 = 走的有线。不看 openNDS 记录：可信任 / 从没碰过门户的
+#     有线设备 ndsctl 里根本没有，按记录找有线卡永远是 0（真机教训）。
+#     也不要求 clientif == 管理接口——真机 clientif 经常是空串。
+#   关联表整体拿不到（没 hostapd ubus 也没 iw/iwinfo）时退化：openNDS 记录的
+#   都算在线、有线按 clientif == 管理接口判——这时没有更准的数据源可用。
 # ndsctl 会把客户端留到空闲超时才清，人早走了记录还在——所以"在线"
 # 不能以 openNDS 记录为准，否则数字永远偏大。
 ov_conn() {
 	local lm cif mif sta_any=0
 	CONN_ON=''
 	WIRED_ON=''
-	# openNDS 没运行时不需要显示在线（用户口径：只在其开启时显示）
-	[ "$CPD_RUNNING" = '1' ] || return 0
 	printf '%s\n' "$STA_MAP" | grep -q . && sta_any=1
 	if [ "$sta_any" = '1' ]; then
+		# 无线：关联表整体搬进来（NDS 未运行也照常——AP 卡片/有线卡不依赖它）
 		while IFS='	' read -r lm cif; do
 			[ -n "$lm" ] || continue
 			CONN_ON="$CONN_ON$lm
@@ -1018,23 +1050,18 @@ ov_conn() {
 		done <<EOFC1
 $STA_MAP
 EOFC1
-		if [ "$CPD_RUNNING" = '1' ]; then
-			while IFS='	' read -r lm st ip cif dkb ukb ss se; do
-				[ -n "$lm" ] || continue
-				lm=$(mac_lower "$lm") # ndsctl 给的 MAC 是大写，统一成小写再比
-				# 在无线关联表里的不是有线
-				printf '%s\n' "$STA_MAP" | awk -F'	' -v m="$lm" '$1 == m {found=1; exit} END{exit !found}' && continue
-				printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && continue
-				# 不在关联表：邻居表里找得到才算连着（有线）
-				neigh_has "$lm" || continue
-				CONN_ON="$CONN_ON$lm
+		# 有线：管理接口邻居表 − 无线关联表（已在线的 MAC 去重）
+		mif=$(managed_iface)
+		while IFS='	' read -r lm; do
+			[ -n "$lm" ] || continue
+			printf '%s\n' "$CONN_ON" | grep -qFx "$lm" && continue
+			CONN_ON="$CONN_ON$lm
 "
-				WIRED_ON="$WIRED_ON$lm
+			WIRED_ON="$WIRED_ON$lm
 "
-			done <<EOFC2
-$CPD_IN
+		done <<EOFC2
+$(neigh_mac_list "$mif")
 EOFC2
-		fi
 	else
 		# CPD_MACS 已是小写（ov_build 里统一转的）
 		[ "$CPD_RUNNING" = '1' ] && CONN_ON="$CPD_MACS"
@@ -1224,7 +1251,7 @@ ov_rows() {
 	local seen cls
 	N_ONLINE=0
 	ROW_TBL=''
-	# 已见 MAC：openNDS 记录的 + 关联表里的（后面补名单行时去重用）
+	# 已见 MAC：openNDS 记录的 + 关联表里的 + 邻居表里的（后面补名单行时去重用）
 	seen="$CPD_MACS"
 	if [ "$CPD_RUNNING" = '1' ]; then
 		while IFS='	' read -r mac state ip cif dkb ukb ss se; do
@@ -1253,34 +1280,55 @@ ov_rows() {
 		done <<EOF2
 $CPD_IN
 EOF2
+	fi
 
-		# 关联表里有、openNDS 还没记录的设备（刚连上 / 没开过浏览器 / ARP 表里
-		# 暂时看不到它）也要出行：AP 卡片是按 hostapd 关联表数出来的，列表若只
-		# 认 ndsctl 的记录，就会出现「卡片 3、点开一条都没有」。这些设备没有
-		# 会话记录，按未认证算，状态列显示未认证、IP/主机名照常从租约和邻居表补。
-		while IFS='	' read -r lm rif; do
-			[ -n "$lm" ] || continue
-			printf '%s\n' "$seen" | grep -qFx "$lm" && continue
-			seen="$seen$lm
+	# 关联表里有、openNDS 还没记录的设备（刚连上 / 没开过浏览器）也要出行：
+	# AP 卡片是按 hostapd 关联表数出来的，列表若只认 ndsctl 的记录，就会出现
+	# 「卡片 3、点开一条都没有」。这些设备没有会话记录，IP/主机名照常从租约
+	# 和邻居表补。**不关门控**：openNDS 没运行时 AP 卡片照样按关联表计数，
+	# 点开也要能看到这批设备（2026-11-19 用户反馈）。
+	while IFS='	' read -r lm rif; do
+		[ -n "$lm" ] || continue
+		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
+		seen="$seen
+$lm"
+		rows="$rows$sep$(ov_client_row '' '' "$rif" "$lm" 0 0 '' '' 1 0)"
+		cls=$(ov_row_class '' "$lm")
+		ROW_TBL="$ROW_TBL$lm	$cls	1	0
 "
-			rows="$rows$sep$(ov_client_row '' '' "$rif" "$lm" 0 0 '' '' 1 0)"
-			cls=$(ov_row_class '' "$lm")
-			ROW_TBL="$ROW_TBL$lm	$cls	1	0
-"
-			sep=','
-			n=$((n + 1))
-		done <<EOF4
+		sep=','
+		n=$((n + 1))
+	done <<EOF4
 $STA_MAP
 EOF4
-	fi
+
+	# 有线在线设备补行：不在无线关联表、但管理接口邻居表里找得到。
+	# **不看 openNDS 记录**：可信任 / 从没碰过门户的有线设备 ndsctl 里
+	# 根本没有（trusted 客户端不过门户、不会进 ndsctl json），按记录找
+	# 有线卡永远是 0。也不依赖 NDS 运行（2026-11-19 用户口径：有线卡
+	# 只看路由器，openNDS 停了照样统计）。身份照旧按名单判定。
+	while IFS='	' read -r lm; do
+		[ -n "$lm" ] || continue
+		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
+		seen="$seen
+$lm"
+		rows="$rows$sep$(ov_client_row '' '' "$(neigh_dev_for "$lm")" "$lm" 0 0 '' '' 1 1)"
+		cls=$(ov_row_class '' "$lm")
+		ROW_TBL="$ROW_TBL$lm	$cls	1	1
+"
+		sep=','
+		n=$((n + 1))
+	done <<EOF6
+$WIRED_ON
+EOF6
 
 	# 名单补行：trusted / preemptivemac / blockedmac 里不在线的 MAC
 	local supp
 	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS | sort -u | grep -v '^$')
 	for lm in $supp; do
 		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
-		seen="$seen$lm
-"
+		seen="$seen
+$lm"
 		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0 0)"
 		cls=$(ov_row_class '' "$lm")
 		ROW_TBL="$ROW_TBL$lm	$cls	0	0
@@ -1302,6 +1350,9 @@ EOF4
 	done <<EOF9
 $ROW_TBL
 EOF9
+	# NDS 未运行时没有"访问权限"可言：在线/已认证/未认证三张身份卡归零
+	# （可信任 / 免认证 / 有线 / 黑名单不受影响，见 ov_counts 与补行循环）。
+	[ "$CPD_RUNNING" = '1' ] || N_ONLINE=0
 
 	ROWS_JSON="$rows"
 	N_ROWS="$n"
@@ -1309,14 +1360,18 @@ EOF9
 
 # 统计口径：
 #   在线     = 正在连着且有访问权限（已认证 / 免认证已登录 / 可信任）；
-#              未认证与黑名单不算，有线客户端照算（见 ov_conn）
+#              未认证与黑名单不算，有线客户端照算（见 ov_conn）。
+#              NDS 未运行时没有"访问权限"可言 → 归零
 #   有线     = 正在连着的有线客户端，不分身份（黑名单除外）——与无线接入点
-#              卡片按关联表计数同一口径：卡片数的是「连着多少设备」
+#              卡片按关联表计数同一口径：卡片数的是「连着多少设备」。
+#              只看路由器（邻居表−关联表），不受 NDS 运行状态影响
 #   已认证   = 在线且 state=Authenticated/AuthBlocked、不在信任/免认证名单
 #   未认证   = 在线但还没通过认证（Preauthenticated / 关联了但没碰过门户）
-#   免认证   = 在线且在 preemptivemac 名单且已登录
+#   免认证   = 以 preemptivemac 名单为准（离线也在）——读配置文件就能统计，
+#              不受 NDS 运行状态影响（2026-11-19 用户口径）
 #   可信任   = 以 trustedmac 名单为准（离线的信任设备也在名单里）
-# 全部按 ROW_TBL 数，与客户端列表同源。
+#   黑名单   = 以 blockedmac 名单为准
+# 全部按 ROW_TBL / 名单数，与客户端列表同源。
 ov_counts() {
 	local lm cls onl wir m2
 	N_AUTH=0
@@ -1329,15 +1384,35 @@ ov_counts() {
 		case "$cls" in
 			bl) continue ;; # 黑名单只进黑名单卡
 			tr) N_TR=$((N_TR + 1)) ;; # 名单为准，离线也在
-			pre) [ "$onl" = '1' ] && N_PRE=$((N_PRE + 1)) ;;
+			pre) ;; # 免认证下面按配置名单数（这里数会漏掉离线与未登录的条目）
 			auth) [ "$onl" = '1' ] && N_AUTH=$((N_AUTH + 1)) ;;
-			*) [ "$onl" = '1' ] && N_UN=$((N_UN + 1)) ;;
+			*)
+				# 在免认证名单里的条目归「免认证」卡（按名单数），不重复进未认证
+				[ "$onl" = '1' ] || continue
+				mac_in_pm "$lm" && continue
+				N_UN=$((N_UN + 1))
+				;;
 		esac
 		# 有线卡：连着的有线设备，不分身份（黑名单上面已经 continue 掉了）
 		[ "$onl" = '1' ] && [ "$wir" = '1' ] && N_WIRED=$((N_WIRED + 1))
 	done <<EOF2
 $ROW_TBL
 EOF2
+
+	# 免认证卡 = preemptivemac 名单去重（黑名单除外）。名单是配置文件，
+	# NDS 没运行也照读——所以这张卡不要求在线、不要求已登录。
+	for m2 in $(printf '%s\n' $PM_MACS | sort -u); do
+		[ -n "$m2" ] || continue
+		mac_in_bl "$m2" && continue
+		N_PRE=$((N_PRE + 1))
+	done
+
+	# NDS 未运行：在线/已认证/未认证三张身份卡归零；免认证 / 可信任 /
+	# 有线 / 黑名单不受影响（名单 / 邻居表为准，2026-11-19 用户口径）。
+	if [ "$CPD_RUNNING" != '1' ]; then
+		N_AUTH=0
+		N_UN=0
+	fi
 
 	N_BL=0
 	for m2 in $BL_MACS; do

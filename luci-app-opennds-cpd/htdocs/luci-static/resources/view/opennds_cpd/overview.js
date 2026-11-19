@@ -3,7 +3,7 @@
  * 照《OpenNDS概览.md》：运行状态（开关+重启）、客户端统计（筛选器）、网络接口、
  * 无线接入点、客户端列表（搜索/排序/行内 6 按钮）+ 编辑/详情弹窗。
  * 所有状态变更先二次确认 → 整页锁定遮罩（「正在应用…」+ 倒计时，解锁只看接口返回）；
- * 10 秒自动轮询，锁定/弹窗打开期间暂停。
+ * 5 秒自动轮询，锁定/弹窗打开期间暂停。
  */
 'use strict';
 'require view';
@@ -161,7 +161,9 @@ return view.extend({
 			running: false, enabled: false, engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
-			filter: 'online', ap: null, query: '', fupEnabled: true,
+			/* 不默认选中任何卡片：进来先看全部客户端，点哪张卡筛哪类
+			 * （2026-11-19 用户口径，此前默认选中「在线客户端」） */
+			filter: null, ap: null, query: '', fupEnabled: true,
 			confErr: '',
 			sortKey: null, sortDir: 1
 		};
@@ -269,9 +271,11 @@ return view.extend({
 			confBar.style.display = '';
 		}
 
-		/* ---------- 数据拉取与 10 秒轮询 ----------
+		/* ---------- 数据拉取与 5 秒轮询 ----------
 		 * 只发一个 dashboard 请求：后端一次解析 ndsctl、一次读 uci，
 		 * 状态与客户端列表一起回来（之前两个请求串行，首屏要等两轮）。
+		 * 5 秒一档：客户端认证完最多 5 秒就上卡（10 秒时用户反馈
+		 * 「认证后要等十几秒才能看到」）。
 		 * 另外两条规矩：
 		 * ① 上一轮没回来就不发下一轮（否则请求会越积越多）；
 		 * ② 失败只占一条通知栏、同一原因不重复弹。 */
@@ -342,7 +346,7 @@ return view.extend({
 
 		pollTimer = window.setInterval(function () {
 			if (!locked && !modalOpen) refresh();
-		}, 10000);
+		}, 5000);
 
 		/* ---------- 运行状态 ---------- */
 		var statusDot = E('span', { 'class': 'ovd-dot', 'aria-hidden': 'true' });
@@ -480,22 +484,31 @@ return view.extend({
 		 * 「在线客户端」是身份卡：只算「正在连着且有访问权限」的设备
 		 * （已认证 / 免认证已登录 / 可信任）；未认证不算在线，黑名单更不算。
 		 * 「有线客户端」和无线接入点卡片一样是连接卡：连着就算，不分身份。
-		 * 点接入点卡片时列表也不按身份过滤（看该 AP 上的全部客户端），
+		 * 免认证 / 可信任 / 有线 / 黑名单四张卡读配置名单或邻居表统计，
+		 * 不受 openNDS 是否运行影响；在线 / 已认证 / 未认证三张身份卡在
+		 * NDS 未运行时归零，列表也同步为空（2026-11-19 用户口径）。
+		 * filter=null = 没选任何卡片：显示全部客户端。
+		 * 点接入点卡片时列表不按身份过滤（看该 AP 上的全部在线客户端），
 		 * 操作按钮的可用性只由客户端身份决定（见 renderList）。 */
 		function inFilter(c) {
 			var online = !!c.online;
 			switch (state.filter) {
+				case null:
+					/* 未选卡片：全部客户端 */
+					return true;
 				case 'blacklist':
 					return !!c.blocked;
 				case 'trusted':
 					return !!c.trusted;
 				case 'preauth':
-					/* 名单内且已登录算免认证 */
-					return online && !!c.preauth && !!c.authenticated && !c.trusted && !c.blocked;
+					/* 免认证以 preemptivemac 名单为准（离线也在），黑名单除外 */
+					return !!c.preauth && !c.trusted && !c.blocked;
 				case 'auth':
+					if (!state.running) return false;
 					return online && !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
 				case 'unauth':
-					return online && !c.authorized && !c.blocked;
+					if (!state.running) return false;
+					return online && !c.authorized && !c.preauth && !c.blocked;
 				case 'wired':
 					/* 有线卡 = 连着的有线设备，不分身份（与 AP 卡片同口径） */
 					return online && !!c.wired && !c.blocked;
@@ -503,6 +516,7 @@ return view.extend({
 					/* 接入点筛选模式：不看身份（filteredClients 里另有 online 限定） */
 					return true;
 				default: /* online */
+					if (!state.running) return false;
 					/* 在线 = 连着且有访问权限；未认证（还没过门户）不算 */
 					return online && !!c.authorized && !c.blocked;
 			}
@@ -599,10 +613,11 @@ return view.extend({
 
 		function renderStats() {
 			var n = state.counts;
+			/* 卡片顺序：有线放在已认证后面（2026-11-19 用户口径） */
 			var defs = [
 				{ k: 'online', label: _('在线客户端'), num: n.online },
-				{ k: 'wired', label: _('有线'), num: n.wired },
 				{ k: 'auth', label: _('已认证客户端'), num: n.authenticated },
+				{ k: 'wired', label: _('有线'), num: n.wired },
 				{ k: 'preauth', label: _('免认证客户端'), num: n.preauth },
 				{ k: 'trusted', label: _('可信任客户端'), num: n.trusted },
 				{ k: 'unauth', label: _('未认证客户端'), num: n.unauthenticated },
@@ -683,8 +698,10 @@ return view.extend({
 					var key = b.getAttribute('data-ap');
 					state.ap = (state.ap === key) ? null : key;
 					/* 接入点筛选模式不套身份过滤：列表显示该 AP 上的全部
-					 * 在线客户端（含未认证），按钮可用性由身份决定 */
-					state.filter = '';
+					 * 在线客户端（含未认证），按钮可用性由身份决定。
+					 * 取消选中时回到「没选任何卡片」态（显示全部客户端），
+					 * 标题跟着变——之前取消后标题还停在上一张卡，与列表对不上 */
+					state.filter = state.ap ? '' : null;
 					renderStats();
 					renderAps();
 					renderList();
@@ -747,8 +764,10 @@ return view.extend({
 			var items = filteredClients();
 			if (state.ap) {
 				listTitle.textContent = _('接入点 %s').format(apLabel(state.ap));
+			} else if (state.filter) {
+				listTitle.textContent = TITLES[state.filter] || _('全部客户端');
 			} else {
-				listTitle.textContent = TITLES[state.filter] || TITLES.online;
+				listTitle.textContent = _('全部客户端');
 			}
 			listCount.textContent = _('共 %s 个').format(String(items.length)) +
 				(state.ap ? ' · ' + _('接入点 %s').format(apLabel(state.ap)) : '');
