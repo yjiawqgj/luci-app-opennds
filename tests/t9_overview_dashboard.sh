@@ -293,7 +293,7 @@ printf 'block' >"$MOCK_UCI_ROOT/opennds/opennds/macmechanism"
 printf '11:22:33:44:55:66\ndc:d8:7b:53:e5:5a\naa:bb:cc:dd:ee:20' >"$MOCK_UCI_ROOT/opennds/opennds/trustedmac"
 printf 'dc:d8:7b:53:e5:5a' >"$MOCK_UCI_ROOT/opennds/opennds/blockedmac"
 
-out=$(sh "$API" overview dashboard 2>/j/tmp/dbg.err)
+out=$(call overview dashboard)
 ck "dashboard 返回 ok" '{"ok":1' "$out"
 
 # ① 统计口径。在线 = 连着且有访问权限（已认证 / 免认证已登录 / 可信任）：
