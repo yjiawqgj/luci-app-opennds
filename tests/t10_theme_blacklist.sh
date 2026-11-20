@@ -11,7 +11,8 @@
 #
 # 全局门户（zone_detect.main.scope = global，区域识别关闭）：
 #   zone_detect.main.portal_global（cpd/global/<名>）→ cpd/global/default.sh
-#   → fallback 主题；黑名单客户端在全局模式下仍走黑名单分支（优先级更高）。
+#   → 什么都找不到就不提供任何门户（2026-11-20 用户定稿：绝不回落内置主题）；
+#   黑名单客户端在全局模式下仍走黑名单分支（优先级更高）。
 . "$(dirname "$0")/lib.sh"
 tmp_setup t10
 
@@ -23,11 +24,9 @@ cp "$THEME_SRC" "$TS" || exit 1
 sed -i \
 	-e "s#^CPD_ROOT=.*#CPD_ROOT=\"$S/cpd\"#" \
 	-e "s#^MARKERS=.*#MARKERS=\"$S/markers\"#" \
-	-e "s#^FALLBACK_THEME=.*#FALLBACK_THEME=\"$S/fallback.sh\"#" \
 	-e "s#^ZONE_DETECT_CONFIG=.*#ZONE_DETECT_CONFIG=\"$ZONE_DETECT_CONFIG\"#" \
 	"$TS"
 
-printf '#!/bin/sh\nuserinfo="fallback"\n' >"$S/fallback.sh"
 mkdir -p "$S/cpd/blacklist" "$S/cpd/default/blacklist" "$S/cpd/global"
 printf '#!/bin/sh\nuserinfo="blacklist-portal"\n' >"$S/cpd/blacklist/my.sh"
 printf '#!/bin/sh\nuserinfo="blacklist-page2"\n' >"$S/cpd/blacklist/other.sh"
@@ -116,11 +115,11 @@ uci set zone_detect.main.scope=global >/dev/null 2>&1
 r=$(run_theme 'aa:bb:cc:dd:ee:ff')
 ck "全局模式回落 default.sh" "global|$S/cpd/global/default.sh" "$r"
 
-echo "== C10 全局门户文件全缺失 → fallback 主题 =="
+echo "== C10 全局门户文件全缺失 → 不提供任何门户（不回落内置主题） =="
 mv "$S/cpd/global" "$S/cpd/global.bak"
 uci set zone_detect.main.scope=global >/dev/null 2>&1
 r=$(run_theme 'aa:bb:cc:dd:ee:ff')
-ck "全局门户缺失回落 fallback" "global|$S/fallback.sh" "$r"
+ck "全局门户缺失不出门户" "global|" "$r"
 mv "$S/cpd/global.bak" "$S/cpd/global"
 
 echo "== C11 全局模式下黑名单客户端仍走黑名单分支 =="

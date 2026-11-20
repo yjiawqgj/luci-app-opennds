@@ -2,8 +2,9 @@
  * openNDS 概览（仪表盘） · openNDS CPD（LuCI view）
  * 照《OpenNDS概览.md》：运行状态（开关+重启）、客户端统计（筛选器）、网络接口、
  * 无线接入点、客户端列表（搜索/排序/行内 6 按钮）+ 编辑/详情弹窗。
- * 所有状态变更先二次确认 → 整页锁定遮罩（「正在应用…」+ 倒计时，解锁只看接口返回）；
- * 5 秒自动轮询，锁定/弹窗打开期间暂停。
+ * 开关与重启都是：二次确认 → 暂存请求键 → openwrt 原生应用流程（原生等待弹窗）；
+ * 真正的启停/重启由后端 apply_worker 在应用之后执行。
+ * 5 秒自动轮询，弹窗打开期间暂停。
  */
 'use strict';
 'require view';
@@ -167,84 +168,12 @@ return view.extend({
 			confErr: '',
 			sortKey: null, sortDir: 1
 		};
-		var locked = false, lockTimer = null, pollTimer = null, modalOpen = 0;
+		var locked = false, pollTimer = null, modalOpen = 0;
 		var editRow = null;
 
 		var body = E('div', { 'class': 'ovd-page' });
 
-		/* ---------- 应用弹窗（openwrt 原生样式：ui.showModal + 自旋指示器） ---------- */
-		var lockSubText = '';
-		var nativeModalShown = false;
-
-		function lockModalBody() {
-			/* 弹窗内容居中均匀分布：LuCI 的 .cbi-modal 默认左对齐，
-			 * 全宽弹窗里文字挤在一边、右边一大片空白 */
-			return E('div', {
-				'style': 'display:flex;flex-direction:column;align-items:center;' +
-					'justify-content:center;gap:16px;padding:22px 10px;text-align:center'
-			}, [
-				E('p', { 'class': 'spinning', 'style': 'margin:0;font-size:15px;font-weight:600' },
-					_('正在应用…')),
-				E('p', { 'class': 'ovd-lock-sub', 'style': 'margin:0;font-size:13px;opacity:.75' },
-					lockSubText)
-			]);
-		}
-
-		function ensureNativeModal() {
-			if (nativeModalShown) return;
-			nativeModalShown = true;
-			/* CPD.modal 内部处理了 LuCI 24.10 showModal 参数变化，统一入口 */
-			CPD.modal('', lockModalBody());
-		}
-
-		function lock(secs) {
-			locked = true;
-			lockSubText = _('预计还需 %s 秒').format(String(secs));
-			ensureNativeModal();
-			if (lockTimer) window.clearInterval(lockTimer);
-			var remain = secs;
-			lockTimer = window.setInterval(function () {
-				remain--;
-				lockSubText = _('预计还需 %s 秒').format(String(remain < 0 ? 0 : remain));
-				if (!nativeModalShown) return;
-				ui.hideModal();
-				CPD.modal('', lockModalBody());
-			}, 1000);
-		}
-
-		function unlock() {
-			locked = false;
-			if (lockTimer) { window.clearInterval(lockTimer); lockTimer = null; }
-			nativeModalShown = false;
-			if (typeof ui !== 'undefined' && typeof ui.hideModal === 'function') ui.hideModal();
-		}
-
-		/* ---------- 通用操作执行（锁定 → 接口 → 解锁） ---------- */
-		function runOp(secs, fn, opts) {
-			if (locked) return;
-			lock(secs);
-			fn().then(function (j) {
-				/* 后端忙返回 {"ok":0,"busy":1}（没有 error 字段），别落进「操作失败」 */
-				if (j && (j.busy === 1 || j.error === 'busy')) {
-					unlock();
-					CPD.toast(_('等待上一步完成，请稍候重试'), 'warn');
-					return;
-				}
-				if (!j || !j.ok) {
-					unlock();
-					CPD.toast((j && j.error) || _('操作失败'), 'err');
-					return;
-				}
-				unlock();
-				if (opts && opts.onok) opts.onok(j);
-			}, function (e) {
-				unlock();
-				CPD.toast((e && e.error) || _('操作失败'), 'err');
-			});
-		}
-
-		/* ---------- 顶部提示条（只剩「配置无法解析」这一种；忙碌状态不挂在页面上：
-		 * 保存并应用期间由原生弹窗显示等待状态，直到后端跑完才关闭） ---------- */
+		/* ---------- 顶部提示条（只剩「配置无法解析」这一种） ---------- */
 		function renderWarnbar() {
 			renderConfBar();
 		}
@@ -411,67 +340,24 @@ return view.extend({
 			}
 		}
 
-		function pollReady(cb) {
-			var tries = 0;
-			var t = window.setInterval(function () {
-				tries++;
-				CPD.api('overview', 'run_state').then(function (j) {
-					if (j && j.ok && j.running === 1) {
-						window.clearInterval(t);
-						cb(true);
-					} else if (tries >= 20) {
-						window.clearInterval(t);
-						cb(false);
-					}
-				}, function () {
-					if (tries >= 20) { window.clearInterval(t); cb(false); }
-				});
-			}, 1000);
-		}
-
 		function handleRestart() {
 			if (locked) return;
-			lock(15);
-			restartBtn.disabled = true;
-			runSwitch.disabled = true;
-			restartLabel.textContent = _('重启中…');
-			CPD.api('overview', 'restart').then(function (j) {
-				if (j && (j.busy === 1 || j.error === 'busy')) {
-					unlock();
-					restartBtn.disabled = false;
-					runSwitch.disabled = false;
-					restartLabel.textContent = _('重启');
-					CPD.toast(_('等待上一步完成，请稍候重试'), 'warn');
-					return;
-				}
-				if (!j || !j.ok) {
-					unlock();
-					restartBtn.disabled = false;
-					runSwitch.disabled = false;
-					restartLabel.textContent = _('重启');
-					CPD.toast((j && j.error) || _('重启失败'), 'err');
-					return;
-				}
-				/* 返回 0 只代表脚本跑完；1 秒一次轮询 run_state（锁定期间唯一允许的后台请求） */
-				pollReady(function (ready) {
-					unlock();
-					restartBtn.disabled = false;
-					runSwitch.disabled = false;
-					restartLabel.textContent = _('重启');
-					if (ready) {
-						CPD.notifyTimed(_('openNDS 已重启'), 'ok', 3000);
-					} else {
-						CPD.toast(_('openNDS 未能在 20 秒内就绪，请查看 openNDS 日志'), 'err');
-					}
-					refresh();
+			/* 重启与开关同一节奏：二次确认 → 暂存 pending_restart → 原生应用流程。
+			 * 真正的重启由 apply_worker 在应用后执行（stop → 等退出 → start → 等就绪），
+			 * 页面按原生节奏刷新，状态由本页轮询如实展示 —— 不再出现"先报已重启、
+			 * 过两秒又变未运行"的假横幅。 */
+			CPD.confirm(_('重启 openNDS'), _(
+				'重启期间所有客户端会短暂断线，未认证的设备需要重新认证。确定重启？'),
+				_('确定重启'), false,
+				function () {
+					CPD.stageUci('zone_detect', 'main', 'pending_restart', 'opt', '1')
+						.then(function () {
+							return CPD.applyStaged();
+						})
+						.catch(function (e) {
+							CPD.toast(CPD.errText(e, _('操作失败')), 'err');
+						});
 				});
-			}, function (e) {
-				unlock();
-				restartBtn.disabled = false;
-				runSwitch.disabled = false;
-				restartLabel.textContent = _('重启');
-				CPD.toast((e && e.error) || _('重启失败'), 'err');
-			});
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
@@ -774,13 +660,15 @@ return view.extend({
 			}
 
 			/* 操作按钮的可用性只由客户端身份决定（黑名单 > 可信任 > 免认证 >
-			 * 已认证 > 未认证），与当前在哪个卡片/接入点视图无关：
+			 * 已认证 > 未认证），与当前在哪个卡片/接入点视图无关（照演示页）：
 			 *   详情   —— 黑名单客户端置灰（其余身份都可见）
-			 *   编辑   —— 只有免认证身份可编辑单独限额（限额存在 preemptivemac
-			 *             条目里，其它身份没有条目可改）；可信任整行不显示
+			 *   编辑   —— 可信任不显示（演示页：不受超时与流量限制，无需编辑），
+			 *             其余身份都可点（黑名单置灰）；给普通客户端设限额 = 写入
+			 *             preemptivemac 条目，下次接入自动登录，真实状态是「免认证」
 			 *   免认证/可信任 —— 黑名单客户端置灰（必须先解除拉黑）
-			 *   解除认证 —— 只有已认证/免认证身份可点；未认证没有会话可解除，
-			 *             可信任要先移除可信任，黑名单要先解除拉黑
+			 *   解除认证 —— 已认证/免认证/可信任都可点；未认证没有会话可解除，
+			 *             黑名单要先解除拉黑。可信任/免认证的解除认证会同时把
+			 *             客户端从对应名单里清除（2026-11-20 用户口径，双向一致）
 			 *   拉黑/解除拉黑 —— 永远可用（身份切换的入口） */
 			tbody.innerHTML = items.map(function (c) {
 				var blocked = !!c.blocked, trusted = !!c.trusted;
@@ -793,8 +681,8 @@ return view.extend({
 				var tags = '<span class="ovd-tag ' + tg[0] + '">' + tg[1] + '</span>';
 				var editHTML = trusted ? '' :
 					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
-					((!pre || blocked) ? ' disabled' : '') + '>' + _('编辑') + '</button>';
-				var deauthDis = (blocked || trusted || (!authed && !pre)) ? ' disabled' : '';
+					(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
+				var deauthDis = (blocked || (!authed && !pre && !trusted)) ? ' disabled' : '';
 				return '<tr>' +
 					'<td><div class="ovd-host"><span class="ovd-host-name">' +
 					esc(c.host || '—') + '</span><div class="ovd-tags">' + tags + '</div></div></td>' +
@@ -843,7 +731,7 @@ return view.extend({
 			unpreauth: {
 				title: _('移除免认证'),
 				msg: function (h) {
-					return _('确定要移除「%s」的免认证吗？移除后它将恢复为普通未认证客户端，需要重新认证才能访问网络。').format(h);
+					return _('确定要移除「%s」的免认证吗？将同时解除该客户端的认证，移除后它恢复为普通未认证客户端，需要重新认证才能访问网络。').format(h);
 				},
 				ok: _('移除免认证'), danger: false
 			},
@@ -857,7 +745,7 @@ return view.extend({
 			untrust: {
 				title: _('移除可信任'),
 				msg: function (h) {
-					return _('确定要移除「%s」的可信任状态吗？移除后它将重新受 NDS 的流量统计和超时限制。').format(h);
+					return _('确定要移除「%s」的可信任状态吗？将同时解除该客户端的认证，移除后它需要重新认证才能访问网络。').format(h);
 				},
 				ok: _('移除可信任'), danger: false
 			},
@@ -932,7 +820,9 @@ return view.extend({
 				case 'deauth':
 					/* 踢下线是运行时动作，没有对应的配置项：暂存到
 					 * zone_detect.main.pending_deauth，应用后 post_apply 执行。
-					 * 它同时会撤掉免认证条目（否则重连又自动登录）。 */
+					 * 双向一致（2026-11-20 用户口径）：解除认证同时把客户端从
+					 * 免认证名单和可信任名单里清掉 —— 不然可信任客户端被踢后
+					 * 下一次请求又被自动登录，等于没解除。 */
 					return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
 						if (arr.indexOf(lm) >= 0) return null;
 						return arr.concat([lm]);
@@ -943,6 +833,11 @@ return view.extend({
 							arr = arr.slice();
 							arr.splice(i, 1);
 							return arr;
+						});
+					}).then(function () {
+						return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
+							var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
+							return out.length === arr.length ? null : out;
 						});
 					});
 				case 'block':
@@ -995,9 +890,19 @@ return view.extend({
 						});
 					});
 				case 'untrust':
+					/* 移除可信任必须同时解除认证：可信任客户端有自动登录的会话，
+					 * 只摘名单不踢人，NDS 里还留着认证信息，移出后照样能上网
+					 * （2026-11-20 用户口径）。 */
 					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
 						var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
 						return out.length === arr.length ? null : out;
+					}).then(function (changed) {
+						return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
+							if (arr.indexOf(lm) >= 0) return null;
+							return arr.concat([lm]);
+						}).then(function () {
+							return changed;
+						});
 					});
 				case 'preauth':
 					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
@@ -1010,12 +915,21 @@ return view.extend({
 						});
 					});
 				case 'unpreauth':
+					/* 移除免认证同样要先解除认证：免认证客户端也带着自动登录的
+					 * 会话，只摘名单不踢人，它仍然是已认证状态（2026-11-20 用户口径）。 */
 					return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
 						var i = pmIndexOf(arr, lm);
 						if (i < 0) return null;
 						arr = arr.slice();
 						arr.splice(i, 1);
 						return arr;
+					}).then(function (changed) {
+						return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
+							if (arr.indexOf(lm) >= 0) return null;
+							return arr.concat([lm]);
+						}).then(function () {
+							return changed;
+						});
 					});
 			}
 			return Promise.reject({ error: _('未知操作：%s').format(act) });
@@ -1064,6 +978,11 @@ return view.extend({
 		}
 
 		function openEdit(row) {
+			/* 照演示页：可信任客户端不受超时与流量限制，无需编辑 */
+			if (row.trusted) {
+				CPD.toast(_('可信任客户端不受超时与流量限制，无需编辑'), 'warn');
+				return;
+			}
 			editRow = row;
 			editInputs = {};
 			var sub = document.getElementById('ovd-ed-sub');
@@ -1135,6 +1054,8 @@ return view.extend({
 		}
 
 		/* 单客户端限额：改写 preemptivemac 里该 MAC 的条目（custom= 原样保留）。
+		 * 没有条目就新建（照演示页：给普通/已认证客户端设限额 = 写入
+		 * preemptivemac 条目，下次接入自动登录，真实状态是「免认证」）。
 		 * 与其它页面共用同一条 uci 增量通道，保存后右上角出现「未保存的配置」。
 		 * 用 stageListEdit 在当前暂存值上改写——不读后端已提交名单，
 		 * 连续的暂存操作（先设可信任再改限额）不会互相覆盖。 */
@@ -1152,7 +1073,11 @@ return view.extend({
 						';uploadrate=' + v.uploadrate + ';downloadrate=' + v.downloadrate +
 						';uploadquota=' + v.uploadquota + ';downloadquota=' + v.downloadquota + custom;
 				});
-				if (!found) throw { error: _('该客户端不在授权名单里，无法设置单独限制') };
+				if (!found) {
+					out.push('mac=' + lm + ';sessiontimeout=' + v.sessiontimeout +
+						';uploadrate=' + v.uploadrate + ';downloadrate=' + v.downloadrate +
+						';uploadquota=' + v.uploadquota + ';downloadquota=' + v.downloadquota);
+				}
 				return out;
 			});
 		}

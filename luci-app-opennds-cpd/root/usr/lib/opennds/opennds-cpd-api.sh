@@ -5434,11 +5434,12 @@ worker_lock() {
 	return 0
 }
 
-# ---- 概览页开关的显式启停请求 ---------------------------------------------
+# ---- 概览页开关/重启的显式请求 --------------------------------------------
 # 开关走 openwrt 原生暂存流程（和其它按钮一致），随那次的 uci 增量一起 commit
-# 的还有 zone_detect.main.pending_run（1=启动 / 0=停止）。worker 读到就执行。
-# 必须与"本来停着的不主动拉起"并存：普通页面应用不带 pending_run，worker
-# 永远不会替它们改 openNDS 状态；只有开关自己申请的启停才执行。
+# 的还有 zone_detect.main.pending_run（1=启动 / 0=停止）；「重启」按钮同理，
+# 带的是 zone_detect.main.pending_restart=1。worker 读到就执行。
+# 必须与"本来停着的不主动拉起"并存：普通页面应用不带这些键，worker
+# 永远不会替它们改 openNDS 状态；只有概览页自己申请的启停/重启才执行。
 
 pending_run_take() { # 读出并立即清掉 pending_run（先清再执行：中途挂了也不能
 	# 留着旧请求，否则下一轮普通应用会误执行）；输出 0|1 或空
@@ -5452,6 +5453,26 @@ pending_run_take() { # 读出并立即清掉 pending_run（先清再执行：中
 			;;
 	esac
 	return 0
+}
+
+pending_restart_take() { # 读出并立即清掉 pending_restart（先清再执行，防误重放）；
+	# 输出 1 或空。概览页「重启」按钮走原生暂存流程，随那次的 uci 增量一起 commit。
+	local pr
+	pr=$(uci -q get 'zone_detect.main.pending_restart' 2>/dev/null)
+	if [ "$pr" = '1' ]; then
+		uci -q delete 'zone_detect.main.pending_restart' 2>/dev/null
+		uci commit zone_detect 2>/dev/null
+		printf '%s' '1'
+	fi
+	return 0
+}
+
+restart_exec() { # 概览页「重启」：跑着的走完整 stop→等退出→start；停着的只拉起
+	if nds_running; then
+		service_restart
+	else
+		toggle_exec 1
+	fi
 }
 
 toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 worker）
@@ -5494,10 +5515,17 @@ apply_worker() {
 	# ① 这次应用带了开关请求 → 它说了算：只启/停，不部署不重启
 	#   （口径与原 ov_set_run 一致：启动不部署门户目录，部署由随后的
 	#    正常应用流程负责；停止更没有部署可言）
+	# ①b 这次应用带了概览页「重启」请求 → 只重启，不部署
 	pr=$(pending_run_take)
 	if [ -n "$pr" ]; then
 		log "apply_worker：概览页开关请求 pending_run=$pr"
 		toggle_exec "$pr"
+	elif [ -n "$(pending_restart_take)" ]; then
+		log 'apply_worker：概览页重启请求 pending_restart=1'
+		if ! restart_exec; then
+			ok=0
+			err='重启失败：openNDS 未能启动，请检查 openNDS 日志'
+		fi
 	else
 		# ② 普通应用：区域识别模式部署 + 重启让配置生效
 		# 区域识别模式：把已提交的区域配置部署成门户目录与标记文件。
@@ -5531,14 +5559,25 @@ apply_worker() {
 			fi
 		fi
 	fi
-	# ③ 收尾前再捞一遍晚到的开关请求：worker 干活（重启要十几秒）期间，
-	#    用户可能又应用了一次开关操作，它的 pending_run 等 worker 完事才执行。
+	# ③ 收尾前再捞一遍晚到的开关/重启请求：worker 干活（重启要十几秒）期间，
+	#    用户可能又应用了一次开关或重启操作，它的请求等 worker 完事才执行。
 	#    上限 3 轮防失控；没有新请求就立刻出去。
 	while [ "$rounds" -lt 3 ]; do
 		pr=$(pending_run_take)
+		if [ -z "$pr" ]; then
+			[ -n "$(pending_restart_take)" ] && pr='restart'
+		fi
 		[ -z "$pr" ] && break
-		log "apply_worker：捞起晚到的开关请求 pending_run=$pr"
-		toggle_exec "$pr"
+		if [ "$pr" = 'restart' ]; then
+			log 'apply_worker：捞起晚到的重启请求 pending_restart=1'
+			if ! restart_exec; then
+				ok=0
+				err='重启失败：openNDS 未能启动，请检查 openNDS 日志'
+			fi
+		else
+			log "apply_worker：捞起晚到的开关请求 pending_run=$pr"
+			toggle_exec "$pr"
+		fi
 		rounds=$((rounds + 1))
 	done
 	nds_running && now=1

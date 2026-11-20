@@ -83,9 +83,9 @@ return view.extend({
 			/* 手动阻止 */
 			var sec1 = CPD.section(_('手动限制'), 'Manual');
 			sec1.appendChild(E('p', { 'class': 'cpd-note' },
-				_('填写域名需要确保域名只有一个IP地址，否则添加规则后将不会生效。')));
+				_('填写域名需要确保域名只有一个IP地址，否则添加规则后将不会生效。不支持端口范围。')));
 			sec1.appendChild(E('p', { 'class': 'cpd-note' },
-				_('每行必须有一个域名或者一个IP地址，域名或者IP地址可以搭配访问协议，即：tcp/udp；也可以搭配端口号，但不支持端口范围。')));
+				_('每行必须有一个域名或者一个IP地址，域名或者IP地址可以搭配访问协议，即：tcp/udp；也可以搭配端口号。')));
 			manualPanel = E('div', {});
 			sec1.appendChild(manualPanel);
 			renderManual();
@@ -94,7 +94,7 @@ return view.extend({
 			/* 自动阻止 */
 			var sec2 = CPD.section(_('自动阻止'), 'Auto');
 			sec2.appendChild(E('p', { 'class': 'cpd-note' },
-				_('域名和端口为全匹配模式：端口对所有域名生效，不能按域名分别设置。')));
+				_('域名/IP和端口为全匹配模式；端口对所有域名/IP生效。')));
 			sec2.appendChild(E('p', { 'class': 'cpd-note' },
 				_('只写域名不写端口，会阻止这些域名的所有协议、所有端口；填了端口就只拦这些端口，且只能拦 TCP。只写端口不写域名无法保存——拦截列表靠域名解析填充，没有域名这条规则不会生效。')));
 			if (state.blMode === 'none') {

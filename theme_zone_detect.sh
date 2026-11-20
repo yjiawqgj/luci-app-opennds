@@ -11,8 +11,14 @@
 #   generate_splash_sequence() function defined by the portal script we
 #   source below. This dispatcher therefore:
 #
-#   0. If the client MAC is in the blacklist (/etc/config/zone_blacklist),
-#      it is served the blacklist portal instead of a zone portal.
+#   0. If the client MAC is in the plugin blacklist (opennds blockedmac), it is
+#      served /usr/lib/opennds/cpd/blacklist/<selected portal>; when that is
+#      empty it falls to the Settings-page default blacklist portal
+#      (cpd/default/blacklist/<portal_blacklist>, else default.sh), so it never
+#      gets the zone portal's authenticate button and stays offline.
+#   0b. When zone_detect.main.scope is "global" (zone detection disabled on the
+#       zone page), every non-blacklisted client is served the global portal:
+#       cpd/global/<portal_global>, else cpd/global/default.sh.
 #   1. Uses get_client_interface.sh to find the local interface the client
 #      is connected to (by client MAC).
 #   2. If the interface is a local wireless interface (found in "iw dev"),
@@ -21,13 +27,20 @@
 #          /usr/lib/opennds/cpd/wireless/<SSID>/
 #   3. Otherwise the zone is wired: the portal is searched in
 #          /usr/lib/opennds/cpd/wired/<interface, e.g. br-lan>/
-#   4. Portal resolution order inside the zone directory:
-#        a) If LuCI has marked this zone as "default"
+#   4. Portal resolution inside the zone directory (files keep the name they
+#      were uploaded with - LuCI never renames them):
+#        a) If LuCI marked this zone as "use the type default"
 #           (/usr/lib/opennds/zone_markers contains "type|zone|"):
-#              /usr/lib/opennds/cpd/default/<type>/default.sh
-#        b) <zone>/<zone>.sh            (applied portal script)
-#        c) <zone>/<zone>/theme.sh      (applied portal folder)
-#        d) /usr/lib/opennds/cpd/default/<type>/default.sh   (type default)
+#              the type default portal (see 4b)
+#        b) Otherwise the portal LuCI recorded for this zone in
+#           /etc/config/zone_detect:
+#              zone_detect.main.wireless = 'SSID|portal.sh'
+#              zone_detect.main.wired    = 'br-lan|portal.sh'
+#           resolved as <zone>/<portal.sh> or <zone>/<portal>/theme.sh
+#        c) <zone>/default/default.sh  (per-zone fallback)
+#        d) type default portal: cpd/default/<type>/<selected>.sh
+#           (zone_detect.main.portal_<type>), else
+#           cpd/default/<type>/default.sh
 #   5. If nothing is found, falls back to the stock
 #      theme_click-to-continue-basic.sh so clients always get a portal.
 #
@@ -36,10 +49,10 @@
 CPD_ROOT="/usr/lib/opennds/cpd"
 ZONE_ROOT_WIRELESS="$CPD_ROOT/wireless"
 ZONE_ROOT_WIRED="$CPD_ROOT/wired"
-ZONE_ROOT_BLACKLIST="$CPD_ROOT/blacklist"
+ZONE_ROOT_GLOBAL="$CPD_ROOT/global"
 DEFAULT_ROOT="$CPD_ROOT/default"
 MARKERS="/usr/lib/opennds/zone_markers"
-BLACKLIST_CONFIG="/etc/config/zone_blacklist"
+ZONE_DETECT_CONFIG="/etc/config/zone_detect"
 FALLBACK_THEME="/usr/lib/opennds/theme_click-to-continue-basic.sh"
 
 zone_debug() {
@@ -52,6 +65,29 @@ mac_upper() {
 	echo "$1" | tr 'a-z' 'A-Z'
 }
 
+# iw 把非 ASCII 字节转义成 \xNN（中文 SSID 真机上就是
+#   ssid \xe4\xba\x92\xe8\x81\x94\xe7\xbd\x91），不还原就和门户目录名对不上。
+# printf %b 各 shell 对 \xNN 支持不一致，先换算成 POSIX 的 \0OOO 八进制。
+ssid_unescape() { # $1=可能带 \xNN 转义的 SSID
+	case "$1" in
+		*\\x*) ;;
+		*) printf '%s' "$1"; return 0 ;;
+	esac
+	printf '%b' "$(printf '%s' "$1" | awk '{
+		line = $0; out = ""
+		while (match(line, /\\x[0-9a-fA-F][0-9a-fA-F]/)) {
+			h = tolower(substr(line, RSTART + 2, 2))
+			v = 0
+			for (i = 1; i <= 2; i++)
+				v = v * 16 + index("0123456789abcdef", substr(h, i, 1)) - 1
+			out = out substr(line, 1, RSTART - 1) \
+				sprintf("\\0%d%d%d", int(v / 64), int(v % 64 / 8), v % 8)
+			line = substr(line, RSTART + RLENGTH)
+		}
+		print out line
+	}')"
+}
+
 # Map a runtime wireless interface name (eg phy2-ap0) to its configured SSID
 # by parsing /etc/config/wireless:
 #   phyN-apM  ->  radio N, M-th (0 based) enabled "ap" wifi-iface on radio N
@@ -62,7 +98,10 @@ ssid_from_if() {
 	# scheme and to gaps in it — the uci fallback below counts the M-th
 	# enabled AP on the radio, so disabling an AP in the middle of a radio
 	# shifts every later index and resolves the wrong SSID (or none).
-	live_ssid=$(iw dev "$localif" info 2>/dev/null | awk '/^[ \t]*ssid[ \t]/{sub(/^[ \t]*ssid[ \t]+/, ""); print; exit}')
+	# 注意用 [[:space:]]：`[ \t]` 只在 gawk 下才是制表符，mawk/busybox awk
+	# 的方括号里 "\\t" 是字面的反斜杠和 t——iw 的续行全用 tab 缩进，匹配不上。
+	live_ssid=$(iw dev "$localif" info 2>/dev/null | awk '/^[[:space:]]*ssid[[:space:]]/{sub(/^[[:space:]]*ssid[[:space:]]+/, ""); print; exit}')
+	live_ssid=$(ssid_unescape "$live_ssid")
 	if [ ! -z "$live_ssid" ]; then
 		echo "$live_ssid"
 		return
@@ -128,32 +167,68 @@ portal_from_name() {
 	fi
 }
 
-# ---- Blacklist check (highest priority) -----------------------------------
+# Portal chosen for one zone by LuCI, stored as a uci list entry
+#   zone_detect.main.wireless = 'SSID|portalname'
+#   zone_detect.main.wired    = 'br-lan|portalname'
+# The portal file keeps the name it was uploaded with (no renaming), so the
+# value is used directly as the portal name. Empty output = no choice yet.
+portal_for_zone() {
+	pz_type="$1"
+	pz_zone="$2"
+	[ -f "$ZONE_DETECT_CONFIG" ] || return
+	uci -q show "zone_detect.main.$pz_type" 2>/dev/null |
+		sed -n 's/^[^=]*=//p' |
+		awk -F"'" -v z="$pz_zone" '{
+			for (i = 2; i <= NF; i += 2) {
+				v = $i
+				if (v == "") continue
+				if (substr(v, 1, length(z) + 1) == z "|") {
+					print substr(v, length(z) + 2)
+					exit
+				}
+			}
+		}'
+}
+
+# Type default portal: the portal selected on the Settings page for this type
+# (zone_detect.main.portal_<type>), else the built-in default.sh.
+type_default_portal() {
+	td_type="$1"
+	td_dir="$DEFAULT_ROOT/$td_type"
+	[ -d "$td_dir" ] || return
+	td_name=""
+	[ -f "$ZONE_DETECT_CONFIG" ] &&
+		td_name=$(uci -q get "zone_detect.main.portal_$td_type" 2>/dev/null)
+	if [ ! -z "$td_name" ] && [ "$td_name" != "default" ]; then
+		td_sel=$(portal_from_name "$td_dir" "$td_name")
+		if [ ! -z "$td_sel" ]; then
+			echo "$td_sel"
+			return
+		fi
+	fi
+	[ -f "$td_dir/default.sh" ] && echo "$td_dir/default.sh"
+}
+
+# ---- Global mode (zone detection disabled) ---------------------------------
 
 zone_type=""
 zone_name=""
 clientif=""
-portal=""
 
-if [ ! -z "$clientmac" ] && [ -f "$BLACKLIST_CONFIG" ]; then
-	cmac=$(mac_upper "$clientmac")
-	for bmac in $(uci -q get zone_blacklist.main.mac); do
-		if [ "$(mac_upper "$bmac")" = "$cmac" ]; then
-			# Blacklisted: ignore zones entirely, serve the blacklist portal.
-			bportal=$(uci -q get zone_blacklist.main.portal)
-			portal=$(portal_from_name "$ZONE_ROOT_BLACKLIST" "$bportal")
-			if [ -z "$portal" ] && [ -f "$DEFAULT_ROOT/blacklist/default.sh" ]; then
-				portal="$DEFAULT_ROOT/blacklist/default.sh"
-			fi
-			if [ -z "$portal" ]; then
-				portal="$FALLBACK_THEME"
-			fi
-			zone_type="blacklist"
-			zone_name="$cmac"
-			zone_debug "client $clientmac is blacklisted, portal=$portal"
-			break
-		fi
-	done
+if [ "$zone_type" != "blacklist" ] && [ -f "$ZONE_DETECT_CONFIG" ] &&
+	[ "$(uci -q get zone_detect.main.scope 2>/dev/null)" = "global" ]; then
+	# 全局模式：不做区域识别，直接出全局门户
+	# 设置页「默认门户-全局」选的（cpd/global/<portal_global>）→ 内置 default.sh
+	zone_type="global"
+	zone_name=""
+	gname=$(uci -q get zone_detect.main.portal_global 2>/dev/null)
+	if [ ! -z "$gname" ] && [ "$gname" != "default" ]; then
+		portal=$(portal_from_name "$ZONE_ROOT_GLOBAL" "$gname")
+	fi
+	if [ -z "$portal" ] && [ -f "$ZONE_ROOT_GLOBAL/default.sh" ]; then
+		portal="$ZONE_ROOT_GLOBAL/default.sh"
+	fi
+	zone_debug "global mode, portal=$portal"
 fi
 
 # ---- Zone detection -------------------------------------------------------
@@ -201,7 +276,46 @@ if [ -z "$zone_type" ]; then
 	fi
 fi
 
+# ---- Blacklist ------------------------------------------------------------
+# openNDS 9.4 起废弃了 macmechanism/allowedmaclist/blockedmaclist，主进程不再
+# 自己拦 MAC。本插件的黑名单存在 opennds 的 blockedmac 列表里，由这里执行：
+# 命中名单的客户端不出示区域门户（区域门户里的"继续"按钮会调 ndsctl auth），
+# 只出示黑名单门户，于是它一直停在上不了网的状态，直到从名单里移除。
+blportal=""
+if [ ! -z "$clientmac" ]; then
+	for bmac in $(uci -q get opennds.@opennds[0].blockedmac 2>/dev/null); do
+		[ ! -z "$bmac" ] || continue
+		if [ "$(mac_upper "$bmac")" = "$(mac_upper "$clientmac")" ]; then
+			# ①「客户端黑名单」页选中的门户（cpd/blacklist/）
+			bname=$(uci -q get zone_detect.main.portal_blacklist_sel 2>/dev/null)
+			if [ ! -z "$bname" ] && [ "$bname" != "default" ]; then
+				blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+			fi
+			# ② 兼容上一版构建：旧键 portal_blacklist 曾指向 cpd/blacklist/
+			if [ -z "$blportal" ]; then
+				bname=$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)
+				if [ ! -z "$bname" ] && [ "$bname" != "default" ]; then
+					blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+				fi
+			fi
+			# ③ 设置页「默认门户-黑名单」选的默认门户（cpd/default/blacklist/）
+			if [ -z "$blportal" ]; then
+				blportal=$(type_default_portal blacklist)
+			fi
+			zone_type="blacklist"
+			zone_name=""
+			zone_debug "client $clientmac is blacklisted, portal=$blportal"
+			break
+		fi
+	done
+fi
+
 # ---- Portal resolution ----------------------------------------------------
+
+if [ "$zone_type" = "blacklist" ]; then
+	# 黑名单客户端的门户在上面的分支里已经定好，不再参与区域解析
+	portal="$blportal"
+else
 
 # A zone name is used as a directory name. An SSID is arbitrary octets, so it
 # may contain "/" or be "." / ".." -- both would escape the portal root.
@@ -212,9 +326,7 @@ case "$zone_name" in
 		;;
 esac
 
-if [ "$zone_type" = "blacklist" ]; then
-	: # portal already resolved above
-elif [ ! -z "$zone_name" ]; then
+if [ ! -z "$zone_name" ]; then
 	if [ "$zone_type" = "wireless" ]; then
 		zonedir="$ZONE_ROOT_WIRELESS/$zone_name"
 	else
@@ -226,23 +338,30 @@ elif [ ! -z "$zone_name" ]; then
 	if [ -f "$MARKERS" ] && awk -F'|' -v t="$zone_type" -v z="$zone_name" \
 		'NF >= 2 && $1 == t && $2 == z { found = 1; exit } END { exit !found }' "$MARKERS" 2>/dev/null; then
 		# LuCI marked this zone as "use the type default portal"
-		portal="$DEFAULT_ROOT/$zone_type/default.sh"
-	elif [ -f "$zonedir/$zone_name.sh" ]; then
-		portal="$zonedir/$zone_name.sh"
-	elif [ -f "$zonedir/$zone_name/theme.sh" ]; then
-		portal="$zonedir/$zone_name/theme.sh"
-	elif [ -f "$zonedir/default/default.sh" ]; then
-		portal="$zonedir/default/default.sh"
+		portal=$(type_default_portal "$zone_type")
+	else
+		# Portal picked for this very zone (file keeps its uploaded name)
+		zone_portal=$(portal_for_zone "$zone_type" "$zone_name")
+		if [ ! -z "$zone_portal" ]; then
+			portal=$(portal_from_name "$zonedir" "$zone_portal")
+		fi
+		# Directory level default used when the zone has no explicit choice
+		if [ -z "$portal" ] && [ -f "$zonedir/default/default.sh" ]; then
+			portal="$zonedir/default/default.sh"
+		fi
 	fi
 
-	if [ -z "$portal" ] && [ -f "$DEFAULT_ROOT/$zone_type/default.sh" ]; then
-		portal="$DEFAULT_ROOT/$zone_type/default.sh"
+	if [ -z "$portal" ]; then
+		portal=$(type_default_portal "$zone_type")
 	fi
 else
-	# No zone name (unknown interface): type default only.
-	if [ -f "$DEFAULT_ROOT/$zone_type/default.sh" ]; then
-		portal="$DEFAULT_ROOT/$zone_type/default.sh"
-	fi
+	# No zone name (unknown interface, or global mode where the portal was
+	# already picked above): type default only - but never clobber a portal
+	# the global branch already resolved (cpd/global/), the type lookup
+	# (cpd/default/global/) has no directory for it and would wipe it.
+	[ -z "$portal" ] && portal=$(type_default_portal "$zone_type")
+fi
+
 fi
 
 if [ ! -f "$portal" ]; then

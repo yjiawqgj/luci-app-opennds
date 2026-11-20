@@ -1,6 +1,9 @@
 #!/bin/sh
 # Network Zone Detection - ThemeSpec dispatcher for openNDS (login mode 3)
 # Installed at: /usr/lib/opennds/theme_zone_detect.sh
+# CPD-VERSION: r8 (2026-11-20) —— 在路由器上执行
+#   grep CPD-VERSION /usr/lib/opennds/theme_zone_detect.sh
+# 可核对装的是不是本版本（排查"脚本没更新"用）。
 #
 # openNDS configuration (/etc/config/opennds):
 #     option login_option_enabled '3'
@@ -41,8 +44,9 @@
 #        d) type default portal: cpd/default/<type>/<selected>.sh
 #           (zone_detect.main.portal_<type>), else
 #           cpd/default/<type>/default.sh
-#   5. If nothing is found, falls back to the stock
-#      theme_click-to-continue-basic.sh so clients always get a portal.
+#   5. 找不到任何门户时**不回落内置主题**：直接不提供门户（客户端保持
+#      未认证状态）。门户页只来自本插件管理的目录，绝不混入 openNDS 自带
+#      主题（2026-11-20 用户定稿）。
 #
 # Warning - shebang "sh" is for compatibility with busybox ash (eg on OpenWrt)
 
@@ -53,11 +57,11 @@ ZONE_ROOT_GLOBAL="$CPD_ROOT/global"
 DEFAULT_ROOT="$CPD_ROOT/default"
 MARKERS="/usr/lib/opennds/zone_markers"
 ZONE_DETECT_CONFIG="/etc/config/zone_detect"
-FALLBACK_THEME="/usr/lib/opennds/theme_click-to-continue-basic.sh"
 
 zone_debug() {
-	# debug log helper, visible with "logread | grep zone_detect"
-	echo -n "zone_detect - [$1]" | logger -p daemon.debug -t "opennds[$ndspid]" 2>/dev/null
+	# 分发决策日志：用 notice 级别，logread 默认就能看到
+	# （排查"客户端收到的是什么门户"用：logread | grep zone_detect）
+	echo -n "zone_detect - [$1]" | logger -p daemon.notice -t "opennds[$ndspid]" 2>/dev/null
 }
 
 # Uppercase a MAC address without forks where possible (tr is cheap enough here).
@@ -364,15 +368,11 @@ fi
 
 fi
 
-if [ ! -f "$portal" ]; then
-	portal="$FALLBACK_THEME"
-	zone_debug "no zone portal found, falling back to $portal"
-fi
-
-# We are sourced by libopennds.sh: never exit(), just return and let openNDS
-# report the missing generate_splash_sequence() itself.
+# 找不到任何门户：不回落内置主题，直接不提供门户（客户端保持未认证，
+# 门户页一律来自本插件管理的目录）。这里也是排查黑名单门户的落点：
+# 黑名单客户端走到这说明 cpd/default/blacklist/ 里没有门户文件。
 if [ -z "$portal" ] || [ ! -f "$portal" ]; then
-	zone_debug "no portal at all, giving up"
+	zone_debug "no portal found (zone_type=$zone_type zone_name=$zone_name), serving no portal"
 	return 0
 fi
 

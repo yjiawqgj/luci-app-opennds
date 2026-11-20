@@ -33,24 +33,21 @@ return view.extend({
 			body.innerHTML = '';
 			body.appendChild(CPD.pageHead(
 				_('Walled Garden'), 'openNDS · 域名白名单',
-				_('为未认证客户端放行指定域名或地址。手动模式要求每个域名仅对应一个 IP；自动模式支持多 IP 域名（如 CDN）。')));
+				_('允许未认证的客户端访问指定网站。')));
 
 			/* 手动区 */
-			var sec1 = CPD.section(_('手动'), 'Manual');
+			var sec1 = CPD.section(_('手动列表'), 'Manual');
 			sec1.appendChild(E('p', { 'class': 'cpd-note' },
-				_('可以添加域名，但是添加的域名必须只有一个 IP，否则规则将不会被应用。')));
+				_('填写域名需要确保域名只有一个IP地址，否则添加规则后将不会生效。不支持端口范围。')));
 			manualPanel = E('div', {});
 			sec1.appendChild(manualPanel);
 			renderManual();
 			body.appendChild(sec1);
 
 			/* 自动区 */
-			var sec2 = CPD.section(_('自动'), 'Auto');
-			sec2.appendChild(E('p', { 'class': 'cpd-note' }, [
-				_('自动配置需要系统已安装dnsmasq-full，且为支持nftset的dnsmasq。'),
-				E('br'),
-				_('域名与端口为全匹配模式，即一个域名可以匹配多个端口，多个端口也可以匹配一个域名，不区分TCP/UDP协议。')
-			]));
+			var sec2 = CPD.section(_('自动列表'), 'Auto');
+			sec2.appendChild(E('p', { 'class': 'cpd-note' },
+				_('自动列表需要系统已安装dnsmasq-full，且为支持nftset的dnsmasq。')));
 			if (state.wgMode === 'none') {
 				sec2.appendChild(E('div', { 'class': 'cpd-warnbar' },
 					_('自动模式不可用：需安装 dnsmasq-full（支持 nftset）。安装后本区配置才会生效。')));
