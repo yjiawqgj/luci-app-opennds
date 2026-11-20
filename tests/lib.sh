@@ -38,6 +38,7 @@ tmp_setup() { # $1=用例名
 	export CPD_APPLY_STATE="$S/apply.state"
 	export CPD_APPLY_LOCK="$S/lock/apply.lock"
 	export CPD_SESSION_CACHE="$S/sessions"
+	export CPD_NDSLOG_DIR="$S/ndslog"   # openNDS 原生认证落盘日志，沙箱隔离
 	export CPD_STOP_WAIT="${CPD_STOP_WAIT:-2}"
 	export CPD_READY_WAIT="${CPD_READY_WAIT:-2}"
 	mkdir -p "$CPD_ROOT" "$ZONE_UP" "$MOCK_UCI_ROOT" "$S/etc" "$S/lock"

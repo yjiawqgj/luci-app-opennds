@@ -311,7 +311,7 @@ var CPD = L.Class.extend({
 	},
 
 	/* 二次确认弹窗 */
-	confirm: function (title, text, okText, danger, onok) {
+	confirm: function (title, text, okText, danger, onok, noTitle) {
 		var row = E('div', {
 			'style': 'margin-top:18px;display:flex;justify-content:flex-end;gap:8px'
 		}, [
@@ -327,7 +327,9 @@ var CPD = L.Class.extend({
 				}
 			}, okText)
 		]);
-		return ui.showModal(title, [E('p', {}, text), row]);
+		/* noTitle=true 时传 null 给原生 showModal——它不渲染标题栏，
+		 * 弹窗只剩正文和按钮（开关确认用它，用户要求不带标题） */
+		return ui.showModal(noTitle ? null : title, [E('p', {}, text), row]);
 	},
 
 	/* ---------- base64（UTF-8 安全） ---------- */

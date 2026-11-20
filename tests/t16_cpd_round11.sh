@@ -1,9 +1,10 @@
 #!/bin/sh
 # t16：本轮口径回归
-#   A. 已认证会话缓存：NDS 停了 / 刚重启 ndsctl 没数据时，之前认证过且
-#      还在有效期内的客户端不能被标成未认证（关→开切换也不进未认证卡）
+#   A. 认证身份读 openNDS 原生落盘记录（authlog.log）：NDS 停了 / 刚重启
+#      ndsctl 没数据时，认证还在有效期内的客户端仍算已认证；关→开不进未认证卡；
+#      有效期外/主动登出的不算。已认证卡不管在线不在线都统计。
 #   B. 设置页四个 tab：脚本任意 .sh；文件夹必须含 default.sh 主入口；
-#      settings status 的 items 即前端「已上传」的数据源
+#      settings status 的 items 即前端「已配置」的数据源
 #   C. 分发器 portal_from_name 认文件夹里的 default.sh（兼容旧 theme.sh）
 . "$(dirname "$0")/lib.sh"
 tmp_setup t16
@@ -109,21 +110,27 @@ printf '互联网' >"$MOCK_UCI_ROOT/wireless/default_radio2/ssid"
 
 row() { printf '%s' "$1" | tr '{' '\n' | grep -F "\"mac\":\"$2\""; }
 
-echo "== A1 NDS 运行中：把仍有效的已认证会话写进缓存 =="
+# ---- openNDS 原生落盘：authlog.log（base64 mac 去等号=到期时间戳）
+# aa:bb:cc:dd:ee:01 认证到 $EXP（有效）；22:33:44:55:66:77 不在 authlog（从没认证）
+mkdir -p "$CPD_NDSLOG_DIR"
+B1=$(printf 'aa:bb:cc:dd:ee:01' | base64 | tr -d '=')
+printf '%s=%s\n' "$B1" "$EXP" >"$CPD_NDSLOG_DIR/authlog.log"
+: >"$CPD_NDSLOG_DIR/binauthlog.log"
+
+echo "== A1 NDS 运行中、ndsctl 有数据：dashboard 正常 =="
 out1=$(NDS_RUNNING=1 call overview dashboard)
 ck "dashboard 正常返回" '"ok":1' "$out1"
-ck "缓存记下已认证客户端" 'aa:bb:cc:dd:ee:01' "$(cat "$CPD_SESSION_CACHE" 2>/dev/null)"
-case "$(cat "$CPD_SESSION_CACHE" 2>/dev/null)" in
-	*22:33:44:55:66:77*) echo "  FAIL 未认证的客户端不该进缓存"; fail=1 ;;
-	*) echo "  OK   未认证的客户端不进缓存" ;;
-esac
+ck "已认证客户端为已认证" '"authenticated":true' "$(row "$out1" 'aa:bb:cc:dd:ee:01')"
+ck "未认证客户端照旧未认证" '"authenticated":false' "$(row "$out1" '22:33:44:55:66:77')"
 
-echo "== A2 NDS 关闭、ndsctl 无数据：之前认证过且有效期内 → 仍显示已认证 =="
+echo "== A2 NDS 关闭、ndsctl 无数据：读原生 authlog → 仍显示已认证 =="
 out2=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
 r2=$(row "$out2" 'aa:bb:cc:dd:ee:01')
 ck "已认证客户端不再标未认证" '"authenticated":true' "$r2"
 r3=$(row "$out2" '22:33:44:55:66:77')
 ck "本来未认证的照旧" '"authenticated":false' "$r3"
+cnt2=$(printf '%s' "$out2" | grep -o '"counts":{[^}]*}')
+ck "已认证卡=1（NDS 停也统计有效期内）" '"authenticated":1' "$cnt2"
 
 echo "== A3 从关切到开、ndsctl 还没就绪：已认证客户端直接进已认证卡 =="
 out3=$(NDS_RUNNING=1 NDSCTL_EMPTY=1 call overview dashboard)
@@ -132,10 +139,56 @@ ck "已认证卡=1（不落进未认证卡）" '"authenticated":1' "$cnt3"
 ck "未认证卡只留真正未认证的那台" '"unauthenticated":1' "$cnt3"
 ck "行身份仍是已认证" '"authenticated":true' "$(row "$out3" 'aa:bb:cc:dd:ee:01')"
 
-echo "== A4 过期会话不再恢复 =="
-printf 'aa:bb:cc:dd:ee:01\t1\n' >"$CPD_SESSION_CACHE"
+echo "== A4 已过期会话不再算已认证 =="
+BOLD=$(printf 'aa:bb:cc:dd:ee:01' | base64 | tr -d '=')
+printf '%s=%s\n' "$BOLD" '1' >"$CPD_NDSLOG_DIR/authlog.log"
 out4=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
 ck "过期会话恢复为未认证" '"authenticated":false' "$(row "$out4" 'aa:bb:cc:dd:ee:01')"
+# 恢复有效记录供后续用例
+printf '%s=%s\n' "$B1" "$EXP" >"$CPD_NDSLOG_DIR/authlog.log"
+
+echo "== A5 主动登出（binauthlog 末尾 client_deauth）不算已认证 =="
+printf 'aa:bb:cc:dd:ee:01' | base64 >/dev/null 2>&1  # 占位，保持与真机格式一致
+printf 'method="auth_client", clientmac="aa:bb:cc:dd:ee:01"\nmethod="client_deauth", clientmac="aa:bb:cc:dd:ee:01"\n' >"$CPD_NDSLOG_DIR/binauthlog.log"
+out5=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
+ck "主动登出后不算已认证" '"authenticated":false' "$(row "$out5" 'aa:bb:cc:dd:ee:01')"
+: >"$CPD_NDSLOG_DIR/binauthlog.log"
+
+echo "== A6 ARP 残留（STALE）不算在线有线，接入点不显示 br-lan =="
+# 造一台只在 STALE ARP 里、没连 WiFi、不在名单里的设备
+cat >"$S/bin/ip" <<'IEOF'
+#!/bin/sh
+case "$*" in
+	*neigh*) printf '%s\n' \
+		'10.0.0.9 dev br-lan lladdr aa:bb:cc:dd:ee:01 REACHABLE' \
+		'10.0.0.3 dev br-lan lladdr 22:33:44:55:66:77 REACHABLE' \
+		'10.0.0.50 dev br-lan lladdr 0c:93:8f:3e:e7:c5 REACHABLE' \
+		'10.0.0.99 dev br-lan lladdr de:ad:be:ef:00:99 STALE' ;;
+	*addr*) printf '%s\n' '2: br-lan    inet 10.0.0.1/24 brd 10.0.0.255 scope global br-lan' ;;
+esac
+IEOF
+chmod +x "$S/bin/ip"
+out6=$(NDS_RUNNING=0 call overview dashboard)
+r6=$(row "$out6" 'de:ad:be:ef:00:99')
+if [ -z "$r6" ]; then
+	echo "  OK   STALE 残留设备不进客户端列表（不显示成 br-lan 有线）"
+else
+	echo "  FAIL STALE 残留设备仍出现在列表: $r6"; fail=1
+fi
+# 0c:93 是 REACHABLE 且不在关联表 → 真有线算 1；STALE 的 de:ad 不算
+cnt6=$(printf '%s' "$out6" | grep -o '"wired":[0-9]*')
+ck "有线卡=1（只算 REACHABLE 的真有线，STALE 残留不算）" '"wired":1' "$cnt6"
+# 真有线设备照常在列表里、接入点显示 br-lan
+ck "REACHABLE 有线设备接入点=br-lan" '"iface":"br-lan"' "$(row "$out6" '0c:93:8f:3e:e7:c5')"
+# 恢复原 ip 桩
+cat >"$S/bin/ip" <<'IEOF'
+#!/bin/sh
+case "$*" in
+	*neigh*) printf '%s\n' '10.0.0.9 dev br-lan lladdr aa:bb:cc:dd:ee:01 REACHABLE' '10.0.0.3 dev br-lan lladdr 22:33:44:55:66:77 REACHABLE' ;;
+	*addr*) printf '%s\n' '2: br-lan    inet 10.0.0.1/24 brd 10.0.0.255 scope global br-lan' ;;
+esac
+IEOF
+chmod +x "$S/bin/ip"
 
 echo "== B1 设置页：脚本任意 .sh，文件夹必须含 default.sh =="
 mkdir -p "$CPD_ROOT/default/wireless" "$S/up/d1/foo" "$S/up/df/foo" "$S/up/d2/bar"

@@ -304,21 +304,22 @@ ck "dashboard 返回 ok" '{"ok":1' "$out"
 #    aa01 + 11:22（无线）+ ee08 + ee20（有线）= 4；22:33、ee09 没过门户 → 只进未认证卡；
 #    ee07 已离线（记录在人不在）不算；黑名单不算
 counts=$(printf '%s' "$out" | grep -o '"counts":{[^}]*}')
-ck "在线=4（有访问权限才算在线；未认证/离线/黑名单不算）" '"online":4' "$counts"
-ck "有线=2（ee08 记录 + ee20 可信任台式机：ndsctl 里没有它）" '"wired":2' "$counts"
-ck "已认证=2（ee07 已离线不占卡片）" '"authenticated":2' "$counts"
+ck "在线=3（有访问权限才算在线；未认证/离线/黑名单不算；ee08 STALE 不算在线）" '"online":3' "$counts"
+ck "有线=1（只有 ee20 REACHABLE 台式机；ee08 STALE 残留不算有线）" '"wired":1' "$counts"
+# 已认证卡改为"有效期内就算、不管在线"：ee07 虽离线但仍是已认证会话 → 计入
+ck "已认证=3（aa01 + ee07 离线但会话有效 + dc:d8 黑名单除外另算；按有效期内口径）" '"authenticated":3' "$counts"
 ck "未认证=2（22:33 未过门户 + ee09 门户外关联设备）" '"unauthenticated":2' "$counts"
 ck "可信任=2（11:22 + ee20；黑名单里的重复条目不算）" '"trusted":2' "$counts"
 ck "黑名单=1" '"blacklist":1' "$counts"
 
 # ② 卡片数与列表同源：online 行 = 未认证卡 2 条 + 在线卡 4 条
 n=$(printf '%s' "$out" | grep -o '"online":true' | wc -l | tr -d ' ')
-ck "列表里 online=true 的行数=7（在线卡 4 + 未认证卡 2 + 黑名单客户端连着也算）" '7' "$n"
+ck "列表里 online=true 的行数=6（在线卡 3 + 未认证卡 2 + 黑名单客户端连着也算；ee08 STALE 不算）" '6' "$n"
 # 有权限的是 4 条（aa01 / 11:22 / ee08 / ee20）：未认证的两条不算 authorized
 n2=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
-ck "列表里 online+authorized 行数=4（=在线卡）" '4' "$n2"
+ck "列表里 online+authorized 行数=3（=在线卡）" '3' "$n2"
 n3=$(printf '%s' "$out" | grep -o '"wired":true' | wc -l | tr -d ' ')
-ck "列表里 wired=true 的行数=2（=有线卡）" '2' "$n3"
+ck "列表里 wired=true 的行数=1（=有线卡；ee08 STALE 不算）" '1' "$n3"
 
 # ③ 无线接入点计数（ubus 映射：phy2-ap0 / phy2-ap1）
 ap_seg() { printf '%s' "$1" | tr '}' '\n' | grep -F "\"ssid\":\"$2\""; }
@@ -349,12 +350,11 @@ ck "预授权客户端 authorized=false（不计入在线卡）" '"authorized":f
 r7=$(seg "$out" 'aa:bb:cc:dd:ee:07')
 ck "已离线客户端（记录还在人走了）online=false" '"online":false' "$r7"
 
-# ⑨ 有线客户端：不在关联表、邻居表里有 → 在线，且进「有线」卡
+# ⑨ STALE 的 ARP 残留（ee08）：只挂在邻居表里、状态 STALE（设备可能已走）
+#    → 不算在线有线、接入点不显示 br-lan（2026-11-20 用户口径：非有线不显示成有线）
 r8=$(seg "$out" 'aa:bb:cc:dd:ee:08')
-ck "有线客户端 online=true" '"online":true' "$r8"
-ck "有线客户端 iface=br-lan" '"iface":"br-lan"' "$r8"
-ck "有线客户端 authorized=true" '"authorized":true' "$r8"
-ck "有线客户端 wired=true" '"wired":true' "$r8"
+ck "STALE 残留 online=false" '"online":false' "$r8"
+ck "STALE 残留 wired=false" '"wired":false' "$r8"
 
 # ⑨b 可信任有线台式机（ee20）：ndsctl json 里根本没有（trusted 不过门户），
 #    只在邻居表里——按 openNDS 记录找有线永远找不到它（真机反馈：有线卡 0）
@@ -407,7 +407,7 @@ ck "停止后在线=0（openNDS 没在管，不判在线）" '"online":0' "$coun
 ck "停止后已认证=0" '"authenticated":0' "$counts3"
 ck "停止后未认证=0" '"unauthenticated":0' "$counts3"
 ck "停止后可信任卡仍按名单显示" '"trusted":2' "$counts3"
-ck "停止后有线卡仍按邻居表显示（不依赖 ndsctl）" '"wired":2' "$counts3"
+ck "停止后有线卡仍按邻居表显示=1（ee20 REACHABLE；ee08 STALE 不算）" '"wired":1' "$counts3"
 ck "停止后黑名单卡仍按名单显示" '"blacklist":1' "$counts3"
 # 关联表里的设备照样出行（AP 卡片点开要有列表，不依赖 openNDS）
 seg3() { printf '%s' "$1" | tr '{' '\n' | grep -F "\"mac\":\"$2\""; }

@@ -152,11 +152,12 @@ return view.extend({
 			 * 后传的覆盖先传的，这里只显示当前生效的那一个 */
 			var curName = cur.sel || (cur.items && cur.items.length ? cur.items[0] : '');
 
-			/* 该类型下已有门户（脚本或文件夹）：上传按钮上方显示绿色「已上传」 */
+			/* 该类型下已有门户（脚本或文件夹）：tab 标题下方居中显示绿色「已配置」。
+			 * 与 tab 分隔线、上传按钮都留出距离，不挨着任何一方。 */
 			var uploaded = E('div', {
-				'style': 'color:#2e9468;font-size:13px;font-weight:600;margin-top:14px',
+				'style': 'color:#2e9468;font-size:13px;font-weight:600;text-align:center;margin:20px 0 18px',
 				'id': 'cpd-portal-uploaded'
-			}, curName ? _('已上传') : '');
+			}, curName ? _('已配置') : '');
 
 			var tools = E('div', {
 				'style': 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px'
@@ -172,8 +173,8 @@ return view.extend({
 
 			portalBox.appendChild(E('div', {}, [
 				tabRow,
-				E('div', { 'style': 'padding-top:22px' }, [
-					uploaded,
+				uploaded,
+				E('div', { 'style': 'padding-top:4px' }, [
 					tools
 				])
 			]));

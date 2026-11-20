@@ -866,17 +866,30 @@ EOF2
 
 # ARP/邻居表兜底取 IP：openNDS 的 trusted 客户端不一定带着 ip 字段回来，
 # 只看 ndsctl 会让"可信任客户端在线却没 IP"。同网段设备的邻居表一定有它。
+# ARP 邻居表「还连着」的状态判据：只认真正在通信的 REACHABLE / PERMANENT。
+# STALE / DELAY / FAILED 是内核标记"设备可能已离开"的残留项——设备关了 WiFi
+# 或拔了网线后，ARP 条目还会挂几分钟，其间会被误算成在线有线、接入点显示
+# br-lan（真机反馈：卸载重装插件后，没开 WiFi 的设备仍进了有线卡，等缓存
+# 到期才消失）。收紧到这两个状态，残留项一律不算在线。
+neigh_live() { # $1=ARP 状态字符串 → 0=在线
+	case "$1" in
+		REACHABLE | PERMANENT) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 neigh_ip_for() { # $1=小写 mac
 	ip -4 neigh show 2>/dev/null |
-		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m {print $1; exit}'
+		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && ($6 == "REACHABLE" || $6 == "PERMANENT") {print $1; exit}'
 }
 
 # 邻居表里的设备名（br-lan 等）：有线客户端的「接入点」一列要显示它。
 # ndsctl 的 clientif 来自官方 get_client_interface.sh，探不到时是空串
 # （真机上见过 clientif=""、ip 有值的行），这时只能从邻居表反查设备。
+# 只认活跃状态：STALE 残留不再显示成 br-lan（非有线不显示成有线）。
 neigh_dev_for() { # $1=小写 mac
 	ip -4 neigh show 2>/dev/null |
-		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && $6 != "FAILED" {print $3; exit}'
+		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && ($6 == "REACHABLE" || $6 == "PERMANENT") {print $3; exit}'
 }
 
 # network.wireless status（ubus）→ "section<TAB>ifname" 行。
@@ -1036,14 +1049,14 @@ client_ssid() { # $1=mac（小写） $2=clientif
 	iface_ssid "$cif"
 }
 
-# 邻居表里有没有这个 MAC——有线设备「还连着」的判据（FAILED 的条目不算）
+# 邻居表里有没有这个 MAC——有线设备「还连着」的判据（只认活跃状态）
 neigh_has() { # $1=小写 mac
 	command -v ip >/dev/null 2>&1 || return 1
 	ip -4 neigh show 2>/dev/null |
-		grep -i "lladdr $1" | grep -vi failed | grep -q .
+		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && ($6 == "REACHABLE" || $6 == "PERMANENT") {f=1; exit} END {exit !f}'
 }
 
-# 管理接口上邻居表里的全部在线设备 MAC（小写，剔除 FAILED）：
+# 管理接口上邻居表里的全部在线设备 MAC（小写，只认 REACHABLE/PERMANENT）：
 # 有线在线 = 管理接口的邻居表 − 无线关联表。ARP 表里有它 = 正在跟路由器说话。
 # 只认 $1（管理接口）这个 dev：WAN 口的网关 MAC 也在全局邻居表里，不按
 # dev 过滤会把运营商网关当成"有线客户端"。不依赖 ndsctl——openNDS 没运行、
@@ -1052,7 +1065,7 @@ neigh_mac_list() { # $1=管理接口（可空 = 不过滤 dev，退化场景才�
 	local mif="$1"
 	command -v ip >/dev/null 2>&1 || return 0
 	ip -4 neigh show 2>/dev/null |
-		awk -v d="$mif" 'tolower($4) == "lladdr" && $6 != "FAILED" && (d == "" || $3 == d) {print tolower($5)}'
+		awk -v d="$mif" 'tolower($4) == "lladdr" && ($6 == "REACHABLE" || $6 == "PERMANENT") && (d == "" || $3 == d) {print tolower($5)}'
 }
 
 # 路由器视角的「正在连接」名单（CONN_ON，小写 MAC 清单）与有线子集（WIRED_ON）：
@@ -1207,67 +1220,92 @@ EOF5
 	fi
 }
 
-# ---- 已认证会话缓存 ------------------------------------------------------
-# openNDS 进程一停，ndsctl json 就没了；刚重启的那几秒也还在就绪中。
-# 这时关联表里的设备仍带着上一次的有效会话（用户关了 NDS 又马上打开、
-# 或停着看概览），一律标成「未认证」是错的。NDS 在跑时把仍有效的
-# Authenticated 会话记下来，取不到 ndsctl 数据时用它恢复客户端身份。
-# 每行：小写mac<TAB>到期时间戳（已把"永久会话"按空闲超时折算成绝对时间）
-CPD_SESSION_CACHE="${CPD_SESSION_CACHE:-/tmp/opennds_cpd_sessions}"
+# ---- 已认证会话：读 openNDS 原生落盘记录 --------------------------------
+# openNDS 认证成功时，binauth_log.sh 会把会话写到 <log_mountpoint>/ndslog/authlog.log，
+# 每行 "<base64(mac 去等号)>=<session_end 绝对时间戳>"。NDS 启动时 main.c 调
+# libopennds.sh "auth_restore" 读它把客户端恢复成已认证——这正是"重启/重连后
+# 还能保持认证"的原理。它一直在硬盘上（NDS 停止也不删），所以是判定"是否认证过、
+# 是否还在有效期内"的权威源：NDS 关着、刚启动没就绪、首次装插件都靠它。
+# 不再自建缓存——自建缓存只在 NDS 运行时才写得到，首次安装/停服时是空的。
+#
+# AUTH_CACHE 每行：小写mac<TAB>到期时间戳（只留有效期内且未被主动登出的）
+# authlog.mountpoint 可由 uci opennds.@opennds[0].log_mountpoint 覆盖；
+# 未配置时按 openNDS 的探测顺序取第一个 tmpfs（/tmp /run /var），默认 /tmp。
 AUTH_CACHE=''
 
-auth_cache_load() { # 读缓存并丢掉过期行 → AUTH_CACHE
+# base64 解码（authlog 的 mac 键去掉了末尾 =）。纯 awk，不依赖 busybox base64 -d。
+# 输入是去掉末尾 = 的 base64（authlog 原样）。每 4 个 6-bit 字符还原 3 字节；
+# 末组不足 4 个只还原对应的 1~2 字节，不产出填充字节。
+B64_DEC_AWK='
+BEGIN { B = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; P = 64 }
+{
+	s = $0; out = ""; n = length(s); i = 1
+	while (i <= n) {
+		c1 = index(B, substr(s, i, 1)) - 1; i++
+		if (i > n) break
+		c2 = index(B, substr(s, i, 1)) - 1; i++
+		out = out sprintf("%c", c1 * 4 + int(c2 / 16))
+		if (i > n) break
+		c3 = index(B, substr(s, i, 1)) - 1; i++
+		out = out sprintf("%c", (c2 * 16) % 256 + int(c3 / 4))
+		if (i > n) break
+		c4 = index(B, substr(s, i, 1)) - 1; i++
+		out = out sprintf("%c", (c3 * 64) % 256 + c4)
+	}
+	print out
+}'
+
+authlog_dir() { # 算出 openNDS 落盘日志目录
+	local mp
+	# 测试沙箱可覆盖；生产不设这个变量，走 uci / tmpfs 探测
+	[ -n "${CPD_NDSLOG_DIR:-}" ] && { printf '%s' "$CPD_NDSLOG_DIR"; return 0; }
+	mp=$(uci -q get 'opennds.@opennds[0].log_mountpoint' 2>/dev/null)
+	if [ -n "$mp" ]; then
+		printf '%s/ndslog' "$mp"
+		return 0
+	fi
+	# 复刻 libopennds.sh configure_log_location 的 tmpfs 探测
+	for d in /tmp /run /var; do
+		if df 2>/dev/null | awk -v x="$d" '$1 == "tmpfs" && $6 == x {f=1} END {exit !f}'; then
+			printf '%s/ndslog' "$d"
+			return 0
+		fi
+	done
+	printf '/tmp/ndslog'
+}
+
+auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ AUTH_CACHE
 	AUTH_CACHE=''
-	[ -f "$CPD_SESSION_CACHE" ] || return 0
-	local lm exp now
+	local dir f now lm exp kb lastm
 	now=$(date +%s)
-	while IFS='	' read -r lm exp; do
-		case "$lm" in *:*) ;; *) continue ;; esac
+	dir=$(authlog_dir)
+	f="$dir/authlog.log"
+	[ -f "$f" ] || return 0
+	local bl="$dir/binauthlog.log"
+	while IFS='=' read -r kb exp; do
+		case "$kb" in '' | *[!A-Za-z0-9+/]*) continue ;; esac
 		case "$exp" in '' | *[!0-9]*) continue ;; esac
 		[ "$exp" -gt "$now" ] || continue
+		# openNDS 写的是 base64(mac) 去掉末尾 =，解码器按无 padding 处理
+		lm=$(printf '%s' "$kb" | awk "$B64_DEC_AWK" | tr 'A-Z' 'a-z')
+		case "$lm" in *:*) ;; *) continue ;; esac
+		# auth_restore 同款判据：binauthlog 里该 mac 最后一条若是普通 deauth
+		# （用户主动登出/超时）则不恢复；shutdown_deauth 是停 NDS 造成的，仍算认证。
+		lastm=''
+		[ -f "$bl" ] && lastm=$(grep -F "$lm" "$bl" 2>/dev/null | tail -1 |
+			sed -n 's/.*method="\([^"]*\)".*/\1/p')
+		case "$lastm" in
+			*deauth) [ "$lastm" = 'shutdown_deauth' ] || continue ;;
+		esac
 		AUTH_CACHE="$AUTH_CACHE$lm	$exp
 "
-	done <"$CPD_SESSION_CACHE"
+	done <"$f"
 	return 0
 }
 
 auth_cache_get() { # $1=小写 mac → 0=在有效期内认证过
 	[ -n "$AUTH_CACHE" ] || return 1
 	printf '%s\n' "$AUTH_CACHE" | grep -qF "$1	"
-}
-
-auth_cache_save() { # $1=parse_clients 的 S 行；原子写，内容没变就不动文件
-	local line mac state se la exp out='' now idle tmp
-	now=$(date +%s)
-	idle="${CPD_AUTHIDLE:-120}"
-	case "$idle" in '' | *[!0-9]*) idle=120 ;; esac
-	[ "$idle" -gt 0 ] || idle=120
-	while IFS='	' read -r line mac state ip cif ss se la rest; do
-		[ "$line" = 'S' ] || continue
-		case "$state" in Authenticated | AuthBlocked) ;; *) continue ;; esac
-		case "$mac" in *:*) ;; *) continue ;; esac
-		mac=$(mac_lower "$mac")
-		# session_end 是绝对时间戳；0/null 表示跟随空闲超时
-		case "$se" in
-			0 | null | '')
-				case "$la" in
-					'' | null | *[!0-9]*) exp=$((now + idle)) ;;
-					*) exp=$((la + idle)) ;;
-				esac ;;
-			*[!0-9]*) exp=$((now + idle)) ;;
-			*) exp="$se" ;;
-		esac
-		[ "$exp" -gt "$now" ] || continue
-		out="$out$mac	$exp
-"
-	done <<EOF9
-$1
-EOF9
-	[ "$out" = "$(cat "$CPD_SESSION_CACHE" 2>/dev/null)" ] && return 0
-	tmp="$CPD_SESSION_CACHE.tmp.$$"
-	printf '%s' "$out" >"$tmp" 2>/dev/null || return 0
-	mv "$tmp" "$CPD_SESSION_CACHE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-	return 0
 }
 
 ov_build() {
@@ -1313,14 +1351,9 @@ ov_build() {
 		CPD_MACS=$(printf '%s\n' "$CPD_IN" | awk -F'\t' 'NF {print tolower($1)}' | sort -u)
 	fi
 
-	# NDS 在跑且 ndsctl 有数据：刷新会话缓存（含"刚认证完"的新会话）。
-	# 停着 / 刚重启还没就绪：读缓存恢复身份，绝不把有效会话标成未认证。
-	if [ "$running" = '1' ] && [ -n "$CPD_PARSED" ]; then
-		auth_cache_save "$CPD_PARSED"
-		AUTH_CACHE=''
-	else
-		auth_cache_load
-	fi
+	# 认证身份一律读 openNDS 原生落盘记录（NDS 停/刚启动/首次装都在）。
+	# ndsctl 的实时 state 只用于流量/IP/会话时间；是否"已认证"以落盘为准。
+	auth_cache_load
 
 	ov_conn
 	ov_rows
@@ -1364,6 +1397,11 @@ ov_rows() {
 			[ "$ss" = '-' ] && ss=''
 			[ "$se" = '-' ] && se=''
 			lm=$(mac_lower "$mac")
+			# 认证身份 = ndsctl 实时 state 或 openNDS 原生落盘记录，二者其一
+			# 有效即算已认证。NDS 刚启动时 auth_restore 还没把会话恢复进 ndsctl
+			# （state 暂为 Preauthenticated），用 authlog 补上，消除"等十秒才
+			# 挪到已认证卡"；自定义 binauth 不写 authlog 时仍靠 ndsctl 实时值。
+			auth_cache_get "$lm" && state='Authenticated'
 			# 在线与否以路由器为准（关联表 / 邻居表）；ndsctl 把客户端留到
 			# 空闲超时才清，人早走了记录还在，按记录算在线永远偏大
 			onl=0
@@ -1430,9 +1468,13 @@ $lm"
 $WIRED_ON
 EOF6
 
-	# 名单补行：trusted / preemptivemac / blockedmac 里不在线的 MAC
+	# 名单补行：trusted / preemptivemac / blockedmac 里不在线的 MAC，
+	# 外加"认证还在有效期内"的 MAC（读 openNDS 原生 authlog）——已认证卡
+	# 按"有效期内就算、不管在线不在线"统计（2026-11-20 用户口径），所以
+	# 这些离线的已认证设备也得进列表，点已认证卡才看得到、和卡片同源。
 	local supp
-	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS | sort -u | grep -v '^$')
+	supp=$(printf '%s\n' $TR_MACS $PM_MACS $BL_MACS \
+		$(printf '%s\n' "$AUTH_CACHE" | awk -F'\t' 'NF {print $1}') | sort -u | grep -v '^$')
 	for lm in $supp; do
 		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
 		seen="$seen
@@ -1475,7 +1517,8 @@ EOF9
 #   有线     = 正在连着的有线客户端，不分身份（黑名单除外）——与无线接入点
 #              卡片按关联表计数同一口径：卡片数的是「连着多少设备」。
 #              只看路由器（邻居表−关联表），不受 NDS 运行状态影响
-#   已认证   = 在线且 state=Authenticated/AuthBlocked、不在信任/免认证名单
+#   已认证   = 认证还在有效期内（openNDS 原生 authlog，不在信任/免认证/黑名单）
+#              不管在线不在线，NDS 停着/重装插件也算——不用等连上 WiFi
 #   未认证   = 在线但还没通过认证（Preauthenticated / 关联了但没碰过门户）
 #   免认证   = 以 preemptivemac 名单为准（离线也在）——读配置文件就能统计，
 #              不受 NDS 运行状态影响（2026-11-19 用户口径）
@@ -1497,7 +1540,9 @@ ov_counts() {
 			bl) ;;
 			tr) N_TR=$((N_TR + 1)) ;; # 名单为准，离线也在
 			pre) ;; # 免认证下面按配置名单数（这里数会漏掉离线与未登录的条目）
-			auth) [ "$onl" = '1' ] && N_AUTH=$((N_AUTH + 1)) ;;
+			# 已认证 = 认证还在有效期内就算，不管在线不在线（读原生落盘记录）。
+			# 客户端关了 WiFi、NDS 停着，只要没过期仍算已认证——不必等它连上 WiFi。
+			auth) N_AUTH=$((N_AUTH + 1)) ;;
 			*)
 				# 在免认证名单里的条目归「免认证」卡（按名单数），不重复进未认证
 				[ "$onl" = '1' ] || continue
@@ -1519,10 +1564,10 @@ EOF2
 		N_PRE=$((N_PRE + 1))
 	done
 
-	# NDS 未运行：在线/已认证/未认证三张身份卡归零；免认证 / 可信任 /
-	# 有线 / 黑名单不受影响（名单 / 邻居表为准，2026-11-19 用户口径）。
+	# NDS 未运行：在线/未认证归零（没有"当前访问权限"可言）；已认证不归零——
+	# 认证身份看 openNDS 原生落盘记录，只要没过期，停服/重装插件都仍是已认证。
+	# 免认证 / 可信任 / 有线 / 黑名单不受影响（名单 / 邻居表为准）。
 	if [ "$CPD_RUNNING" != '1' ]; then
-		N_AUTH=0
 		N_UN=0
 	fi
 

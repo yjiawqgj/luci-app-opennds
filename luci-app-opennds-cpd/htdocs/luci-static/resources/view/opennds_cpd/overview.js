@@ -336,10 +336,10 @@ return view.extend({
 			var want = state.running ? '0' : '1';
 			if (want === '0') {
 				CPD.confirm(_('停用 openNDS'), _('确认关闭？'), _('确定停用'), true,
-					function () { doToggle('0'); });
+					function () { doToggle('0'); }, true);
 			} else {
 				CPD.confirm(_('启用 openNDS'), _('确认开启？'), _('确定启用'), false,
-					function () { doToggle('1'); });
+					function () { doToggle('1'); }, true);
 			}
 		}
 
@@ -387,8 +387,9 @@ return view.extend({
 					/* 免认证以 preemptivemac 名单为准（离线也在），黑名单除外 */
 					return !!c.preauth && !c.trusted && !c.blocked;
 				case 'auth':
-					if (!state.running) return false;
-					return online && !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
+					/* 已认证 = 认证还在有效期内就算，不管在线不在线、NDS 在不在跑
+					 * （读 openNDS 原生落盘记录，不用等客户端连上 WiFi） */
+					return !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
 				case 'unauth':
 					if (!state.running) return false;
 					return online && !c.authorized && !c.preauth && !c.blocked;
