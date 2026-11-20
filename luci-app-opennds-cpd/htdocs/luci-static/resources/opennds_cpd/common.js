@@ -78,15 +78,18 @@ function ensureToasts() {
  * 「保存并应用」全流程（所有页面共用）
  * ------------------------------------------------------------
  * openwrt 原生的应用流程是：commit → 原生弹窗（「正在等待配置被应用…90s」
- * 倒计时）→ confirm 成功后约 1.5 秒刷新页面。commit 本身不会让 openNDS 重启
- * （它的 init 没有 procd reload trigger），所以还要补一次 post_apply：
- * 后端现在把它拆成「秒回的收尾 + 后台 worker」，worker 做部署/重启/等就绪，
- * 全程可能十几到几十秒，肯定超过原生 1.5 秒的刷新点。
- * 因此这里接管刷新时机：弹窗文案完全交给原生（不覆盖、不自造提示），
- * 我们只轮询后端的 apply_state，确认 worker 真正跑完（且 openNDS 在跑，
- * 或应用前本来就停着）才刷新页面。
+ * 倒计时）→ confirm 成功后显示「配置更改已应用。」并在 apply_display
+ * （默认 1.5 秒）后刷新页面。
+ * commit 本身不会让 openNDS 重启（它的 init 没有 procd reload trigger），
+ * 所以补一次 post_apply：后端秒回、重活全在后台孤儿 worker（页面刷新
+ * 杀不掉它）。因此这里完全走原生节奏：
+ *  - 倒计时、「配置更改已应用。」、刷新页面全部由原生自己管，不覆盖；
+ *  - 我们只在 uci-applied（commit + confirm 成功）后补发一次 post_apply；
+ *  - 不再轮询、不再推迟刷新 —— 之前轮询等 worker 跑完才刷新，会让
+ *    「配置更改已应用。」的弹窗挂住几十秒（worker 重启 openNDS 的时长），
+ *    页面像卡死一样（2026-11-20 用户反馈，已回归原生）。
  * ============================================================ */
-var APPLY = { active: false, ui: null, resolve: null, reject: null, polling: null };
+var APPLY = { active: false };
 
 /* 当前会话里待提交的 uci 增量条数（LuCI 24.10 没有 changesCount 属性） */
 function changeCount(ui) {
@@ -96,104 +99,33 @@ function changeCount(ui) {
 	return n;
 }
 
+/* 原生 ui.changes.apply() 不返回 Promise，自己管理全部界面（倒计时、
+ * 「配置更改已应用。」、定时刷新）。这里只负责触发它，并立刻给按钮一个
+ * 已定的 Promise —— 底部按钮的加载圈不该挂到 worker 跑完。 */
 APPLY.start = function (ui) {
-	/* 连点两次「保存并应用」：复用同一次流程，别把 commit 跑两遍 */
-	if (APPLY.promise) return APPLY.promise;
-	APPLY.ui = ui;
-	APPLY.active = true;
-	APPLY.promise = new Promise(function (resolve, reject) {
-		APPLY.resolve = resolve;
-		APPLY.reject = reject;
-		try {
-			ui.changes.apply(false);
-		} catch (e) {
-			APPLY.active = false;
-			APPLY.ui = null;
-			APPLY.promise = null;
-			reject({ error: (e && e.message) || _('应用失败') });
-			return;
-		}
-	});
-	return APPLY.promise;
+	/* 连点两次「保存并应用」：原生 commit 幂等（无增量的 apply 是空操作），
+	 * 第二次会被 changeCount 检查拦成「没有需要应用的更改」，这里不加锁 */
+	try {
+		ui.changes.apply(false);
+	} catch (e) {
+		return Promise.reject({ error: (e && e.message) || _('应用失败') });
+	}
+	return Promise.resolve({ ok: 1 });
 };
 
-APPLY.finish = function (res) {
-	APPLY.active = false;
-	var resolve = APPLY.resolve, reject = APPLY.reject, ui = APPLY.ui;
-	APPLY.resolve = null;
-	APPLY.reject = null;
-	APPLY.ui = null;
-	APPLY.promise = null;
-	APPLY.polling = null;
-	if (!resolve && !reject) return;
-	var ok = !!(res && res.ok);
-	if (ok) resolve(res);
-	else reject({ error: (res && res.error) || _('应用失败') });
-	if (ui && ui.changes && typeof ui.changes.displayStatus === 'function' && !ok)
-		ui.changes.displayStatus(false);
-};
-
-/* uci-applied（原生 confirm 成功）之后的收尾：
- * 调 sys post_apply（秒回，后台 worker 已在跑）→ 轮询 sys apply_state，
- * worker 报告完成且 openNDS 状态符合预期才刷新页面。
- * 弹窗完全由原生流程管理：我们既不写文案、也不关弹窗（失败才关）。 */
+/* uci-applied（原生 commit + confirm 成功）之后的唯一收尾：
+ * 补发 post_apply（秒回）。重活在后台 worker，页面刷新不影响它；
+ * worker 完成后的 openNDS 状态由概览页自己的轮询如实展示。 */
 APPLY.onApplied = function () {
-	if (APPLY.polling) return;
-	APPLY.polling = { tries: 0 };
 	L.require('opennds_cpd.common').then(function (m) {
-		var tick = function () {
-			var st = APPLY.polling;
-			if (!st) return;
-			st.tries++;
-			/* 第一次先派活（post_apply 秒回），之后每秒问一次进度 */
-			var call = (st.tries === 1)
-				? m.api('sys', 'post_apply')
-				: m.api('sys', 'apply_state');
-			call.then(function (j) {
-				if (!APPLY.polling) return;
-				if (j && j.error) throw { error: j.error };
-				if (st.tries === 1) {
-					/* post_apply 已受理：进入轮询 */
-					window.setTimeout(tick, 1000);
-					return;
-				}
-				if (!j || j.done !== 1) {
-					if (st.tries >= 150) {
-						throw { error: _('应用仍在后台进行，请稍后刷新页面查看结果') };
-					}
-					window.setTimeout(tick, 1000);
-					return;
-				}
-				/* worker 完成。busy = 上一轮还在跑，接着等它 */
-				if (j.busy === 1) {
-					window.setTimeout(tick, 1000);
-					return;
-				}
-				if (!j.ok || (j.was_running === 1 && j.running !== 1)) {
-					throw { error: (j && j.error) ||
-						_('配置已提交，但 openNDS 未能启动，请检查 openNDS 日志') };
-				}
-				/* 成功：稍微缓一下再刷新，让页面别闪太快 */
-				APPLY.finish({ ok: 1 });
-				window.setTimeout(function () {
-					window.location = window.location.href.split('#')[0];
-				}, 400);
-			}).catch(function (e) {
-				if (!APPLY.polling) return;
-				APPLY.finish({ ok: 0, error: m.errText(e, _('应用失败')) });
-			});
-		};
-		tick();
-	}).catch(function (e) {
-		APPLY.finish({ ok: 0, error: (e && e.error) || _('应用失败') });
-	});
+		return m.api('sys', 'post_apply');
+	}).catch(function () { /* 秒回失败不影响原生流程，worker 由下次应用补 */ });
 };
 
 /* uci-applied 事件：原生 commit + confirm 成功的唯一可靠信号。
- * 第一件事是把原生刷新推迟（原生紧接着读 apply_display 排刷新定时器），
- * 剩下的交给 onApplied 轮询。按钮路径与右上角指示器路径共用这里。 */
+ * 不改 apply_display —— 原生按默认 1.5 秒刷新页面，「配置更改已应用。」
+ * 弹窗随刷新消失，不再挂住几十秒。按钮路径与右上角指示器路径共用这里。 */
 document.addEventListener('uci-applied', function () {
-	if (window.L && L.env) L.env.apply_display = 120;
 	APPLY.onApplied();
 });
 
@@ -622,12 +554,10 @@ var CPD = L.Class.extend({
 		});
 	},
 
-	/* 保存并应用：commit 走 openwrt 原生流程（原生弹窗照旧显示「正在应用配置更改…」），
-	 * 但「应用完成」以 post_apply 真正跑完为准 ——
-	 * 原生会在 commit 后约 5 秒刷新页面，而 post_apply（重启 openNDS 并等它就绪）
-	 * 要十几秒：页面先刷新，重启就成了没人等的孤儿请求，openNDS 会停在「未运行」，
-	 * 概览页还会挂一条「等待上一步完成」。这里把原生刷新推迟到我们确认之后。
-	 * 详见 APPLY 注释。 */
+	/* 保存并应用：完全走 openwrt 原生流程（倒计时弹窗、「配置更改已应用。」、
+	 * 刷新页面全部由原生管理）。openNDS 的部署/重启在 uci-applied 之后由
+	 * post_apply 派生的后台孤儿 worker 完成，页面刷新杀不掉它，所以不再
+	 * 推迟原生刷新 —— 详见上方 APPLY 注释。 */
 	applyStaged: function () {
 		var self = this;
 		return self.notifyChanges().then(function () {

@@ -210,7 +210,8 @@ return view.extend({
 				'domains_b64=' + CPD.b64encode(currentAuto()),
 				'ports=' + currentPorts()
 			]).then(function (j) {
-				if (j.error === 'busy') throw { error: 'busy' };
+				/* 后端忙返回 {"ok":0,"busy":1}（没有 error 字段），别落进「校验失败」 */
+				if (j && j.busy === 1) throw { error: _('等待上一步完成，请稍候重试') };
 				if (!j.ok && j.errors) { CPD.showErrors(j.errors); throw { silent: true }; }
 				if (!j.ok) throw { error: j.error || _('校验失败') };
 				return Promise.all([

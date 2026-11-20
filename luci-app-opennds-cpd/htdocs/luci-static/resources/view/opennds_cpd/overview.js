@@ -224,7 +224,8 @@ return view.extend({
 			if (locked) return;
 			lock(secs);
 			fn().then(function (j) {
-				if (j && j.error === 'busy') {
+				/* 后端忙返回 {"ok":0,"busy":1}（没有 error 字段），别落进「操作失败」 */
+				if (j && (j.busy === 1 || j.error === 'busy')) {
 					unlock();
 					CPD.toast(_('等待上一步完成，请稍候重试'), 'warn');
 					return;
@@ -376,25 +377,22 @@ return view.extend({
 			runSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
 		}
 
-		function doSetRun(want) {
-			/* 后端启动要等 openNDS 就绪（最长约 10 秒）+ init.d 开销，锁要留够 */
-			runOp(30, function () {
-				return CPD.api('overview', 'set_run', [want]);
-			}, {
-				onok: function (j) {
-					state.running = j.running === 1;
-					state.enabled = j.enabled === 1;
-					renderStatus();
-					if (String(j.running) === want) {
-						/* 3 秒自动消失，不用手动点叉 */
-						CPD.notifyTimed(want === '1' ? _('openNDS 已启动') : _('openNDS 已停止'),
-							want === '1' ? 'ok' : 'warn', 3000);
-					} else {
-						CPD.toast(_('操作未完全生效，请查看 openNDS 日志'), 'err');
-					}
-					refresh();
-				}
-			});
+		function doToggle(want) {
+			/* 开关走 openwrt 原生暂存流程（和底部「保存并应用」同一节奏）：
+			 * 倒计时、「配置更改已应用。」、刷新页面全由原生管理。
+			 * opennds 的 enabled 与 zone_detect.main.pending_run 一起 commit，
+			 * 后台 worker 读到 pending_run 才真正执行启停 —— 普通页面的应用
+			 * 不带这个键，永远不会替用户改 openNDS 的运行状态。 */
+			CPD.stageUci('opennds', '@opennds[0]', 'enabled', 'opt', want)
+				.then(function () {
+					return CPD.stageUci('zone_detect', 'main', 'pending_run', 'opt', want);
+				})
+				.then(function () {
+					return CPD.applyStaged();
+				})
+				.catch(function (e) {
+					CPD.toast(CPD.errText(e, _('操作失败')), 'err');
+				});
 		}
 
 		function handleSwitch() {
@@ -404,9 +402,12 @@ return view.extend({
 				CPD.confirm(_('停用 openNDS'), _(
 					'停用后 openNDS 立即退出：门户页面消失，免认证、可信任、黑名单、' +
 					'限速全部失效，所有设备将直接上网。确定停用？'), _('确定停用'), true,
-					function () { doSetRun('0'); });
+					function () { doToggle('0'); });
 			} else {
-				doSetRun('1');
+				CPD.confirm(_('启用 openNDS'), _(
+					'启用后 openNDS 接管认证：客户端要通过门户认证才能上网' +
+					'（可信任、免认证名单除外）。确定启用？'), _('确定启用'), false,
+					function () { doToggle('1'); });
 			}
 		}
 
@@ -435,7 +436,7 @@ return view.extend({
 			runSwitch.disabled = true;
 			restartLabel.textContent = _('重启中…');
 			CPD.api('overview', 'restart').then(function (j) {
-				if (j && j.error === 'busy') {
+				if (j && (j.busy === 1 || j.error === 'busy')) {
 					unlock();
 					restartBtn.disabled = false;
 					runSwitch.disabled = false;
@@ -1301,7 +1302,7 @@ return view.extend({
 
 		/* ---------- 组装页面 ---------- */
 		body.appendChild(E('div', { 'class': 'cpd-head' },
-			E('h2', {}, _('openNDS 概览'))));
+			E('h2', {}, _('概览'))));
 		body.appendChild(confBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [

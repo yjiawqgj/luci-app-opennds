@@ -5415,7 +5415,9 @@ apply_state_write() { # $1=JSON 整行覆盖
 	return 0
 }
 
-# worker 专用锁：抢不到（上一次还在跑）不报错、静默退出
+# worker 专用锁：抢不到（上一次还在跑）不报错、静默退出。
+# 短重试几秒：上一轮刚写完终态、锁还没放掉的窗口里派生的 worker
+# 不至于白跑一趟（它带着晚到的开关请求）。
 worker_lock() {
 	command -v flock >/dev/null 2>&1 || return 1
 	local ld
@@ -5423,7 +5425,54 @@ worker_lock() {
 	mkdir -p "$ld" 2>/dev/null
 	[ -d "$ld" ] || return 1
 	eval "exec 9>\"\$CPD_APPLY_LOCK\"" 2>/dev/null || return 1
-	flock -n 9 2>/dev/null || return 1
+	local try=0
+	while ! flock -n 9 2>/dev/null; do
+		try=$((try + 1))
+		[ "$try" -ge 3 ] && return 1
+		sleep 1 2>/dev/null || sleep 1
+	done
+	return 0
+}
+
+# ---- 概览页开关的显式启停请求 ---------------------------------------------
+# 开关走 openwrt 原生暂存流程（和其它按钮一致），随那次的 uci 增量一起 commit
+# 的还有 zone_detect.main.pending_run（1=启动 / 0=停止）。worker 读到就执行。
+# 必须与"本来停着的不主动拉起"并存：普通页面应用不带 pending_run，worker
+# 永远不会替它们改 openNDS 状态；只有开关自己申请的启停才执行。
+
+pending_run_take() { # 读出并立即清掉 pending_run（先清再执行：中途挂了也不能
+	# 留着旧请求，否则下一轮普通应用会误执行）；输出 0|1 或空
+	local pr
+	pr=$(uci -q get 'zone_detect.main.pending_run' 2>/dev/null)
+	case "$pr" in
+		0 | 1)
+			uci -q delete 'zone_detect.main.pending_run' 2>/dev/null
+			uci commit zone_detect 2>/dev/null
+			printf '%s' "$pr"
+			;;
+	esac
+	return 0
+}
+
+toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 worker）
+	local want="$1" lo tp i=0
+	if [ "$want" = '1' ]; then
+		# 用户点「启动」才补：登录模式 3 且脚本路径为空（缺失），不覆盖用户自己设的值
+		lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
+		tp=$(uci_val 'opennds.@opennds[0].themespec_path' '')
+		if [ "$lo" = '3' ] && [ -z "$tp" ]; then
+			uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh'
+			uci commit opennds 2>/dev/null
+		fi
+		"$NDS_INIT" start 9>&- >/dev/null 2>&1
+		wait_ready_n "${CPD_READY_WAIT:-24}"
+	else
+		"$NDS_INIT" stop 9>&- >/dev/null 2>&1
+		while nds_running && [ "$i" -lt "${CPD_STOP_WAIT:-45}" ]; do
+			sleep 1 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+	fi
 	return 0
 }
 
@@ -5431,9 +5480,10 @@ apply_worker() {
 	if ! worker_lock; then
 		# 已有 worker 在跑：状态文件归它管。这里绝不能写 busy/done，
 		# 否则会把正在跑的那一轮的进度（done:0）覆盖成完成，前端会提前刷新。
+		# 晚到的开关请求由正在跑的 worker 在收尾检查里捞起（见下方循环）。
 		return 0
 	fi
-	local was=0 now=0 deployed=0 zr ok=1 err='' scope
+	local was=0 now=0 deployed=0 zr ok=1 err='' scope pr rounds=0
 	# was 从状态文件取（post_apply 在应用后第一时间记录的口径）；
 	# 文件缺失（手工调试）就按当前状态推
 	[ -f "$CPD_APPLY_STATE" ] &&
@@ -5441,36 +5491,56 @@ apply_worker() {
 	[ "$was" = '1' ] || was=0
 	log "apply_worker 开始（was_running=$was）"
 	apply_state_write '{"ok":1,"done":0,"phase":"working","was_running":'"$was"'}'
-	# 区域识别模式：把已提交的区域配置部署成门户目录与标记文件。
-	# 判据必须看 z_apply 回的 JSON，不能看退出码 —— out_err 是 exit 0，
-	# 光看退出码会把"什么都没做"当成部署成功。
-	scope=$(uci -q get 'zone_detect.main.scope' 2>/dev/null)
-	if [ "$scope" = 'zone' ]; then
-		if [ -n "$(uci -q get 'zone_detect.main.wireless' 2>/dev/null)" ]; then
-			zr=$( (z_apply wireless) 2>/dev/null )
-			case "$zr" in
-				*'"ok":1'*) deployed=1 ;;
-				*need_confirm*) log 'apply_worker：openNDS 处于停用状态，跳过无线区域部署' ;;
-				*) log "apply_worker：无线区域部署失败：$zr" ;;
-			esac
+	# ① 这次应用带了开关请求 → 它说了算：只启/停，不部署不重启
+	#   （口径与原 ov_set_run 一致：启动不部署门户目录，部署由随后的
+	#    正常应用流程负责；停止更没有部署可言）
+	pr=$(pending_run_take)
+	if [ -n "$pr" ]; then
+		log "apply_worker：概览页开关请求 pending_run=$pr"
+		toggle_exec "$pr"
+	else
+		# ② 普通应用：区域识别模式部署 + 重启让配置生效
+		# 区域识别模式：把已提交的区域配置部署成门户目录与标记文件。
+		# 判据必须看 z_apply 回的 JSON，不能看退出码 —— out_err 是 exit 0，
+		# 光看退出码会把"什么都没做"当成部署成功。
+		scope=$(uci -q get 'zone_detect.main.scope' 2>/dev/null)
+		if [ "$scope" = 'zone' ]; then
+			if [ -n "$(uci -q get 'zone_detect.main.wireless' 2>/dev/null)" ]; then
+				zr=$( (z_apply wireless) 2>/dev/null )
+				case "$zr" in
+					*'"ok":1'*) deployed=1 ;;
+					*need_confirm*) log 'apply_worker：openNDS 处于停用状态，跳过无线区域部署' ;;
+					*) log "apply_worker：无线区域部署失败：$zr" ;;
+				esac
+			fi
+			if [ -n "$(uci -q get 'zone_detect.main.wired' 2>/dev/null)" ]; then
+				zr=$( (z_apply wired) 2>/dev/null )
+				case "$zr" in
+					*'"ok":1'*) deployed=1 ;;
+					*need_confirm*) log 'apply_worker：openNDS 处于停用状态，跳有线区域部署' ;;
+					*) log "apply_worker：有线区域部署失败：$zr" ;;
+				esac
+			fi
 		fi
-		if [ -n "$(uci -q get 'zone_detect.main.wired' 2>/dev/null)" ]; then
-			zr=$( (z_apply wired) 2>/dev/null )
-			case "$zr" in
-				*'"ok":1'*) deployed=1 ;;
-				*need_confirm*) log 'apply_worker：openNDS 处于停用状态，跳有线区域部署' ;;
-				*) log "apply_worker：有线区域部署失败：$zr" ;;
-			esac
+		kick_preemptive
+		# z_apply 内部已经重启过，别再来一次；本来停着的不主动拉起
+		if [ "$deployed" = '0' ] && [ "$was" = '1' ]; then
+			if ! service_restart; then
+				ok=0
+				err='配置已提交，但 openNDS 未能启动，请检查 openNDS 日志'
+			fi
 		fi
 	fi
-	kick_preemptive
-	# z_apply 内部已经重启过，别再来一次；本来停着的不主动拉起
-	if [ "$deployed" = '0' ] && [ "$was" = '1' ]; then
-		if ! service_restart; then
-			ok=0
-			err='配置已提交，但 openNDS 未能启动，请检查 openNDS 日志'
-		fi
-	fi
+	# ③ 收尾前再捞一遍晚到的开关请求：worker 干活（重启要十几秒）期间，
+	#    用户可能又应用了一次开关操作，它的 pending_run 等 worker 完事才执行。
+	#    上限 3 轮防失控；没有新请求就立刻出去。
+	while [ "$rounds" -lt 3 ]; do
+		pr=$(pending_run_take)
+		[ -z "$pr" ] && break
+		log "apply_worker：捞起晚到的开关请求 pending_run=$pr"
+		toggle_exec "$pr"
+		rounds=$((rounds + 1))
+	done
 	nds_running && now=1
 	apply_state_write '{"ok":'"$ok"',"done":1,"zone":'"$deployed"',"was_running":'"$was"',"running":'"$now"',"error":"'$(json_escape "$err")'"}'
 	log "apply_worker 完成（ok=$ok was_running=$was running=$now zone=$deployed）"

@@ -266,7 +266,8 @@ return view.extend({
 				'auto_b64=' + CPD.b64encode(state.domains),
 				'ports=' + state.ports
 			]).then(function (j) {
-				if (j.error === 'busy') throw { error: 'busy' };
+				/* 后端忙返回 {"ok":0,"busy":1}（没有 error 字段），别落进「校验失败」 */
+				if (j && j.busy === 1) throw { error: _('等待上一步完成，请稍候重试') };
 				if (j.error === 'port_only') {
 					toast(_('只填端口不写域名无法保存：没有域名，拦截列表为空，规则不会生效'), 'warn');
 					state.autoEditing = true; /* 展开自动区编辑器 */
