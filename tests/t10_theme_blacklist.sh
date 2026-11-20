@@ -43,9 +43,14 @@ printf 'aa:bb:cc:dd:ee:01\n22:33:44:55:66:77' >"$MOCK_UCI_ROOT/opennds/opennds/b
 
 run_theme() { # $1=clientmac → 输出 "zone_type|portal"
 	(
-		clientmac="$1"
 		ndspid=1
 		. "$TS" >/dev/null 2>&1
+		# 真机顺序（libopennds.sh）：source 分发器时 clientmac 还没解析
+		#（FAS 查询串在 source 之后才由 get_arguments 解析）；header() 是
+		# 分发发生的最早时机，决策全部在其调用期执行。这里按真机顺序模拟：
+		# source（clientmac 未设）→ 赋值 clientmac → 调 header 触发分发。
+		clientmac="$1"
+		header >/dev/null 2>&1
 		printf '%s|%s\n' "$zone_type" "$portal"
 	)
 }
@@ -135,6 +140,23 @@ r=$(run_theme 'aa:bb:cc:dd:ee:ff')
 case "$r" in
 	global*) echo "  FAIL scope=session 还进了全局分支: $r"; fail=1 ;;
 	*) echo "  OK   scope=session 照常区域识别（$r）" ;;
+esac
+
+echo "== C13 门户缺 generate_splash_sequence/header/footer 时不死循环 =="
+# t10 的门户文件都只设 userinfo、不定义任何函数 —— run_theme 调 header
+# 已经走了"门户缺函数 → 兜底"路径。这里再补 generate_splash_sequence 全链：
+# 应输出无按钮提示页（而非递归或 Invalid ThemeSpec 错误页）
+bl_clear
+r=$(
+	ndspid=1
+	. "$TS" >/dev/null 2>&1
+	clientmac='22:33:44:55:66:77'
+	header >/dev/null 2>&1
+	generate_splash_sequence 2>/dev/null
+)
+case "$r" in
+	*未提供认证门户*) echo "  OK   兜底提示页输出（无认证按钮）" ;;
+	*) echo "  FAIL 门户缺函数时输出异常: $(printf '%s' "$r" | head -3)"; fail=1 ;;
 esac
 
 done_report

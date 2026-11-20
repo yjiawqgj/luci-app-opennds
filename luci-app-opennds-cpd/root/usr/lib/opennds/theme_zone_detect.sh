@@ -1,7 +1,7 @@
 #!/bin/sh
 # Network Zone Detection - ThemeSpec dispatcher for openNDS (login mode 3)
 # Installed at: /usr/lib/opennds/theme_zone_detect.sh
-# CPD-VERSION: r8 (2026-11-20) —— 在路由器上执行
+# CPD-VERSION: r9 (2026-11-20) —— 在路由器上执行
 #   grep CPD-VERSION /usr/lib/opennds/theme_zone_detect.sh
 # 可核对装的是不是本版本（排查"脚本没更新"用）。
 #
@@ -9,10 +9,21 @@
 #     option login_option_enabled '3'
 #     option themespec_path '/usr/lib/opennds/theme_zone_detect.sh'
 #
+# Execution model (IMPORTANT - this is why the dispatch is not in the body):
+#   libopennds.sh sources this script LONG BEFORE it parses the FAS query
+#   string, so at source time $clientmac is EMPTY. clientmac/clientip are
+#   only filled in later by get_arguments(); header() and
+#   generate_splash_sequence() are called by libopennds AFTER that.
+#   Therefore ALL per-client decisions (blacklist match, zone detection,
+#   portal resolution) run inside those wrapper functions, never here.
+#
 # How it works:
-#   openNDS (libopennds.sh) sources this script and then calls the
-#   generate_splash_sequence() function defined by the portal script we
-#   source below. This dispatcher therefore:
+#   openNDS (libopennds.sh) sources this script and then calls, in order:
+#     header()               - we dispatch (pick portal, source it) here
+#     check_authenticated()  - libopennds built-in
+#     generate_splash_sequence() - resolves to the PORTAL's implementation
+#   after sourcing, so the portal's own header/footer/page functions are
+#   used. This dispatcher therefore:
 #
 #   0. If the client MAC is in the plugin blacklist (opennds blockedmac), it is
 #      served /usr/lib/opennds/cpd/blacklist/<selected portal>; when that is
@@ -44,9 +55,9 @@
 #        d) type default portal: cpd/default/<type>/<selected>.sh
 #           (zone_detect.main.portal_<type>), else
 #           cpd/default/<type>/default.sh
-#   5. 找不到任何门户时**不回落内置主题**：直接不提供门户（客户端保持
-#      未认证状态）。门户页只来自本插件管理的目录，绝不混入 openNDS 自带
-#      主题（2026-11-20 用户定稿）。
+#   5. 找不到任何门户时**不回落内置主题**：出示一个没有任何按钮的提示页
+#      （客户端保持未认证）。门户页只来自本插件管理的目录，绝不混入
+#      openNDS 自带主题（2026-11-20 用户定稿）。
 #
 # Warning - shebang "sh" is for compatibility with busybox ash (eg on OpenWrt)
 
@@ -213,173 +224,271 @@ type_default_portal() {
 	[ -f "$td_dir/default.sh" ] && echo "$td_dir/default.sh"
 }
 
-# ---- Global mode (zone detection disabled) ---------------------------------
+# ---- Portal dispatch (runs at CALL time, clientmac is set) -----------------
 
-zone_type=""
-zone_name=""
-clientif=""
-
-if [ "$zone_type" != "blacklist" ] && [ -f "$ZONE_DETECT_CONFIG" ] &&
-	[ "$(uci -q get zone_detect.main.scope 2>/dev/null)" = "global" ]; then
-	# 全局模式：不做区域识别，直接出全局门户
-	# 设置页「默认门户-全局」选的（cpd/global/<portal_global>）→ 内置 default.sh
-	zone_type="global"
+# Pick the portal for this client: sets zone_type / zone_name / portal
+# (empty portal = no portal configured, serve the no-portal notice page).
+cpd_pick_portal() {
+	zone_type=""
 	zone_name=""
-	gname=$(uci -q get zone_detect.main.portal_global 2>/dev/null)
-	if [ ! -z "$gname" ] && [ "$gname" != "default" ]; then
-		portal=$(portal_from_name "$ZONE_ROOT_GLOBAL" "$gname")
-	fi
-	if [ -z "$portal" ] && [ -f "$ZONE_ROOT_GLOBAL/default.sh" ]; then
-		portal="$ZONE_ROOT_GLOBAL/default.sh"
-	fi
-	zone_debug "global mode, portal=$portal"
-fi
+	portal=""
 
-# ---- Zone detection -------------------------------------------------------
+	local pr_scope pr_gname pr_clientif pr_cifstr pr_zssid pr_zonedir
+	local pr_zoneportal pr_blportal pr_bmac pr_bname
 
-if [ -z "$zone_type" ]; then
-	if [ ! -z "$clientmac" ]; then
-		# get_client_interface.sh prints "<interface>" (plus the mesh node
-		# MAC in mesh setups - variable is called clientmeshif but holds a
-		# MAC, and the usage text still mentions three fields, which is
-		# history; at most two fields are printed) and exits 1 with no output
-		# when the client is not in "ip neigh"; ignore both.
-		client_if_string=$(/usr/lib/opennds/get_client_interface.sh "$clientmac" 2>/dev/null)
-		clientif=$(echo "$client_if_string" | awk '{printf $1}')
-	fi
+	# ---- Global mode (zone detection disabled on the zone page) ----
+	if [ -f "$ZONE_DETECT_CONFIG" ] &&
+		[ "$(uci -q get zone_detect.main.scope 2>/dev/null)" = "global" ]; then
+		# 全局模式：不做区域识别，直接出全局门户
+		# 设置页「默认门户-全局」选的（cpd/global/<portal_global>）→ 内置 default.sh
+		zone_type="global"
+		zone_name=""
+		pr_gname=$(uci -q get zone_detect.main.portal_global 2>/dev/null)
+		if [ ! -z "$pr_gname" ] && [ "$pr_gname" != "default" ]; then
+			portal=$(portal_from_name "$ZONE_ROOT_GLOBAL" "$pr_gname")
+		fi
+		if [ -z "$portal" ] && [ -f "$ZONE_ROOT_GLOBAL/default.sh" ]; then
+			portal="$ZONE_ROOT_GLOBAL/default.sh"
+		fi
+		zone_debug "global mode, portal=$portal"
+	else
+		# ---- Zone detection ----
+		if [ ! -z "$clientmac" ]; then
+			# get_client_interface.sh prints "<interface>" (plus the mesh node
+			# MAC in mesh setups - variable is called clientmeshif but holds a
+			# MAC, and the usage text still mentions three fields, which is
+			# history; at most two fields are printed) and exits 1 with no output
+			# when the client is not in "ip neigh"; ignore both.
+			pr_cifstr=$(/usr/lib/opennds/get_client_interface.sh "$clientmac" 2>/dev/null)
+			pr_clientif=$(echo "$pr_cifstr" | awk '{printf $1}')
+		fi
 
-	if [ ! -z "$clientif" ]; then
-		# Is the client on one of OUR wireless interfaces?
-		if iw dev 2>/dev/null | awk -F 'Interface ' 'NF>1{print $2}' | grep -qwx "$clientif"; then
-			zssid=$(ssid_from_if "$clientif")
+		if [ ! -z "$pr_clientif" ]; then
+			# Is the client on one of OUR wireless interfaces?
+			if iw dev 2>/dev/null | awk -F 'Interface ' 'NF>1{print $2}' | grep -qwx "$pr_clientif"; then
+				pr_zssid=$(ssid_from_if "$pr_clientif")
 
-			if [ ! -z "$zssid" ]; then
-				zone_type="wireless"
-				zone_name="$zssid"
+				if [ ! -z "$pr_zssid" ]; then
+					zone_type="wireless"
+					zone_name="$pr_zssid"
+				else
+					# Wireless interface but no SSID resolvable (disabled/removed
+					# from config or mesh/mgd interfaces) - no zone can be matched.
+					# Still record the type so the wireless TYPE-DEFAULT portal can
+					# catch the client; leaving zone_type empty would build the
+					# path ".../cpd/default//default.sh" and skip the type default.
+					zone_type="wireless"
+					zone_debug "wireless interface $pr_clientif has no resolvable SSID"
+				fi
 			else
-				# Wireless interface but no SSID resolvable (disabled/removed
-				# from config or mesh/mgd interfaces) - no zone can be matched.
-				# Still record the type so the wireless TYPE-DEFAULT portal can
-				# catch the client; leaving zone_type empty would build the
-				# path ".../cpd/default//default.sh" and skip the type default.
-				zone_type="wireless"
-				zone_debug "wireless interface $clientif has no resolvable SSID"
+				# Not a wireless interface -> wired zone (eg br-lan)
+				zone_type="wired"
+				zone_name="$pr_clientif"
 			fi
 		else
-			# Not a wireless interface -> wired zone (eg br-lan)
+			# Interface unknown (client not in the ARP/neighbour table yet, or
+			# mesh setups). We cannot pick a zone, so go straight to the wired
+			# type default portal; that is still better than a stock page.
 			zone_type="wired"
-			zone_name="$clientif"
+			zone_name=""
+			zone_debug "client $clientmac interface unknown, using wired type default"
 		fi
-	else
-		# Interface unknown (client not in the ARP/neighbour table yet, or
-		# mesh setups). We cannot pick a zone, so go straight to the wired
-		# type default portal; that is still better than a stock page.
-		zone_type="wired"
-		zone_name=""
-		zone_debug "client $clientmac interface unknown, using wired type default"
 	fi
-fi
 
-# ---- Blacklist ------------------------------------------------------------
-# openNDS 9.4 起废弃了 macmechanism/allowedmaclist/blockedmaclist，主进程不再
-# 自己拦 MAC。本插件的黑名单存在 opennds 的 blockedmac 列表里，由这里执行：
-# 命中名单的客户端不出示区域门户（区域门户里的"继续"按钮会调 ndsctl auth），
-# 只出示黑名单门户，于是它一直停在上不了网的状态，直到从名单里移除。
-blportal=""
-if [ ! -z "$clientmac" ]; then
-	for bmac in $(uci -q get opennds.@opennds[0].blockedmac 2>/dev/null); do
-		[ ! -z "$bmac" ] || continue
-		if [ "$(mac_upper "$bmac")" = "$(mac_upper "$clientmac")" ]; then
-			# ①「客户端黑名单」页选中的门户（cpd/blacklist/）
-			bname=$(uci -q get zone_detect.main.portal_blacklist_sel 2>/dev/null)
-			if [ ! -z "$bname" ] && [ "$bname" != "default" ]; then
-				blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+	# ---- Blacklist ----
+	# openNDS 9.4 起废弃了 macmechanism/allowedmaclist/blockedmaclist，主进程不再
+	# 自己拦 MAC。本插件的黑名单存在 opennds 的 blockedmac 列表里，由这里执行：
+	# 命中名单的客户端不出示区域门户（区域门户里的"继续"按钮会调 ndsctl auth），
+	# 只出示黑名单门户，于是它一直停在上不了网的状态，直到从名单里移除。
+	pr_blportal=""
+	if [ ! -z "$clientmac" ]; then
+		for pr_bmac in $(uci -q get opennds.@opennds[0].blockedmac 2>/dev/null); do
+			[ ! -z "$pr_bmac" ] || continue
+			if [ "$(mac_upper "$pr_bmac")" = "$(mac_upper "$clientmac")" ]; then
+				# ①「客户端黑名单」页选中的门户（cpd/blacklist/）
+				pr_bname=$(uci -q get zone_detect.main.portal_blacklist_sel 2>/dev/null)
+				if [ ! -z "$pr_bname" ] && [ "$pr_bname" != "default" ]; then
+					pr_blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$pr_bname")
+				fi
+				# ② 兼容上一版构建：旧键 portal_blacklist 曾指向 cpd/blacklist/
+				if [ -z "$pr_blportal" ]; then
+					pr_bname=$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)
+					if [ ! -z "$pr_bname" ] && [ "$pr_bname" != "default" ]; then
+						pr_blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$pr_bname")
+					fi
+				fi
+				# ③ 设置页「默认门户-黑名单」选的默认门户（cpd/default/blacklist/）
+				if [ -z "$pr_blportal" ]; then
+					pr_blportal=$(type_default_portal blacklist)
+				fi
+				zone_type="blacklist"
+				zone_name=""
+				portal="$pr_blportal"
+				zone_debug "client $clientmac is blacklisted, portal=$portal"
+				break
 			fi
-			# ② 兼容上一版构建：旧键 portal_blacklist 曾指向 cpd/blacklist/
-			if [ -z "$blportal" ]; then
-				bname=$(uci -q get zone_detect.main.portal_blacklist 2>/dev/null)
-				if [ ! -z "$bname" ] && [ "$bname" != "default" ]; then
-					blportal=$(portal_from_name "$CPD_ROOT/blacklist" "$bname")
+		done
+	fi
+
+	# ---- Portal resolution (blacklist already resolved above) ----
+	if [ "$zone_type" != "blacklist" ]; then
+
+		# A zone name is used as a directory name. An SSID is arbitrary octets, so it
+		# may contain "/" or be "." / ".." -- both would escape the portal root.
+		case "$zone_name" in
+			*/*|.|..)
+				zone_debug "zone name '$zone_name' is not a safe path component, using type default"
+				zone_name=""
+				;;
+		esac
+
+		if [ ! -z "$zone_name" ]; then
+			if [ "$zone_type" = "wireless" ]; then
+				pr_zonedir="$ZONE_ROOT_WIRELESS/$zone_name"
+			else
+				pr_zonedir="$ZONE_ROOT_WIRED/$zone_name"
+			fi
+
+			zone_debug "client $clientmac zone=$zone_type/$zone_name"
+
+			if [ -f "$MARKERS" ] && awk -F'|' -v t="$zone_type" -v z="$zone_name" \
+				'NF >= 2 && $1 == t && $2 == z { found = 1; exit } END { exit !found }' "$MARKERS" 2>/dev/null; then
+				# LuCI marked this zone as "use the type default portal"
+				portal=$(type_default_portal "$zone_type")
+			else
+				# Portal picked for this very zone (file keeps its uploaded name)
+				pr_zoneportal=$(portal_for_zone "$zone_type" "$zone_name")
+				if [ ! -z "$pr_zoneportal" ]; then
+					portal=$(portal_from_name "$pr_zonedir" "$pr_zoneportal")
+				fi
+				# Directory level default used when the zone has no explicit choice
+				if [ -z "$portal" ] && [ -f "$pr_zonedir/default/default.sh" ]; then
+					portal="$pr_zonedir/default/default.sh"
 				fi
 			fi
-			# ③ 设置页「默认门户-黑名单」选的默认门户（cpd/default/blacklist/）
-			if [ -z "$blportal" ]; then
-				blportal=$(type_default_portal blacklist)
+
+			if [ -z "$portal" ]; then
+				portal=$(type_default_portal "$zone_type")
 			fi
-			zone_type="blacklist"
-			zone_name=""
-			zone_debug "client $clientmac is blacklisted, portal=$blportal"
-			break
+		else
+			# No zone name (unknown interface, or global mode where the portal
+			# was already picked above): type default only - but never clobber
+			# a portal the global branch already resolved (cpd/global/), the
+			# type lookup (cpd/default/global/) has no directory for it and
+			# would wipe it.
+			[ -z "$portal" ] && portal=$(type_default_portal "$zone_type")
 		fi
-	done
-fi
 
-# ---- Portal resolution ----------------------------------------------------
-
-if [ "$zone_type" = "blacklist" ]; then
-	# 黑名单客户端的门户在上面的分支里已经定好，不再参与区域解析
-	portal="$blportal"
-else
-
-# A zone name is used as a directory name. An SSID is arbitrary octets, so it
-# may contain "/" or be "." / ".." -- both would escape the portal root.
-case "$zone_name" in
-	*/*|.|..)
-		zone_debug "zone name '$zone_name' is not a safe path component, using type default"
-		zone_name=""
-		;;
-esac
-
-if [ ! -z "$zone_name" ]; then
-	if [ "$zone_type" = "wireless" ]; then
-		zonedir="$ZONE_ROOT_WIRELESS/$zone_name"
-	else
-		zonedir="$ZONE_ROOT_WIRED/$zone_name"
 	fi
 
-	zone_debug "client $clientmac zone=$zone_type/$zone_name"
-
-	if [ -f "$MARKERS" ] && awk -F'|' -v t="$zone_type" -v z="$zone_name" \
-		'NF >= 2 && $1 == t && $2 == z { found = 1; exit } END { exit !found }' "$MARKERS" 2>/dev/null; then
-		# LuCI marked this zone as "use the type default portal"
-		portal=$(type_default_portal "$zone_type")
-	else
-		# Portal picked for this very zone (file keeps its uploaded name)
-		zone_portal=$(portal_for_zone "$zone_type" "$zone_name")
-		if [ ! -z "$zone_portal" ]; then
-			portal=$(portal_from_name "$zonedir" "$zone_portal")
-		fi
-		# Directory level default used when the zone has no explicit choice
-		if [ -z "$portal" ] && [ -f "$zonedir/default/default.sh" ]; then
-			portal="$zonedir/default/default.sh"
-		fi
+	# 找不到任何门户：不回落内置主题（2026-11-20 用户定稿）。这里也是排查
+	# 黑名单门户的落点：黑名单客户端走到这说明 cpd/default/blacklist/ 没有
+	# 门户文件。
+	if [ -z "$portal" ] || [ ! -f "$portal" ]; then
+		portal=""
+		zone_debug "no portal found (zone_type=$zone_type zone_name=$zone_name), serving no portal"
+		return 0
 	fi
 
-	if [ -z "$portal" ]; then
-		portal=$(type_default_portal "$zone_type")
-	fi
-else
-	# No zone name (unknown interface, or global mode where the portal was
-	# already picked above): type default only - but never clobber a portal
-	# the global branch already resolved (cpd/global/), the type lookup
-	# (cpd/default/global/) has no directory for it and would wipe it.
-	[ -z "$portal" ] && portal=$(type_default_portal "$zone_type")
-fi
-
-fi
-
-# 找不到任何门户：不回落内置主题，直接不提供门户（客户端保持未认证，
-# 门户页一律来自本插件管理的目录）。这里也是排查黑名单门户的落点：
-# 黑名单客户端走到这说明 cpd/default/blacklist/ 里没有门户文件。
-if [ -z "$portal" ] || [ ! -f "$portal" ]; then
-	zone_debug "no portal found (zone_type=$zone_type zone_name=$zone_name), serving no portal"
+	userinfo="zone=$zone_type/$zone_name, portal=$portal"
 	return 0
-fi
+}
 
-userinfo="zone=$zone_type/$zone_name, portal=$portal"
+# No-portal notice page body: no authenticate button of any kind, so the
+# client simply stays unauthenticated (openNDS serves default_header before
+# calling generate_splash_sequence; footer falls back to default_footer).
+cpd_no_portal_page() {
+	echo "
+		<p>
+			<big-red>
+				$(echo "$gatewayname" | htmlentityencode 2>/dev/null || echo "$gatewayname")
+			</big-red>
+		</p>
+		<hr>
+		<p>
+			<italic-black>
+				此网络暂未提供认证门户，无法完成认证。请联系网络管理员。
+			</italic-black>
+		</p>
+	"
+	footer
+}
 
-# Source the portal script. It defines generate_splash_sequence() and sets
-# its own quota/portal variables; openNDS (libopennds.sh) will call
-# generate_splash_sequence() right after this include returns.
-# NOTE: do NOT exit here - we are sourced inside libopennds.sh!
-. "$portal"
+# ---- libopennds entry points -----------------------------------------------
+# header() is the first one called per request, and the earliest point where
+# clientmac is guaranteed to be parsed - so the dispatch (pick portal and
+# source it) happens here. Sourcing the portal overwrites header()/footer()/
+# generate_splash_sequence() with the portal's implementations; the instance
+# currently running keeps its own body (shell semantics), and the dispatch
+# flag below makes the subsequent name lookups resolve to the portal's code
+# exactly once, with no recursion.
+
+header() {
+	if [ -z "$CPD_DISPATCHED" ]; then
+		CPD_DISPATCHED=1
+		cpd_pick_portal
+		if [ ! -z "$portal" ] && [ -f "$portal" ]; then
+			CPD_PORTAL_OK=1
+			. "$portal"
+			# 门户定义了 header 就转调它的；没定义（少见）落到下面的兜底。
+			# 注意：这里按名字调用解析到的是 source 后的最新定义；
+			# 若门户没定义 header，会递归回本函数——CPD_DISPATCHED 已置位，
+			# 直接落到兜底输出，不会死循环。
+			header
+			return
+		fi
+		CPD_PORTAL_OK=0
+	fi
+	# 兜底 header（无门户，或门户没自定义 header）：与 libopennds
+	# default_header 相同的结构，保证门户 footer 的 div 层级能闭合
+	echo "<!DOCTYPE html>
+		<html>
+		<head>
+		<meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\">
+		<meta http-equiv=\"Pragma\" content=\"no-cache\">
+		<meta http-equiv=\"Expires\" content=\"0\">
+		<meta charset=\"utf-8\">
+		<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+		<link rel=\"shortcut icon\" href=\"/images/splash.jpg\" type=\"image/x-icon\">
+		<link rel=\"stylesheet\" type=\"text/css\" href=\"/splash.css\">
+		<title>$gatewayname</title>
+		</head>
+		<body>
+		<div class=\"offset\">
+		<med-blue>
+			$gatewayname <br>
+		</med-blue>
+		<div class=\"insert\" style=\"max-width:100%;\">
+	"
+}
+
+footer() {
+	# 门户定义了自己的 footer 时，本定义在 source 时被门户覆盖，进不到这里；
+	# 能进来说明门户没自定义 footer：用 libopennds 的默认 footer 收尾。
+	default_footer
+}
+
+generate_splash_sequence() {
+	if [ -z "$CPD_DISPATCHED" ]; then
+		# header 没先被调（不应发生，但防御一下）：先分发
+		CPD_DISPATCHED=1
+		cpd_pick_portal
+		if [ ! -z "$portal" ] && [ -f "$portal" ]; then
+			CPD_PORTAL_OK=1
+			. "$portal"
+		else
+			CPD_PORTAL_OK=0
+		fi
+	fi
+	if [ "$CPD_PORTAL_OK" = "1" ]; then
+		if [ -z "$CPD_GS_CALLED" ]; then
+			CPD_GS_CALLED=1
+			# 门户的 generate_splash_sequence（按名字解析到 source 后的定义；
+			# 若门户没定义会解析回本函数，CPD_GS_CALLED 已置位，落到兜底）
+			generate_splash_sequence
+			return
+		fi
+	fi
+	# 无门户（或门户没有页面函数）：出示无按钮提示页
+	cpd_no_portal_page
+}
