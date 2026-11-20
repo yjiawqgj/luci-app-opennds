@@ -311,10 +311,17 @@ return view.extend({
 			 * 倒计时、「配置更改已应用。」、刷新页面全由原生管理。
 			 * opennds 的 enabled 与 zone_detect.main.pending_run 一起 commit，
 			 * 后台 worker 读到 pending_run 才真正执行启停 —— 普通页面的应用
-			 * 不带这个键，永远不会替用户改 openNDS 的运行状态。 */
+			 * 不带这个键，永远不会替用户改 openNDS 的运行状态。
+			 *
+			 * pending_run 带一次性令牌：worker 执行完会把这个键删掉，但
+			 * 若上一轮 worker 抢锁失败 / post_apply 被页面刷新掐断，键会
+			 * 留在配置里。此时若再写同样的 0/1，uci 增量里两条都没变化，
+			 * 点开关只会得到「没有需要应用的更改」，开关永远切不动。
+			 * 令牌保证每次点击都产生真实增量，worker 只看首位 0/1。 */
+			var token = want + '-' + Date.now().toString(36);
 			CPD.stageUci('opennds', '@opennds[0]', 'enabled', 'opt', want)
 				.then(function () {
-					return CPD.stageUci('zone_detect', 'main', 'pending_run', 'opt', want);
+					return CPD.stageUci('zone_detect', 'main', 'pending_run', 'opt', token);
 				})
 				.then(function () {
 					return CPD.applyStaged();
@@ -328,14 +335,10 @@ return view.extend({
 			if (locked) return;
 			var want = state.running ? '0' : '1';
 			if (want === '0') {
-				CPD.confirm(_('停用 openNDS'), _(
-					'停用后 openNDS 立即退出：门户页面消失，免认证、可信任、黑名单、' +
-					'限速全部失效，所有设备将直接上网。确定停用？'), _('确定停用'), true,
+				CPD.confirm(_('停用 openNDS'), _('确认关闭？'), _('确定停用'), true,
 					function () { doToggle('0'); });
 			} else {
-				CPD.confirm(_('启用 openNDS'), _(
-					'启用后 openNDS 接管认证：客户端要通过门户认证才能上网' +
-					'（可信任、免认证名单除外）。确定启用？'), _('确定启用'), false,
+				CPD.confirm(_('启用 openNDS'), _('确认开启？'), _('确定启用'), false,
 					function () { doToggle('1'); });
 			}
 		}
@@ -524,12 +527,13 @@ return view.extend({
 		}
 
 		function goFilter(k) {
-			state.filter = k;
+			/* 再点同一张卡 = 取消选中，回到「全部客户端」 */
+			state.filter = (state.filter === k) ? null : k;
 			state.ap = null;
 			renderStats();
 			renderAps();
 			renderList();
-			scrollToClients();
+			if (state.filter) scrollToClients();
 		}
 
 		function scrollToClients() {
@@ -590,6 +594,21 @@ return view.extend({
 				});
 			});
 		}
+
+		/* 点卡片以外的空白处取消选中：按钮、输入框、弹窗里的事务不算空白 */
+		document.addEventListener('click', function (ev) {
+			if (!loaded || modalOpen > 0) return;
+			var t = ev.target;
+			if (!t || typeof t.closest !== 'function') return;
+			if (t.closest('button, a, input, select, textarea, label, .ovd-mask')) return;
+			if (statGrid.contains(t) || apGrid.contains(t)) return;
+			if (state.filter == null && !state.ap) return;
+			state.filter = null;
+			state.ap = null;
+			renderStats();
+			renderAps();
+			renderList();
+		});
 
 		/* ---------- 渲染：客户端列表 ---------- */
 		var clientsSec = E('div', { 'class': 'ovd-sec', 'id': 'ovd-clients', 'style': 'scroll-margin-top:14px' });
@@ -701,8 +720,7 @@ return view.extend({
 					editHTML +
 					'<button type="button" class="ovd-rowbtn danger" data-act="deauth" data-mac="' + esc(c.mac) + '"' +
 					deauthDis + '>' + _('解除认证') + '</button>' +
-					'<button type="button" class="ovd-rowbtn' + (blocked ? '' : ' danger') +
-					'" data-act="' + (blocked ? 'unblock' : 'block') + '" data-mac="' + esc(c.mac) + '">' +
+					'<button type="button" class="ovd-rowbtn danger" data-act="' + (blocked ? 'unblock' : 'block') + '" data-mac="' + esc(c.mac) + '">' +
 					(blocked ? _('解除拉黑') : _('拉黑')) + '</button>' +
 					'</div></td></tr>';
 			}).join('');
@@ -997,11 +1015,8 @@ return view.extend({
 		}
 
 		function openEdit(row) {
-			/* 照演示页：可信任客户端不受超时与流量限制，无需编辑 */
-			if (row.trusted) {
-				CPD.toast(_('可信任客户端不受超时与流量限制，无需编辑'), 'warn');
-				return;
-			}
+			/* 照演示页：可信任客户端不受超时与流量限制，编辑按钮本来就不显示 */
+			if (row.trusted) return;
 			editRow = row;
 			editInputs = {};
 			var sub = document.getElementById('ovd-ed-sub');
@@ -1069,7 +1084,6 @@ return view.extend({
 
 		function cancelEdit() {
 			closeEdit();
-			CPD.toast(_('已取消编辑，未应用本次修改'));
 		}
 
 		/* 单客户端限额：改写 preemptivemac 里该 MAC 的条目（custom= 原样保留）。

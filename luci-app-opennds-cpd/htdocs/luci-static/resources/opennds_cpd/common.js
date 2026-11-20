@@ -567,11 +567,10 @@ var CPD = L.Class.extend({
 			return LC.require('ui').then(function (ui) {
 				if (!(ui && ui.changes && typeof ui.changes.apply === 'function'))
 					throw { error: _('当前 LuCI 版本不支持原生应用流程') };
-				/* 没有增量就不走应用：避免"点一下保存并应用把 openNDS 重启一遍" */
-				if (changeCount(ui) === 0) {
-					self.notifyTimed(_('没有需要应用的更改'), 'warn', 3000);
+				/* 没有增量就不走应用：避免"点一下保存并应用把 openNDS 重启一遍"。
+				 * 静默跳过——这类"没有可做的操作"提示一律不弹横幅。 */
+				if (changeCount(ui) === 0)
 					return { ok: 1, nochange: 1 };
-				}
 				return APPLY.start(ui);
 			});
 		}, function (e) {

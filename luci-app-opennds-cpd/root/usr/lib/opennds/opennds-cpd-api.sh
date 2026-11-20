@@ -1207,6 +1207,69 @@ EOF5
 	fi
 }
 
+# ---- 已认证会话缓存 ------------------------------------------------------
+# openNDS 进程一停，ndsctl json 就没了；刚重启的那几秒也还在就绪中。
+# 这时关联表里的设备仍带着上一次的有效会话（用户关了 NDS 又马上打开、
+# 或停着看概览），一律标成「未认证」是错的。NDS 在跑时把仍有效的
+# Authenticated 会话记下来，取不到 ndsctl 数据时用它恢复客户端身份。
+# 每行：小写mac<TAB>到期时间戳（已把"永久会话"按空闲超时折算成绝对时间）
+CPD_SESSION_CACHE="${CPD_SESSION_CACHE:-/tmp/opennds_cpd_sessions}"
+AUTH_CACHE=''
+
+auth_cache_load() { # 读缓存并丢掉过期行 → AUTH_CACHE
+	AUTH_CACHE=''
+	[ -f "$CPD_SESSION_CACHE" ] || return 0
+	local lm exp now
+	now=$(date +%s)
+	while IFS='	' read -r lm exp; do
+		case "$lm" in *:*) ;; *) continue ;; esac
+		case "$exp" in '' | *[!0-9]*) continue ;; esac
+		[ "$exp" -gt "$now" ] || continue
+		AUTH_CACHE="$AUTH_CACHE$lm	$exp
+"
+	done <"$CPD_SESSION_CACHE"
+	return 0
+}
+
+auth_cache_get() { # $1=小写 mac → 0=在有效期内认证过
+	[ -n "$AUTH_CACHE" ] || return 1
+	printf '%s\n' "$AUTH_CACHE" | grep -qF "$1	"
+}
+
+auth_cache_save() { # $1=parse_clients 的 S 行；原子写，内容没变就不动文件
+	local line mac state se la exp out='' now idle tmp
+	now=$(date +%s)
+	idle="${CPD_AUTHIDLE:-120}"
+	case "$idle" in '' | *[!0-9]*) idle=120 ;; esac
+	[ "$idle" -gt 0 ] || idle=120
+	while IFS='	' read -r line mac state ip cif ss se la rest; do
+		[ "$line" = 'S' ] || continue
+		case "$state" in Authenticated | AuthBlocked) ;; *) continue ;; esac
+		case "$mac" in *:*) ;; *) continue ;; esac
+		mac=$(mac_lower "$mac")
+		# session_end 是绝对时间戳；0/null 表示跟随空闲超时
+		case "$se" in
+			0 | null | '')
+				case "$la" in
+					'' | null | *[!0-9]*) exp=$((now + idle)) ;;
+					*) exp=$((la + idle)) ;;
+				esac ;;
+			*[!0-9]*) exp=$((now + idle)) ;;
+			*) exp="$se" ;;
+		esac
+		[ "$exp" -gt "$now" ] || continue
+		out="$out$mac	$exp
+"
+	done <<EOF9
+$1
+EOF9
+	[ "$out" = "$(cat "$CPD_SESSION_CACHE" 2>/dev/null)" ] && return 0
+	tmp="$CPD_SESSION_CACHE.tmp.$$"
+	printf '%s' "$out" >"$tmp" 2>/dev/null || return 0
+	mv "$tmp" "$CPD_SESSION_CACHE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+	return 0
+}
+
 ov_build() {
 	local running enabled engaged busy scope='' conf_err=''
 	if [ -f "${OPENNDS_CONF:-/etc/config/opennds}" ]; then
@@ -1250,6 +1313,15 @@ ov_build() {
 		CPD_MACS=$(printf '%s\n' "$CPD_IN" | awk -F'\t' 'NF {print tolower($1)}' | sort -u)
 	fi
 
+	# NDS 在跑且 ndsctl 有数据：刷新会话缓存（含"刚认证完"的新会话）。
+	# 停着 / 刚重启还没就绪：读缓存恢复身份，绝不把有效会话标成未认证。
+	if [ "$running" = '1' ] && [ -n "$CPD_PARSED" ]; then
+		auth_cache_save "$CPD_PARSED"
+		AUTH_CACHE=''
+	else
+		auth_cache_load
+	fi
+
 	ov_conn
 	ov_rows
 	ov_counts
@@ -1278,7 +1350,7 @@ ov_row_class() { # $1=state $2=小写 mac → 打印 bl|tr|pre|auth|unauth
 
 ov_rows() {
 	local mac state ip cif dkb ukb ss se lm rows='' sep='' n=0 onl rif wir
-	local seen cls
+	local seen cls cs
 	N_ONLINE=0
 	ROW_TBL=''
 	# 已见 MAC：openNDS 记录的 + 关联表里的 + 邻居表里的（后面补名单行时去重用）
@@ -1322,8 +1394,12 @@ EOF2
 		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
 		seen="$seen
 $lm"
-		rows="$rows$sep$(ov_client_row '' '' "$rif" "$lm" 0 0 '' '' 1 0)"
-		cls=$(ov_row_class '' "$lm")
+		# ndsctl 没数据（NDS 停了 / 刚重启）时，用会话缓存恢复身份：
+		# 之前认证过且还在有效期内 → 已认证，不进未认证卡
+		cs=''
+		auth_cache_get "$lm" && cs='Authenticated'
+		rows="$rows$sep$(ov_client_row "$cs" '' "$rif" "$lm" 0 0 '' '' 1 0)"
+		cls=$(ov_row_class "$cs" "$lm")
 		ROW_TBL="$ROW_TBL$lm	$cls	1	0
 "
 		sep=','
@@ -1342,8 +1418,10 @@ EOF4
 		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
 		seen="$seen
 $lm"
-		rows="$rows$sep$(ov_client_row '' '' "$(neigh_dev_for "$lm")" "$lm" 0 0 '' '' 1 1)"
-		cls=$(ov_row_class '' "$lm")
+		cs=''
+		auth_cache_get "$lm" && cs='Authenticated'
+		rows="$rows$sep$(ov_client_row "$cs" '' "$(neigh_dev_for "$lm")" "$lm" 0 0 '' '' 1 1)"
+		cls=$(ov_row_class "$cs" "$lm")
 		ROW_TBL="$ROW_TBL$lm	$cls	1	1
 "
 		sep=','
@@ -1359,8 +1437,10 @@ EOF6
 		printf '%s\n' "$seen" | grep -qFx "$lm" && continue
 		seen="$seen
 $lm"
-		rows="$rows$sep$(ov_client_row '' '' '' "$lm" 0 0 '' '' 0 0)"
-		cls=$(ov_row_class '' "$lm")
+		cs=''
+		auth_cache_get "$lm" && cs='Authenticated'
+		rows="$rows$sep$(ov_client_row "$cs" '' '' "$lm" 0 0 '' '' 0 0)"
+		cls=$(ov_row_class "$cs" "$lm")
 		ROW_TBL="$ROW_TBL$lm	$cls	0	0
 "
 		sep=','
@@ -1975,6 +2055,9 @@ z_portal_exists() { # $1=目录 $2=名字
 	[ -f "$d/$n" ] && return 0
 	b="${n%.sh}"
 	[ -f "$d/$b.sh" ] && return 0
+	# 文件夹门户：设置页上传的以 default.sh 为主入口，区域页旧上传的
+	# 是 theme.sh —— 两种都认，老门户不会因为升级突然失效
+	[ -f "$d/$b/default.sh" ] && return 0
 	[ -f "$d/$b/theme.sh" ] && return 0
 	return 1
 }
@@ -4882,7 +4965,7 @@ st_portal_items() { # $1=tab
 			case "$b" in
 				*.sh) printf '%s\tfile\n' "$b" ;;
 			esac
-		elif [ -d "$f" ] && [ -f "$f/theme.sh" ]; then
+		elif [ -d "$f" ] && { [ -f "$f/default.sh" ] || [ -f "$f/theme.sh" ]; }; then
 			printf '%s\tdir\n' "$b"
 		fi
 	done
@@ -5059,7 +5142,7 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 		file_is_text "$tmp" || out_err '只支持文本脚本，二进制文件无法上传'
 	else
 		[ -d "$tmp" ] || out_err '上传会话不存在或已过期，请重新上传'
-		[ -f "$tmp/theme.sh" ] || out_err '只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'
+		[ -f "$tmp/default.sh" ] || out_err '只接受 .sh 门户脚本，或包含 default.sh 的文件夹'
 	fi
 	acquire_lock
 	local dir
@@ -5083,11 +5166,11 @@ st_upload_default() { # $1=tab $2=id $3=kind(file|dir) $4=文件名（保留上�
 		rm -rf "$dir/$name" 2>/dev/null
 		mv "$tmp" "$dir/$name" 2>/dev/null || out_err '门户文件夹入库失败'
 		[ -d "$dir/$name" ] || out_err '门户文件夹入库失败（目标不是文件夹）'
-		[ -f "$dir/$name/theme.sh" ] || out_err '门户文件夹里没有 theme.sh'
+		[ -f "$dir/$name/default.sh" ] || out_err '门户文件夹里没有 default.sh'
 		# 让 SFTP / 其它账号也能进目录、读文件（a+rX：目录补 x，普通文件只加读）
 		chmod 755 "$dir/$name" 2>/dev/null
 		chmod -R a+rX "$dir/$name" 2>/dev/null
-		chmod 755 "$dir/$name/theme.sh" 2>/dev/null
+		chmod 755 "$dir/$name/default.sh" 2>/dev/null
 	fi
 	# 清临时目录（id 已白名单校验，路径限定在 ZONE_UP 下）
 	case "$ZONE_UP/$id" in
@@ -5444,16 +5527,21 @@ worker_lock() {
 # 永远不会替它们改 openNDS 状态；只有概览页自己申请的启停/重启才执行。
 
 pending_run_take() { # 读出并立即清掉 pending_run（先清再执行：中途挂了也不能
-	# 留着旧请求，否则下一轮普通应用会误执行）；输出 0|1 或空
-	local pr
+	# 留着旧请求，否则下一轮普通应用会误执行）；输出 0|1 或空。
+	# 值可以是 0/1，也可以是概览页写的 0-<令牌>/1-<令牌>（令牌保证每次
+	# 点开关都产生真实 uci 增量，避免已提交的同值键让应用变成空操作）。
+	local pr d
 	pr=$(uci -q get 'zone_detect.main.pending_run' 2>/dev/null)
 	case "$pr" in
-		0 | 1)
-			uci -q delete 'zone_detect.main.pending_run' 2>/dev/null
-			uci commit zone_detect 2>/dev/null
-			printf '%s' "$pr"
-			;;
+		0) d=0 ;;
+		1) d=1 ;;
+		0-*) d=0 ;;
+		1-*) d=1 ;;
+		*) return 0 ;;
 	esac
+	uci -q delete 'zone_detect.main.pending_run' 2>/dev/null
+	uci commit zone_detect 2>/dev/null
+	printf '%s' "$d"
 	return 0
 }
 

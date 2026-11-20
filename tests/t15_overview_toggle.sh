@@ -190,4 +190,32 @@ ck "pending_restart 已清掉" '' "$(uci -q get zone_detect.main.pending_restart
 grep -q '"running":1' "$CPD_APPLY_STATE" &&
 	echo "  OK   终态 running:1" || { echo "  FAIL 终态不是 running:1: $(cat "$CPD_APPLY_STATE")"; fail=1; }
 
+echo "== C9 开关一次性令牌 pending_run=1-<token>：与 1 等价，执行后清掉 =="
+rm -f "$CPD_PIDOF_CLEAR"
+mk_pr ''
+mk_prestart ''
+: >"$NDS_INIT_LOG"
+mk_pr '1-mn8f-abc'
+call apply_worker
+wait_term || { echo "  FAIL worker 没写终态"; fail=1; }
+seq="$(tr '\n' ' ' <"$NDS_INIT_LOG")"
+ck "令牌启动只调 start" "start" "$seq"
+ck "令牌请求已清掉" '' "$(uci -q get zone_detect.main.pending_run 2>/dev/null)"
+grep -q '"running":1' "$CPD_APPLY_STATE" &&
+	echo "  OK   令牌启动终态 running:1" ||
+	{ echo "  FAIL 令牌启动终态不对: $(cat "$CPD_APPLY_STATE")"; fail=1; }
+
+echo "== C10 开关一次性令牌 pending_run=0-<token>：与 0 等价，执行后清掉 =="
+clear_delta
+mk_pr '0-pq2x-def'
+: >"$NDS_INIT_LOG"
+call apply_worker
+wait_term || { echo "  FAIL worker 没写终态"; fail=1; }
+seq="$(tr '\n' ' ' <"$NDS_INIT_LOG")"
+ck "令牌停止只调 stop" "stop" "$seq"
+ck "令牌请求已清掉" '' "$(uci -q get zone_detect.main.pending_run 2>/dev/null)"
+grep -q '"running":0' "$CPD_APPLY_STATE" &&
+	echo "  OK   令牌停止终态 running:0" ||
+	{ echo "  FAIL 令牌停止终态不对: $(cat "$CPD_APPLY_STATE")"; fail=1; }
+
 done_report

@@ -152,11 +152,17 @@ return view.extend({
 			 * 后传的覆盖先传的，这里只显示当前生效的那一个 */
 			var curName = cur.sel || (cur.items && cur.items.length ? cur.items[0] : '');
 
+			/* 该类型下已有门户（脚本或文件夹）：上传按钮上方显示绿色「已上传」 */
+			var uploaded = E('div', {
+				'style': 'color:#2e9468;font-size:13px;font-weight:600;margin-top:14px',
+				'id': 'cpd-portal-uploaded'
+			}, curName ? _('已上传') : '');
+
 			var tools = E('div', {
 				'style': 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px'
 			}, [
-				E('button', { 'class': 'cbi-button', 'click': pickFile }, _('上传脚本')),
-				E('button', { 'class': 'cbi-button', 'click': pickFolder }, _('上传文件夹')),
+				E('button', { 'class': 'cbi-button', 'click': pickFile }, _('上传门户')),
+				E('button', { 'class': 'cbi-button', 'click': pickFolder }, _('上传门户文件夹')),
 				E('button', {
 					'class': 'cbi-button cbi-button-negative',
 					'disabled': curName ? null : '',
@@ -167,6 +173,7 @@ return view.extend({
 			portalBox.appendChild(E('div', {}, [
 				tabRow,
 				E('div', { 'style': 'padding-top:22px' }, [
+					uploaded,
 					tools
 				])
 			]));
@@ -206,7 +213,7 @@ return view.extend({
 				if (!f) return;
 				var name = f.name || '';
 				if (!/\.sh$/i.test(name)) {
-					CPD.toast(_('只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'), 'warn');
+					CPD.toast(_('只接受 .sh 门户脚本，或包含 default.sh 的文件夹'), 'warn');
 					return;
 				}
 				if (nameBytes(name) > 31) {
@@ -234,7 +241,7 @@ return view.extend({
 				if (!files.length) return;
 				var tab = state.tab;
 				/* webkitRelativePath：<文件夹名>/…/文件 */
-				var rels = [], folderName = '', hasTheme = false, bad = null;
+				var rels = [], folderName = '', hasEntry = false, bad = null;
 				files.forEach(function (f) {
 					var rp = f.webkitRelativePath || f.name || '';
 					var segs = rp.split('/');
@@ -243,15 +250,15 @@ return view.extend({
 					if (!sub) return;
 					rels.push({ f: f, sub: sub });
 					var base = segs[segs.length - 1];
-					if (base === 'theme.sh') hasTheme = true;
+					if (base === 'default.sh') hasEntry = true;
 					if (/[\x00-\x1f]/.test(sub) || sub.split('/').indexOf('..') >= 0) bad = sub;
 				});
 				if (!folderName || bad !== null) {
 					CPD.toast((bad || folderName) + '：' + _('文件名含非法字符，无法上传'), 'warn');
 					return;
 				}
-				if (!hasTheme) {
-					CPD.toast(_('只接受 .sh 门户脚本，或包含 theme.sh 的文件夹'), 'warn');
+				if (!hasEntry) {
+					CPD.toast(_('只接受 .sh 门户脚本，或包含 default.sh 的文件夹'), 'warn');
 					return;
 				}
 				if (nameBytes(folderName) > 31) {
@@ -344,10 +351,7 @@ return view.extend({
 			var info = portalInfo(tab);
 			/* 用「当前显示的那个」而不是只看 sel：sel 为空时按钮也能用 */
 			var name = info.sel || (info.items && info.items.length ? info.items[0] : '');
-			if (!name) {
-				CPD.notify(_('该类型当前是内置 default.sh，没有可清理的门户'), 'warn');
-				return;
-			}
+			if (!name) return;
 			CPD.confirm(
 				_('清理 %s？').format(shortName(name)),
 				_('将删除门户目录中的 %s，删除后该类型自动切回默认门户。').format(name),
@@ -468,15 +472,12 @@ return view.extend({
 		}
 
 		function clickIface(name) {
-			if (name === state.device) {
-				CPD.notify(_('当前正在使用 %s').format(name), 'warn');
-				return;
-			}
+			if (name === state.device) return;
 			CPD.confirm(
 				_('切换网络接口？'),
 				_('将 openNDS 接管接口从「%s」切换到「%s」。切换后部分自定义规则和客户端可能失效。')
 					.format(state.device, name),
-				_('切换'), false,
+				_('切换'), true,
 				function () {
 					state.device = name;
 					state.iface = name;

@@ -50,7 +50,8 @@
 #           /etc/config/zone_detect:
 #              zone_detect.main.wireless = 'SSID|portal.sh'
 #              zone_detect.main.wired    = 'br-lan|portal.sh'
-#           resolved as <zone>/<portal.sh> or <zone>/<portal>/theme.sh
+#           resolved as <zone>/<portal.sh> or <zone>/<portal>/default.sh
+#           (older folder uploads used theme.sh and are still accepted)
 #        c) <zone>/default/default.sh  (per-zone fallback)
 #        d) type default portal: cpd/default/<type>/<selected>.sh
 #           (zone_detect.main.portal_<type>), else
@@ -153,7 +154,8 @@ ssid_from_if() {
 
 # Resolve a portal name inside a portal directory.
 #   name empty / "default"  -> <dir>/default.sh
-#   name "foo" / "foo.sh"   -> <dir>/foo.sh -> <dir>/foo/theme.sh -> default
+#   name "foo" / "foo.sh"   -> <dir>/foo.sh -> <dir>/foo/default.sh
+#                              -> <dir>/foo/theme.sh (旧上传) -> default
 # Only plain names are accepted (no slash, no leading dot).
 portal_from_name() {
 	pdir="$1"
@@ -175,7 +177,11 @@ portal_from_name() {
 
 	if [ -f "$pdir/$pbase.sh" ]; then
 		echo "$pdir/$pbase.sh"
+	elif [ -f "$pdir/$pbase/default.sh" ]; then
+		# 设置页上传的门户文件夹以 default.sh 为主入口
+		echo "$pdir/$pbase/default.sh"
 	elif [ -f "$pdir/$pbase/theme.sh" ]; then
+		# 区域识别页早期上传的文件夹门户用 theme.sh，继续兼容
 		echo "$pdir/$pbase/theme.sh"
 	elif [ -f "$pdir/default.sh" ]; then
 		echo "$pdir/default.sh"
