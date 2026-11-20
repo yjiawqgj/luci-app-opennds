@@ -1412,7 +1412,9 @@ ov_counts() {
 	while IFS='	' read -r lm cls onl wir; do
 		[ -n "$lm" ] || continue
 		case "$cls" in
-			bl) continue ;; # 黑名单只进黑名单卡
+			# 黑名单行：身份卡都不计，但有线卡照常按连接计数——客户端连上
+			# br-lan 就有 IP，卡片不依赖 NDS（2026-11-21 用户口径）
+			bl) ;;
 			tr) N_TR=$((N_TR + 1)) ;; # 名单为准，离线也在
 			pre) ;; # 免认证下面按配置名单数（这里数会漏掉离线与未登录的条目）
 			auth) [ "$onl" = '1' ] && N_AUTH=$((N_AUTH + 1)) ;;
@@ -1423,7 +1425,7 @@ ov_counts() {
 				N_UN=$((N_UN + 1))
 				;;
 		esac
-		# 有线卡：连着的有线设备，不分身份（黑名单上面已经 continue 掉了）
+		# 有线卡：连着的有线设备，不分身份（黑名单客户端连着也计入）
 		[ "$onl" = '1' ] && [ "$wir" = '1' ] && N_WIRED=$((N_WIRED + 1))
 	done <<EOF2
 $ROW_TBL
@@ -1464,11 +1466,12 @@ ov_aps() {
 		if [ -n "$ifn" ]; then
 			if [ "$sta_any" = '1' ]; then
 				# 按 hostapd 关联终端计数：clientif（get_client_interface.sh）
-				# 没装 iw 时是 br-lan，对不上 phyN-apM，按它数永远是 0
+				# 没装 iw 时是 br-lan，对不上 phyN-apM，按它数永远是 0。
+				# 黑名单客户端也计入：客户端连上 WIFI 就在关联表里（有 IP），
+				# 卡片按连接计数、不依赖 NDS 运行（2026-11-21 用户口径）。
 				while IFS='	' read -r lm sm; do
 					[ -n "$lm" ] || continue
 					[ "$sm" = "$ifn" ] || continue
-					mac_in_bl "$lm" && continue # 黑名单客户端不计入
 					cnt=$((cnt + 1))
 				done <<EOF2
 $STA_MAP
@@ -1477,7 +1480,6 @@ EOF2
 				while IFS='	' read -r lm st ip cif dkb ukb ss se; do
 					[ -n "$lm" ] || continue
 					[ "$cif" = "$ifn" ] || continue
-					mac_in_bl "$lm" && continue
 					cnt=$((cnt + 1))
 				done <<EOF3
 $CPD_IN

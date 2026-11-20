@@ -390,8 +390,9 @@ return view.extend({
 					if (!state.running) return false;
 					return online && !c.authorized && !c.preauth && !c.blocked;
 				case 'wired':
-					/* 有线卡 = 连着的有线设备，不分身份（与 AP 卡片同口径） */
-					return online && !!c.wired && !c.blocked;
+					/* 有线卡 = 连着的有线设备，不分身份、黑名单客户端连着也算
+					 * （与 AP 卡片同口径：连上 br-lan 就有 IP，2026-11-21 用户口径） */
+					return online && !!c.wired;
 				case '':
 					/* 接入点筛选模式：不看身份（filteredClients 里另有 online 限定） */
 					return true;
@@ -463,9 +464,9 @@ return view.extend({
 
 		function filteredClients() {
 			/* 接入点筛选模式：该 AP 上「正在连着」的全部客户端（不分身份，
-			 * 与卡片按关联表计数同一口径），黑名单除外 */
+			 * 黑名单客户端连着也算——它已连上 WIFI、有 IP，卡片不依赖 NDS） */
 			var b = state.clients.filter(function (c) {
-				if (state.ap) return apFilterMatch(c) && !!c.online && !c.blocked;
+				if (state.ap) return apFilterMatch(c) && !!c.online;
 				return inFilter(c);
 			});
 			var q = normSearch(state.query);
@@ -665,7 +666,8 @@ return view.extend({
 			 *   编辑   —— 可信任不显示（演示页：不受超时与流量限制，无需编辑），
 			 *             其余身份都可点（黑名单置灰）；给普通客户端设限额 = 写入
 			 *             preemptivemac 条目，下次接入自动登录，真实状态是「免认证」
-			 *   免认证/可信任 —— 黑名单客户端置灰（必须先解除拉黑）
+			 *   免认证/可信任 —— 黑名单客户端也可点（2026-11-21 用户口径）：
+			 *             操作 = 从黑名单移除 + 加入对应名单（应用后重启 NDS 生效）
 			 *   解除认证 —— 已认证/免认证/可信任都可点；未认证没有会话可解除，
 			 *             黑名单要先解除拉黑。可信任/免认证的解除认证会同时把
 			 *             客户端从对应名单里清除（2026-11-20 用户口径，双向一致）
@@ -682,7 +684,7 @@ return view.extend({
 				var editHTML = trusted ? '' :
 					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
 					(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
-				var deauthDis = (blocked || (!authed && !pre && !trusted)) ? ' disabled' : '';
+				var deauthDis = ((!authed && !pre && !trusted) || blocked) ? ' disabled' : '';
 				return '<tr>' +
 					'<td><div class="ovd-host"><span class="ovd-host-name">' +
 					esc(c.host || '—') + '</span><div class="ovd-tags">' + tags + '</div></div></td>' +
@@ -693,9 +695,9 @@ return view.extend({
 					'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
 					(blocked ? ' disabled' : '') + '>' + _('详情') + '</button>' +
 					'<button type="button" class="ovd-rowbtn" data-act="' + preAct + '" data-mac="' + esc(c.mac) + '"' +
-					(blocked ? ' disabled' : '') + '>' + preLabel + '</button>' +
+					'>' + preLabel + '</button>' +
 					'<button type="button" class="ovd-rowbtn" data-act="' + trustAct + '" data-mac="' + esc(c.mac) + '"' +
-					(blocked ? ' disabled' : '') + '>' + trustLabel + '</button>' +
+					'>' + trustLabel + '</button>' +
 					editHTML +
 					'<button type="button" class="ovd-rowbtn danger" data-act="deauth" data-mac="' + esc(c.mac) + '"' +
 					deauthDis + '>' + _('解除认证') + '</button>' +
@@ -787,13 +789,14 @@ return view.extend({
 		function askAction(act, row) {
 			var d = CONFIRM_TEXT[act];
 			if (!d) return;
-			/* 一个客户端只能属于一个名单：黑名单里的必须先解除拉黑 */
-			if (row.blocked && (act === 'trust' || act === 'preauth')) {
-				CPD.notify(_('该客户端在黑名单中，请先解除拉黑'), 'warn');
-				return;
-			}
 			var h = row.host || row.mac;
-			var msg = d.msg(h) + ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。');
+			var extra = '';
+			/* 黑名单客户端也可直接设为可信任/免认证（2026-11-21 用户口径）：
+			 * 操作 = 从黑名单移除 + 加入对应名单，应用后 NDS 重启生效 */
+			if (row.blocked && (act === 'trust' || act === 'preauth')) {
+				extra = _('该客户端在黑名单中：应用后将先把它移出黑名单，再设为可信任/免认证，openNDS 会随应用重启。');
+			}
+			var msg = d.msg(h) + ' ' + extra + ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。');
 			CPD.confirm(d.title, msg, d.ok, d.danger, function () {
 				performAction(act, row);
 			});
@@ -815,6 +818,16 @@ return view.extend({
 			var lm = String(mac || '').toLowerCase();
 			function pmDefault() {
 				return 'mac=' + lm + ';sessiontimeout=0;uploadrate=0;downloadrate=0;uploadquota=0;downloadquota=0';
+			}
+			function unstageBlocked() {
+				/* 黑名单互斥（2026-11-21 用户口径）：设为可信任/免认证前先把它
+				 * 从 blockedmac 摘掉（不在名单里时返回 null，不产生增量）。
+				 * blockedmac 是 openNDS 主进程启动时读的配置，应用后随 worker
+				 * 重启 NDS 一起生效。 */
+				return CPD.stageListEdit('opennds', '@opennds[0]', 'blockedmac', function (arr) {
+					var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
+					return out.length === arr.length ? null : out;
+				});
 			}
 			switch (act) {
 				case 'deauth':
@@ -876,7 +889,9 @@ return view.extend({
 						var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
 						return out.length === arr.length ? null : out;
 					});
-				case 'trust':
+			case 'trust':
+				/* 黑名单客户端直接设可信任：先摘黑名单（互斥），再加 trustedmac */
+				return unstageBlocked().then(function () {
 					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
 						if (arr.map(function (x) { return x.toLowerCase(); }).indexOf(lm) >= 0) return arr;
 						return arr.concat([lm]);
@@ -889,6 +904,7 @@ return view.extend({
 							return arr;
 						});
 					});
+				});
 				case 'untrust':
 					/* 移除可信任必须同时解除认证：可信任客户端有自动登录的会话，
 					 * 只摘名单不踢人，NDS 里还留着认证信息，移出后照样能上网
@@ -904,7 +920,9 @@ return view.extend({
 							return changed;
 						});
 					});
-				case 'preauth':
+			case 'preauth':
+				/* 黑名单客户端直接设免认证：先摘黑名单（互斥），再写 preemptivemac */
+				return unstageBlocked().then(function () {
 					return CPD.stageListEdit('opennds', '@opennds[0]', 'trustedmac', function (arr) {
 						var out = arr.filter(function (x) { return x.toLowerCase() !== lm; });
 						return out.length === arr.length ? null : out;
@@ -914,6 +932,7 @@ return view.extend({
 							return arr.concat([pmDefault()]);
 						});
 					});
+				});
 				case 'unpreauth':
 					/* 移除免认证同样要先解除认证：免认证客户端也带着自动登录的
 					 * 会话，只摘名单不踢人，它仍然是已认证状态（2026-11-20 用户口径）。 */

@@ -49,7 +49,7 @@ fi
 if [ -z "$NDS_NO_HOSTAPD" ] && [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' ]; then
 	cat <<'J'
 {
-	"num_sta": 3,
+	"num_sta": 4,
 	"clients": {
 		"AA:BB:CC:DD:EE:01": {
 			"address": "aa:bb:cc:dd:ee:01",
@@ -62,6 +62,10 @@ if [ -z "$NDS_NO_HOSTAPD" ] && [ "$1" = 'call' ] && [ "$2" = 'hostapd.phy2-ap0' 
 		"AA:BB:CC:DD:EE:09": {
 			"address": "aa:bb:cc:dd:ee:09",
 			"aid": "3"
+		},
+		"DC:D8:7B:53:E5:5A": {
+			"address": "dc:d8:7b:53:e5:5a",
+			"aid": "4"
 		}
 	}
 }
@@ -309,7 +313,7 @@ ck "黑名单=1" '"blacklist":1' "$counts"
 
 # ② 卡片数与列表同源：online 行 = 未认证卡 2 条 + 在线卡 4 条
 n=$(printf '%s' "$out" | grep -o '"online":true' | wc -l | tr -d ' ')
-ck "列表里 online=true 的行数=6（在线卡 4 + 未认证卡 2）" '6' "$n"
+ck "列表里 online=true 的行数=7（在线卡 4 + 未认证卡 2 + 黑名单客户端连着也算）" '7' "$n"
 # 有权限的是 4 条（aa01 / 11:22 / ee08 / ee20）：未认证的两条不算 authorized
 n2=$(printf '%s' "$out" | grep -o '"online":true,"authorized":true' | wc -l | tr -d ' ')
 ck "列表里 online+authorized 行数=4（=在线卡）" '4' "$n2"
@@ -322,7 +326,8 @@ a0=$(ap_seg "$out" '互联网')
 a1=$(ap_seg "$out" 'guest')
 ck "互联网 AP 运行时接口=phy2-ap0" '"iface":"phy2-ap0"' "$a0"
 ck "guest AP 运行时接口=phy2-ap1" '"iface":"phy2-ap1"' "$a1"
-ck "互联网 AP 计数=3（hostapd 关联终端）" '"count":3' "$a0"
+ck "互联网 AP 计数=4（hostapd 关联终端；黑名单客户端连着 WIFI 也计入——
+已连上就有 IP，卡片不依赖 NDS 运行，2026-11-21 用户口径）" '"count":4' "$a0"
 ck "guest AP 计数=1（clientif=br-lan 也按 MAC 查到）" '"count":1' "$a1"
 
 # ④⑤ 客户端行：SSID + 邻居表补 IP（trusted 的 clientif 是 br-lan，SSID 只能靠关联表）
@@ -373,12 +378,16 @@ ck "门户外关联设备用邻居表补 IP" '"ip":"10.0.0.7"' "$r9"
 # ⑪ AP 卡片计数 = 点开该卡片能看到的行数（用户现场：卡片 3、列表 0）
 n_ap=$(printf '%s' "$out" | tr '{' '\n' | grep -F '"apsec":"default_radio2"' |
 	grep -c '"online":true')
-ck "互联网卡片计数(3) = 按该 AP 筛出的行数" '3' "$n_ap"
+ck "互联网卡片计数(4) = 按该 AP 筛出的行数（黑名单客户端同口径）" '4' "$n_ap"
 
 # ⑥ 名单互斥：黑名单里的 MAC 即便写在 trustedmac 里也不算可信任
 r4=$(seg "$out" 'dc:d8:7b:53:e5:5a')
 ck "黑名单 MAC 不算可信任" '"trusted":false' "$r4"
 ck "黑名单 MAC 标记 blocked" '"blocked":true' "$r4"
+# 黑名单客户端已连上 WIFI（关联表里有它）：照样出行且算在线——
+# AP 卡片按连接计数、不依赖 NDS（2026-11-21 用户口径）
+ck "黑名单客户端 online=true（连着 WIFI 就算在线）" '"online":true' "$r4"
+ck "黑名单客户端 apsec=default_radio2（点 AP 卡片能筛出来）" '"apsec":"default_radio2"' "$r4"
 
 echo "== 应用后自动清理重复条目 =="
 call sys post_apply >/dev/null
@@ -406,7 +415,7 @@ r3s=$(seg3 "$out3" 'aa:bb:cc:dd:ee:01')
 ck "停止后关联设备仍出行" '"mac":"aa:bb:cc:dd:ee:01"' "$r3s"
 ck "停止后关联设备 online=true（人连着）" '"online":true' "$r3s"
 s0=$(ap_seg "$out3" '互联网')
-ck "停止后 AP 计数不变（关联表不经过 openNDS）" '"count":3' "$s0"
+ck "停止后 AP 计数不变（关联表不经过 openNDS，含黑名单客户端）" '"count":4' "$s0"
 
 echo "== 兜底：hostapd ubus 不可用，退回按 clientif 计数 =="
 # 模拟固件没带 hostapd ubus 对象的机器：关联表拿不到，但装了 iw，
