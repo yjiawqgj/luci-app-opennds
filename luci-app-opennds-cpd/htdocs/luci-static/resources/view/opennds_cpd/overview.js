@@ -214,6 +214,7 @@ return view.extend({
 			state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
 			state.scope = st.session_scope || 'default';
 			state.counts = st.counts || {};
+			state.defaultSession = st.defaultSession || 1440;
 			state.managed = st.managed || { iface: '', ip: '' };
 			state.aps = st.aps || [];
 			state.confErr = st.confErr || '';
@@ -335,10 +336,10 @@ return view.extend({
 			if (locked) return;
 			var want = state.running ? '0' : '1';
 			if (want === '0') {
-				CPD.confirm(_('停用 openNDS'), _('确认关闭？'), _('确定停用'), true,
+				CPD.confirm(null, _('确认关闭？'), _('确定停用'), true,
 					function () { doToggle('0'); }, true);
 			} else {
-				CPD.confirm(_('启用 openNDS'), _('确认开启？'), _('确定启用'), false,
+				CPD.confirm(null, _('确认开启？'), _('确定启用'), false,
 					function () { doToggle('1'); }, true);
 			}
 		}
@@ -349,9 +350,7 @@ return view.extend({
 			 * 真正的重启由 apply_worker 在应用后执行（stop → 等退出 → start → 等就绪），
 			 * 页面按原生节奏刷新，状态由本页轮询如实展示 —— 不再出现"先报已重启、
 			 * 过两秒又变未运行"的假横幅。 */
-			CPD.confirm(_('重启 openNDS'), _(
-				'重启期间所有客户端会短暂断线，未认证的设备需要重新认证。确定重启？'),
-				_('确定重启'), false,
+			CPD.confirm(null, _('确认重启？'), _('确定重启'), false,
 				function () {
 					CPD.stageUci('zone_detect', 'main', 'pending_restart', 'opt', '1')
 						.then(function () {
@@ -740,55 +739,34 @@ return view.extend({
 			});
 		}
 
-		/* ---------- 行内操作（二次确认文案照演示页） ---------- */
+		/* ---------- 行内操作（二次确认只显示一句确认语，无标题） ---------- */
 		var CONFIRM_TEXT = {
 			preauth: {
-				title: _('免认证'),
-				msg: function (h) {
-					return _('将「%s」设为免认证（预先认证）后，它无需经过普通认证流程即可获得访问权限，但仍受 NDS 的流量统计和相关限制。').format(h);
-				},
+				msg: function () { return _('确认加入免认证？'); },
 				ok: _('免认证'), danger: false
 			},
 			unpreauth: {
-				title: _('移除免认证'),
-				msg: function (h) {
-					return _('确定要移除「%s」的免认证吗？将同时解除该客户端的认证，移除后它恢复为普通未认证客户端，需要重新认证才能访问网络。').format(h);
-				},
+				msg: function () { return _('确认取消免认证？'); },
 				ok: _('移除免认证'), danger: false
 			},
 			trust: {
-				title: _('可信任客户端'),
-				msg: function (h) {
-					return _('将「%s」设为可信任客户端后，它无需普通认证流程，且不受 NDS 的流量统计和超时限制。').format(h);
-				},
+				msg: function () { return _('确认设为可信任？'); },
 				ok: _('可信任'), danger: false
 			},
 			untrust: {
-				title: _('移除可信任'),
-				msg: function (h) {
-					return _('确定要移除「%s」的可信任状态吗？将同时解除该客户端的认证，移除后它需要重新认证才能访问网络。').format(h);
-				},
+				msg: function () { return _('确认移除可信任？'); },
 				ok: _('移除可信任'), danger: false
 			},
 			deauth: {
-				title: _('解除认证'),
-				msg: function (h) {
-					return _('确定要解除「%s」的认证吗？解除后该客户端需要重新认证才能访问网络。').format(h);
-				},
+				msg: function () { return _('确认解除认证？'); },
 				ok: _('解除认证'), danger: true
 			},
 			block: {
-				title: _('拉黑客户端'),
-				msg: function (h) {
-					return _('确定要拉黑「%s」吗？拉黑后该客户端将无法访问网络，并从在线列表中移除。').format(h);
-				},
+				msg: function () { return _('确认拉黑？'); },
 				ok: _('拉黑'), danger: true
 			},
 			unblock: {
-				title: _('解除拉黑'),
-				msg: function (h) {
-					return _('确定要将「%s」移出黑名单吗？解除后该客户端可以重新接入网络。').format(h);
-				},
+				msg: function () { return _('确认解除拉黑？'); },
 				ok: _('解除拉黑'), danger: false
 			}
 		};
@@ -809,14 +787,7 @@ return view.extend({
 			var d = CONFIRM_TEXT[act];
 			if (!d) return;
 			var h = row.host || row.mac;
-			var extra = '';
-			/* 黑名单客户端也可直接设为可信任/免认证（2026-11-21 用户口径）：
-			 * 操作 = 从黑名单移除 + 加入对应名单，应用后 NDS 重启生效 */
-			if (row.blocked && (act === 'trust' || act === 'preauth')) {
-				extra = _('该客户端在黑名单中：应用后将先把它移出黑名单，再设为可信任/免认证，openNDS 会随应用重启。');
-			}
-			var msg = d.msg(h) + ' ' + extra + ' ' + _('该操作先记为待应用，点页面底部的「保存并应用」后生效。');
-			CPD.confirm(d.title, msg, d.ok, d.danger, function () {
+			CPD.confirm(null, d.msg(h), d.ok, d.danger, function () {
 				performAction(act, row);
 			});
 		}
@@ -1174,6 +1145,14 @@ return view.extend({
 			return String(lim.value);
 		}
 
+		/* 最大会话时间：没单独设置时显示全局默认值（openNDS 实际按它执行），
+		 * 而不是含糊的「未单独设置」。单独设置了就显示设置值。 */
+		function sessionText(lim, trusted) {
+			if (trusted) return _('不受限制');
+			if (lim && lim.enabled) return String(lim.value);
+			return String(state.defaultSession || 1440);
+		}
+
 		function dtlRow(k, v, mono) {
 			return E('div', { 'class': 'ovd-dtl-row' }, [
 				E('span', { 'class': 'ovd-dtl-k' }, k),
@@ -1214,12 +1193,16 @@ return view.extend({
 				dtlRow(_('接入点'), clientAp(row)),
 				dtlRow(_('认证状态'), auth)
 			]));
-			dtlBody.appendChild(dtlSec(_('时间与超时'), [
-				dtlRow(_('加入时间'), row.joined || '—'),
-				dtlRow(_('到期时间'), expires),
-				dtlRow(_('中断超时（分钟）'), timeout),
-				dtlRow(_('最大会话时间（分钟）'), limText(lim.maxSession, tr))
-			]));
+			/* 时间与超时：认证时间取首次认证通过的落盘时刻（离线也在），
+			 * 到期时间不变；客户端正连着 WiFi 时，在两者中间插一行上线时间。 */
+			var timeRows = [
+				dtlRow(_('认证时间'), row.authTime || '—')
+			];
+			if (row.onlineTime) timeRows.push(dtlRow(_('上线时间'), row.onlineTime));
+			timeRows.push(dtlRow(_('到期时间'), expires));
+			timeRows.push(dtlRow(_('中断超时（分钟）'), timeout));
+			timeRows.push(dtlRow(_('最大会话时间（分钟）'), sessionText(lim.maxSession, tr)));
+			dtlBody.appendChild(dtlSec(_('时间与超时'), timeRows));
 			dtlBody.appendChild(dtlSec(_('速度限制'), [
 				dtlRow(_('上传速度限制（Kb/s）'), limText(lim.uploadRate, tr)),
 				dtlRow(_('下载速度限制（Kb/s）'), limText(lim.downloadRate, tr))

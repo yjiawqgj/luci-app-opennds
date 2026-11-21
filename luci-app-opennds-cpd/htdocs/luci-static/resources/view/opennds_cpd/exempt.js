@@ -331,10 +331,8 @@ return view.extend({
 		function askRemove(which, mac, host) {
 			var isPre = which === 'preempt';
 			var who = host && host !== '—' ? host : mac.toUpperCase();
-			CPD.confirm(
-				isPre ? _('删除客户端') : _('移除客户端'),
-				(isPre ? _('确定要删除客户端「%s」吗？删除后该客户端将不再享受对应豁免。')
-					: _('确定要移除客户端「%s」吗？移除后该客户端将不再享受对应豁免。')).format(who),
+			CPD.confirm(null,
+				(isPre ? _('确认删除客户端？') : _('确认移除客户端？')),
 				isPre ? _('确认删除') : _('确认移除'), true,
 				function () {
 					if (which === 'trusted') {

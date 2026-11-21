@@ -310,7 +310,8 @@ var CPD = L.Class.extend({
 		return ui.showModal(title, list);
 	},
 
-	/* 二次确认弹窗 */
+	/* 二次确认弹窗：统一不显示标题栏，只留正文一句确认语 + 按钮。
+	 * title 参数保留是为了兼容旧调用（传了也不渲染），新调用一律只写正文。 */
 	confirm: function (title, text, okText, danger, onok, noTitle) {
 		var row = E('div', {
 			'style': 'margin-top:18px;display:flex;justify-content:flex-end;gap:8px'
@@ -327,9 +328,9 @@ var CPD = L.Class.extend({
 				}
 			}, okText)
 		]);
-		/* noTitle=true 时传 null 给原生 showModal——它不渲染标题栏，
-		 * 弹窗只剩正文和按钮（开关确认用它，用户要求不带标题） */
-		return ui.showModal(noTitle ? null : title, [E('p', {}, text), row]);
+		/* 所有二次确认一律无标题：传 null 给原生 showModal，它不渲染标题栏，
+		 * 弹窗只剩正文和按钮（用户要求） */
+		return ui.showModal(null, [E('p', {}, text), row]);
 	},
 
 	/* ---------- base64（UTF-8 安全） ---------- */

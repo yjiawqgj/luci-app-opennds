@@ -942,11 +942,16 @@ ubus_call() {
 # ② iw station dump（与官方 get_client_interface.sh 同款）
 # ③ iwinfo assoclist（openwrt 默认自带，LuCI 无线页用的就是它；
 #    没有 hostapd ubus 对象 / 没装 iw 的固件也能数出关联终端）
+# 输出 mac<TAB>iface<TAB>关联秒数（拿不到时长填 -）。
+# 第三列是「连上 WiFi 的时刻」的数据源：hostapd/iw 都给连接时长，
+# 后端用当前时间减去它倒推出上线时刻；拿不到就留空，前端显示「—」。
+# 前两列格式与旧版完全一致，STA_MAP 的下游（ov_conn/client_ssid 等）不受影响。
 ws_sta_one() { # $1=运行时接口名
 	local ifn="$1" got=''
 	if command -v ubus >/dev/null 2>&1; then
 		got=$(ubus_call call "hostapd.$ifn" get_clients |
 		awk -v i="$ifn" '
+		BEGIN { cur = "" }
 		{
 			s = $0
 			m = "[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:" \
@@ -956,17 +961,33 @@ ws_sta_one() { # $1=运行时接口名
 				# 只要键值是 { 的（clients 对象的键），不要 "address":"<mac>" 这类值
 				rest = substr(s, RSTART + RLENGTH)
 				sub(/^[[:space:]]*/, "", rest)
-				if (rest ~ /^[[:space:]]*:[[:space:]]*\{/) print tolower(k) "\t" i
+				if (rest ~ /^[[:space:]]*:[[:space:]]*\{/) {
+					if (cur != "") print cur "\t" i "\t" (sec[cur] == "" ? "-" : sec[cur])
+					cur = tolower(k)
+				}
 			}
-		}')
+			# connected_time 是该客户端已关联的秒数，藏在 client 对象里
+			if (cur != "" && match(s, /"connected_time"[[:space:]]*:[[:space:]]*[0-9]+/)) {
+				t = substr(s, RSTART, RLENGTH)
+				sub(/^[^:]*:/, "", t); gsub(/[[:space:]]/, "", t)
+				sec[cur] = t
+			}
+		}
+		END { if (cur != "") print cur "\t" i "\t" (sec[cur] == "" ? "-" : sec[cur]) }')
 	fi
 	if [ -z "$got" ] && command -v iw >/dev/null 2>&1; then
 		got=$(iw dev "$ifn" station dump 2>/dev/null |
-			awk -v i="$ifn" '/^[[:space:]]*Station[[:space:]]/ {print tolower($2) "\t" i}')
+			awk -v i="$ifn" '
+			/^[[:space:]]*Station[[:space:]]/ {
+				if (cur != "") print cur "\t" i "\t" (sec == "" ? "-" : sec)
+				cur = tolower($2); sec = ""
+			}
+			/connected time:/ { sec = $3 }
+			END { if (cur != "") print cur "\t" i "\t" (sec == "" ? "-" : sec) }')
 	fi
 	if [ -z "$got" ] && command -v iwinfo >/dev/null 2>&1; then
 		got=$(iwinfo "$ifn" assoclist 2>/dev/null |
-			awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[[:space:]]/ {print tolower($1) "\t" i}')
+			awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[[:space:]]/ {print tolower($1) "\t" i "\t-"}')
 	fi
 	[ -n "$got" ] && printf '%s\n' "$got"
 }
@@ -1171,11 +1192,17 @@ ov_client_row() {
 	joined=$(fmt_time "$ss")
 	expires=$(fmt_time "$se")
 	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
+	# 详情时间：认证时间取落盘最早认证时刻（不随 NDS 重启变），
+	# 上线时间由 hostapd 关联时长倒推（只有正在关联的设备才算得出）。
+	local auth_t online_t
+	auth_t=$(auth_start_fmt "$lm")
+	online_t=$(online_since_fmt "$lm")
 
-	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","apsec":"%s","expires":"%s","joined":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"wired":%s,"limits":%s}' \
+	printf '{"host":"%s","ip":"%s","mac":"%s","iface":"%s","ssid":"%s","apsec":"%s","expires":"%s","joined":"%s","authTime":"%s","onlineTime":"%s","timeout":%s,"trafficUp":%s,"trafficDown":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"blocked":%s,"online":%s,"authorized":%s,"wired":%s,"limits":%s}' \
 		"$(json_escape "$host")" "$(json_escape "$ip")" "$(json_escape "$lm")" \
 		"$(json_escape "$cif")" "$(json_escape "$ssidv")" "$(json_escape "$apsec")" \
 		"$(json_escape "$expires")" "$(json_escape "$joined")" \
+		"$(json_escape "$auth_t")" "$(json_escape "$online_t")" \
 		"${CPD_AUTHIDLE:-120}" \
 		"$up" "$down" "$auth" "$pre" "$trst" "$blk" \
 		"$( [ "$onl" = '1' ] && printf 'true' || printf 'false' )" \
@@ -1191,19 +1218,34 @@ ov_client_row() {
 #   CPD_WS   network.wireless status 原文
 #   AP_MAP   uci section → 运行时接口
 #   AP_META  iface<TAB>ssid<TAB>section（当前启用的 AP）
-#   STA_MAP  mac<TAB>iface（hostapd 关联表，权威）
+#   STA_MAP  mac<TAB>iface（hostapd 关联表，权威；两列，下游按此解析）
+#   STA_CONNSEC  mac<TAB>关联秒数（ws_sta_one 第三列，倒推上线时刻）
 #   STA_SEC  mac<TAB>section（同一 SSID 开在 2.4G/5G 是两个段，按段区分）
 ov_wireless_prep() {
-	local sm_mac sm_ifn sm_sec
+	local sm_mac sm_ifn sm_sec sm_conn
 	CPD_WS=''
 	if command -v ubus >/dev/null 2>&1; then
 		CPD_WS=$(ubus_call call network.wireless status)
 	fi
 	AP_MAP=$(ws_iface_map "$CPD_WS")
 	ov_ap_meta
-	STA_MAP=$(ws_sta_map "$AP_META")
-	# MAC → 所属 AP 的 uci 段名。同一个 SSID 常常同时开在 2.4G 和 5G 上，
-	# 那是两个段、两张卡片；卡片数量按段统计，列表也必须按段筛选，
+	# ws_sta_map 输出三列；拆开：STA_MAP 只要前两列（格式不变），
+	# STA_CONNSEC 收第三列（关联时长），供详情「上线时间」倒推用。
+	STA_CONNSEC=''
+	STA_MAP=''
+	while IFS='	' read -r sm_mac sm_ifn sm_conn; do
+		[ -n "$sm_mac" ] || continue
+		STA_MAP="$STA_MAP$sm_mac	$sm_ifn
+"
+		case "$sm_conn" in
+			'' | - | *[!0-9]*) ;;
+			*) STA_CONNSEC="$STA_CONNSEC$sm_mac	$sm_conn
+" ;;
+		esac
+	done <<EOW
+$(ws_sta_map "$AP_META")
+EOW
+	# MAC → 所属 AP 的 uci 段名。同一个 SSID 常常同时开在 2.4G 和 5G 上，	# 那是两个段、两张卡片；卡片数量按段统计，列表也必须按段筛选，
 	# 否则会出现「卡片显示 2 个、点开列表 5 条」的错位。
 	STA_SEC=''
 	if [ -n "$STA_MAP" ]; then
@@ -1229,9 +1271,13 @@ EOF5
 # 不再自建缓存——自建缓存只在 NDS 运行时才写得到，首次安装/停服时是空的。
 #
 # AUTH_CACHE 每行：小写mac<TAB>到期时间戳（只留有效期内且未被主动登出的）
+# AUTH_START 每行：小写mac<TAB>首次认证时刻（binauthlog 里该 mac 最早的 auth
+# 记录 session_start）。ndsctl 的 session_start 会在 NDS 恢复认证时被冲成当前
+# 时间，所以详情「认证时间」以这个落盘值为准——它不随停服/重启变化。
 # authlog.mountpoint 可由 uci opennds.@opennds[0].log_mountpoint 覆盖；
 # 未配置时按 openNDS 的探测顺序取第一个 tmpfs（/tmp /run /var），默认 /tmp。
 AUTH_CACHE=''
+AUTH_START=''
 
 # base64 解码（authlog 的 mac 键去掉了末尾 =）。纯 awk，不依赖 busybox base64 -d。
 # 输入是去掉末尾 = 的 base64（authlog 原样）。每 4 个 6-bit 字符还原 3 字节；
@@ -1300,12 +1346,57 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 		AUTH_CACHE="$AUTH_CACHE$lm	$exp
 "
 	done <"$f"
+
+	# 首次认证时刻：读 binauthlog 里 method=auth 的记录（auth_client 那种不带
+	# session_start，跳过）。每行形如：
+	#   Wed Nov 20 10:00:00 2024, method=auth, clientmac=aa:bb:..., ..., session_start=1732..., session_end=1732...
+	# 同一 mac 取最早的一条（首次认证），用 awk 按 mac 去重、只留最小时间戳。
+	AUTH_START=''
+	if [ -f "$bl" ]; then
+		AUTH_START=$(awk '
+		{
+			mac = ""; ss = ""; meth = ""
+			if (match($0, /clientmac=[^,[:space:]]+/)) {
+				mac = substr($0, RSTART + 10, RLENGTH - 10)
+				mac = tolower(mac)
+			}
+			if (match($0, /method=[^,[:space:]]+/))
+				meth = substr($0, RSTART + 7, RLENGTH - 7)
+			if (meth != "auth" || mac == "") next
+			if (match($0, /session_start=[0-9]+/))
+				ss = substr($0, RSTART + 14, RLENGTH - 14)
+			if (ss == "" || mac !~ /:/) next
+			if (!(mac in first) || (ss + 0) < (first[mac] + 0)) first[mac] = ss
+		}
+		END { for (m in first) print m "\t" first[m] }
+		' "$bl")
+	fi
 	return 0
 }
 
 auth_cache_get() { # $1=小写 mac → 0=在有效期内认证过
 	[ -n "$AUTH_CACHE" ] || return 1
 	printf '%s\n' "$AUTH_CACHE" | grep -qF "$1	"
+}
+
+# 详情「认证时间」：该 mac 落盘的最早认证时刻 → 格式化时间；没有则空串
+auth_start_fmt() { # $1=小写 mac
+	[ -n "$AUTH_START" ] || return 0
+	local e
+	e=$(printf '%s\n' "$AUTH_START" | awk -F'\t' -v m="$1" '$1 == m {print $2; exit}')
+	fmt_time "$e" || printf ''
+}
+
+# 详情「上线时间」：当前时间 − 关联时长 → 格式化时间；没有关联时长则空串
+# $1=小写 mac。关联时长随时间变化，取当下快照（前端轮询会刷新）。
+online_since_fmt() { # $1=小写 mac
+	[ -n "$STA_CONNSEC" ] || return 0
+	local sec now e
+	sec=$(printf '%s\n' "$STA_CONNSEC" | awk -F'\t' -v m="$1" '$1 == m {print $2; exit}')
+	case "$sec" in '' | *[!0-9]*) return 0 ;; esac
+	now=$(date +%s)
+	e=$((now - sec))
+	fmt_time "$e" || printf ''
 }
 
 ov_build() {
@@ -1330,6 +1421,9 @@ ov_build() {
 	# 预读：租约表 / 空闲超时 / FUP 速率（每个客户端再查就太慢了）
 	CPD_LEASE_MAP=$(ov_lease_map)
 	CPD_AUTHIDLE=$(uci_val 'opennds.@opennds[0].authidletimeout' '120')
+	# 全局最大会话时间（分钟）：详情里客户端没单独设置时显示它。openNDS 默认 1440。
+	CPD_DEFSESSION=$(uci_val 'opennds.@opennds[0].sessiontimeout' '1440')
+	case "$CPD_DEFSESSION" in '' | *[!0-9]*) CPD_DEFSESSION=1440 ;; esac
 	CPD_FUP_U=$(uci_val 'opennds.@opennds[0].fup_upload_throttle_rate' '0')
 	CPD_FUP_D=$(uci_val 'opennds.@opennds[0].fup_download_throttle_rate' '0')
 	ov_wireless_prep
@@ -1622,8 +1716,9 @@ ov_status_fields() { # 输出 status 的 JSON 片段（不含外层花括号）
 	local mif mip=''
 	mif=$(managed_iface)
 	[ -n "$mif" ] && mip=$(iface_ip "$mif")
-	printf '"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
+	printf '"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"defaultSession":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
 		"$CPD_RUNNING" "$CPD_ENABLED" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
+		"${CPD_DEFSESSION:-1440}" \
 		"$(json_escape "$CPD_SCOPE")" "$(json_escape "$CPD_CONFERR")" \
 		"$N_ONLINE" "$N_WIRED" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL" \
 		"$(uci_val 'opennds.@opennds[0].maxclients' '250')" \
@@ -1683,6 +1778,7 @@ ov_selfcheck() {
 	printf ',"ap_map":[%s]' "$(lines_to_json "$AP_MAP")"
 	printf ',"ap_meta":[%s]' "$(lines_to_json "$AP_META")"
 	printf ',"sta_map":[%s]' "$(lines_to_json "$STA_MAP")"
+	printf ',"sta_connsec":[%s]' "$(lines_to_json "$STA_CONNSEC")"
 	printf ',"clients":[%s]' "$(lines_to_json "$CPD_IN")"
 	printf ',"aps":[%s]\n' "$(json_escape "$APS_JSON")"
 }

@@ -190,6 +190,90 @@ esac
 IEOF
 chmod +x "$S/bin/ip"
 
+echo "== A7 详情时间：认证时间取落盘首次认证；上线时间由关联时长倒推；默认会话时长 =="
+# binauthlog：aa:bb:..:01 有两条 auth（首次 T1、后来 T2），取最早的 T1
+T1=$((NOW - 3600))
+T2=$((NOW - 600))
+printf 'Wed Nov 20 10:00:00 2024, method=auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T1" "$T1" >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'Wed Nov 20 11:00:00 2024, method=auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T2" "$T2" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+# hostapd 桩带 connected_time=120 秒（aa:bb..01 已连 120 秒）
+cat >"$S/bin/ubus" <<'UEOF'
+#!/bin/sh
+if [ "$1" = call ] && [ "$2" = network.wireless ]; then
+cat <<'J'
+{
+	"radio2": {
+		"up": true,
+		"interfaces": [
+			{
+				"section": "default_radio2",
+				"ifname": "phy2-ap0",
+				"config": {
+					"mode": "ap",
+					"ssid": "互联网"
+				}
+			}
+		]
+	}
+}
+J
+fi
+if [ "$1" = call ] && [ "$2" = hostapd.phy2-ap0 ]; then
+cat <<'J'
+{
+	"num_sta": 2,
+	"clients": {
+		"AA:BB:CC:DD:EE:01": {
+			"address": "aa:bb:cc:dd:ee:01",
+			"connected_time": 120
+		},
+		"22:33:44:55:66:77": {
+			"address": "22:33:44:55:66:77",
+			"connected_time": 30
+		}
+	}
+}
+J
+fi
+UEOF
+chmod +x "$S/bin/ubus"
+# 全局默认会话时长
+printf '600' >"$MOCK_UCI_ROOT/opennds/opennds/sessiontimeout"
+out7=$(NDS_RUNNING=1 call overview dashboard)
+r7=$(row "$out7" 'aa:bb:cc:dd:ee:01')
+case "$r7" in *'"authTime":"20'*) echo "  OK   认证时间有值（不再是—）";; *) echo "  FAIL 认证时间有值"; echo "       $r7"; fail=1;; esac
+case "$r7" in *'"onlineTime":"20'*) echo "  OK   上线时间有值（关联时长倒推）";; *) echo "  FAIL 上线时间有值"; echo "       $r7"; fail=1;; esac
+ck "默认会话时长=600" '"defaultSession":600' "$out7"
+# 认证时间必须等于首次 T1（比 T2 早），用 fmt 后的具体字符串核对
+T1FMT=$(date -d "@$T1" '+%Y-%m-%d %H:%M' 2>/dev/null)
+ck "认证时间=首次认证时刻" "\"authTime\":\"$T1FMT\"" "$r7"
+# 上线时间 = now - 120，允许 2 秒误差：这里只校验格式与存在，精确值由前端展示
+: >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf '120' >"$MOCK_UCI_ROOT/opennds/opennds/sessiontimeout"
+# 恢复无 connected_time 的 ubus 桩（用原样重建）
+cat >"$S/bin/ubus" <<'UEOF'
+#!/bin/sh
+if [ "$1" = call ] && [ "$2" = network.wireless ]; then
+cat <<'J'
+{
+	"radio2": {
+		"up": true,
+		"interfaces": [ { "section": "default_radio2", "ifname": "phy2-ap0", "config": { "mode": "ap", "ssid": "互联网" } } ]
+	}
+}
+J
+fi
+if [ "$1" = call ] && [ "$2" = hostapd.phy2-ap0 ]; then
+cat <<'J'
+{ "num_sta": 2, "clients": {
+ "AA:BB:CC:DD:EE:01": { "address": "aa:bb:cc:dd:ee:01" },
+ "22:33:44:55:66:77": { "address": "22:33:44:55:66:77" }
+} }
+J
+fi
+UEOF
+chmod +x "$S/bin/ubus"
+
 echo "== B1 设置页：脚本任意 .sh，文件夹必须含 default.sh =="
 mkdir -p "$CPD_ROOT/default/wireless" "$S/up/d1/foo" "$S/up/df/foo" "$S/up/d2/bar"
 printf '#!/bin/sh\necho foo\n' >"$S/up/d1/foo/default.sh"

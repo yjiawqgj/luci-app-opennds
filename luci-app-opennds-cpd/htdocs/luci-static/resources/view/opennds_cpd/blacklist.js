@@ -290,9 +290,8 @@ return view.extend({
 		}
 
 		function askDelete(p) {
-			CPD.confirm(
-				_('删除脚本'),
-				_('确定删除脚本「%s」？删除后将从已上传列表中移除。').format(p.name),
+			CPD.confirm(null,
+				_('确认删除脚本？'),
 				_('删除'), true,
 				function () {
 					CPD.api('blacklist', 'portal_delete', ['name=' + p.name]).then(function (j) {

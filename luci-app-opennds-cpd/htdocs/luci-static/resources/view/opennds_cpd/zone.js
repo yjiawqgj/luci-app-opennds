@@ -748,7 +748,7 @@ return view.extend({
 		});
 
 		function askDelete(ctx, name) {
-			CPD.confirm(_('删除脚本'), _('确定删除脚本“%s”吗？删除后，认证下拉框将不再提供该脚本。').format(name),
+			CPD.confirm(null, _('确认删除脚本？'),
 				_('删除'), true, function () {
 					CPD.api('zone', 'upload_delete', [ctx.type, ctx.zone, name]).then(function (j) {
 						if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }
@@ -823,7 +823,7 @@ return view.extend({
 		});
 
 		function askUmDelete(it) {
-			CPD.confirm(_('删除文件'), _('确定删除文件“%s”吗？删除后将不再出现在未匹配列表中。').format(it.name),
+			CPD.confirm(null, _('确认删除文件？'),
 				_('删除'), true, function () {
 					CPD.api('zone', 'unmatched_delete', [it.type, it.name]).then(function (j) {
 						if (j && j.busy === 1) { CPD.toast(_('等待上一步完成，请稍候重试'), 'warn'); return; }

@@ -152,10 +152,10 @@ return view.extend({
 			 * 后传的覆盖先传的，这里只显示当前生效的那一个 */
 			var curName = cur.sel || (cur.items && cur.items.length ? cur.items[0] : '');
 
-			/* 该类型下已有门户（脚本或文件夹）：tab 标题下方居中显示绿色「已配置」。
-			 * 与 tab 分隔线、上传按钮都留出距离，不挨着任何一方。 */
+			/* 该类型下已有门户（脚本或文件夹）：靠左显示在 tab 菜单下方、
+			 * 上传按钮上方；不居中，紧跟 tab 但留出一点上下间距。 */
 			var uploaded = E('div', {
-				'style': 'color:#2e9468;font-size:13px;font-weight:600;text-align:center;margin:20px 0 18px',
+				'style': 'color:#2e9468;font-size:13px;font-weight:600;text-align:left;margin:12px 0 10px',
 				'id': 'cpd-portal-uploaded'
 			}, curName ? _('已配置') : '');
 
@@ -353,9 +353,8 @@ return view.extend({
 			/* 用「当前显示的那个」而不是只看 sel：sel 为空时按钮也能用 */
 			var name = info.sel || (info.items && info.items.length ? info.items[0] : '');
 			if (!name) return;
-			CPD.confirm(
-				_('清理 %s？').format(shortName(name)),
-				_('将删除门户目录中的 %s，删除后该类型自动切回默认门户。').format(name),
+			CPD.confirm(null,
+				_('确认清理？'),
 				_('清理'), true,
 				function () {
 					CPD.api('settings', 'clean_default', [tab, name]).then(function (j) {
@@ -474,10 +473,8 @@ return view.extend({
 
 		function clickIface(name) {
 			if (name === state.device) return;
-			CPD.confirm(
-				_('切换网络接口？'),
-				_('将 openNDS 接管接口从「%s」切换到「%s」。切换后部分自定义规则和客户端可能失效。')
-					.format(state.device, name),
+			CPD.confirm(null,
+				_('确认切换网络接口？'),
 				_('切换'), true,
 				function () {
 					state.device = name;
