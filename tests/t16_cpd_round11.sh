@@ -147,11 +147,18 @@ ck "过期会话恢复为未认证" '"authenticated":false' "$(row "$out4" 'aa:b
 # 恢复有效记录供后续用例
 printf '%s=%s\n' "$B1" "$EXP" >"$CPD_NDSLOG_DIR/authlog.log"
 
-echo "== A5 主动登出（binauthlog 末尾 client_deauth）不算已认证 =="
-printf 'aa:bb:cc:dd:ee:01' | base64 >/dev/null 2>&1  # 占位，保持与真机格式一致
-printf 'method="auth_client", clientmac="aa:bb:cc:dd:ee:01"\nmethod="client_deauth", clientmac="aa:bb:cc:dd:ee:01"\n' >"$CPD_NDSLOG_DIR/binauthlog.log"
+echo "== A5 主动登出（binauthlog 末尾 ndsctl_deauth）不算已认证 =="
+# 真机 binauth_log.sh 写的是无引号 method=xxx（不是 method="xxx"）。
+# 这条用工整的真机格式，专门卡住「带引号 sed 匹配不到 → deauth 没被排除」的 bug。
+NOW5=$(date +%s)
+printf 'Wed Nov 21 10:00:00 2026, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$((NOW5-600))" "$EXP" >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'Wed Nov 21 17:30:00 2026, method=ndsctl_deauth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$((NOW5-600))" "$EXP" >>"$CPD_NDSLOG_DIR/binauthlog.log"
 out5=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
-ck "主动登出后不算已认证" '"authenticated":false' "$(row "$out5" 'aa:bb:cc:dd:ee:01')"
+ck "ndsctl deauth 后不算已认证" '"authenticated":false' "$(row "$out5" 'aa:bb:cc:dd:ee:01')"
+# 对照：shutdown_deauth 是停 NDS 造成的，官方 auth_restore 仍恢复认证
+printf 'Wed Nov 21 17:30:00 2026, method=shutdown_deauth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$((NOW5-600))" "$EXP" >"$CPD_NDSLOG_DIR/binauthlog.log"
+out5b=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
+ck "shutdown_deauth 仍算已认证" '"authenticated":true' "$(row "$out5b" 'aa:bb:cc:dd:ee:01')"
 : >"$CPD_NDSLOG_DIR/binauthlog.log"
 
 echo "== A6 ARP 残留（STALE）不算在线有线，接入点不显示 br-lan =="

@@ -1366,10 +1366,15 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 		lm=$(printf '%s' "$kb" | awk "$B64_DEC_AWK" | tr 'A-Z' 'a-z')
 		case "$lm" in *:*) ;; *) continue ;; esac
 		# auth_restore 同款判据：binauthlog 里该 mac 最后一条若是普通 deauth
-		# （用户主动登出/超时）则不恢复；shutdown_deauth 是停 NDS 造成的，仍算认证。
+		# （用户主动登出/超时/ndsctl 踢下线）则不恢复；shutdown_deauth 是停 NDS
+		# 造成的，仍算认证。
+		# 关键：真机 binauthlog 写的是无引号 `method=ndsctl_deauth`（见
+		# binauth_log.sh 的 loginfo），必须用官方那种 awk -F'method=' 提取；
+		# 用 `method="..."` 带引号的 sed 会永远匹配不到，导致 deauth 后落盘
+		# 记录没被排除、客户端又被判回「已认证」。
 		lastm=''
 		[ -f "$bl" ] && lastm=$(grep -F "$lm" "$bl" 2>/dev/null | tail -1 |
-			sed -n 's/.*method="\([^"]*\)".*/\1/p')
+			awk -F'method=' '{print $2}' | awk -F', ' '{printf "%s", $1}')
 		case "$lastm" in
 			*deauth) [ "$lastm" = 'shutdown_deauth' ] || continue ;;
 		esac
