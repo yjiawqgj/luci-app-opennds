@@ -197,9 +197,10 @@ esac
 IEOF
 chmod +x "$S/bin/ip"
 
-echo "== A7 详情时间：认证时间取落盘首次认证；上线时间由关联时长倒推；默认会话时长 =="
+echo "== A7 详情时间：认证时间取最近一次认证；上线时间由关联时长倒推；默认会话时长 =="
 # binauthlog：真机 binauth_log.sh 认证成功写的是 method=client_auth（末段才是
-# auth），不是 method=auth。aa:bb:..:01 有两条（首次 T1、后来 T2），取最早的 T1。
+# auth），不是 method=auth。aa:bb:..:01 有两条（首次 T1、后来 T2），按用户口径
+# 「认证时间只认本次认证」取最近的 T2。
 T1=$((NOW - 3600))
 T2=$((NOW - 600))
 printf 'Wed Nov 20 10:00:00 2024, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T1" "$T1" >"$CPD_NDSLOG_DIR/binauthlog.log"
@@ -252,9 +253,9 @@ r7=$(row "$out7" 'aa:bb:cc:dd:ee:01')
 case "$r7" in *'"authTime":"20'*) echo "  OK   认证时间有值（不再是—）";; *) echo "  FAIL 认证时间有值"; echo "       $r7"; fail=1;; esac
 case "$r7" in *'"onlineTime":"20'*) echo "  OK   上线时间有值（关联时长倒推）";; *) echo "  FAIL 上线时间有值"; echo "       $r7"; fail=1;; esac
 ck "默认会话时长=600" '"defaultSession":600' "$out7"
-# 认证时间必须等于首次 T1（比 T2 早），用 fmt 后的具体字符串核对
-T1FMT=$(date -d "@$T1" '+%Y-%m-%d %H:%M' 2>/dev/null)
-ck "认证时间=首次认证时刻（client_auth）" "\"authTime\":\"$T1FMT\"" "$r7"
+# 认证时间必须等于最近一次 T2（不是最早 T1），用 fmt 后的具体字符串核对
+T2FMT=$(date -d "@$T2" '+%Y-%m-%d %H:%M' 2>/dev/null)
+ck "认证时间=最近一次认证时刻（client_auth）" "\"authTime\":\"$T2FMT\"" "$r7"
 
 echo "== A8 NDS 关闭：已认证客户端详情认证时间/到期时间都不为 — =="
 # 关 NDS 后走补行路径，ss/se 从 ndsctl 拿不到；认证时间取落盘 binauthlog，
@@ -358,6 +359,24 @@ case "$*" in
 esac
 IEOF
 chmod +x "$S/bin/iw"
+
+echo "== A10 身份变更（deauth）清除该 mac 两份落盘日志，其他 mac 保留 =="
+# 用户口径：任何改变客户端身份的动作，先清原状态再应用新状态。
+# deauth 是统一落点（解除认证/移出免认证/移出信任/拉黑都汇到这里）。
+B1=$(printf 'aa:bb:cc:dd:ee:01' | base64 | tr -d '=')
+B2=$(printf '22:33:44:55:66:77' | base64 | tr -d '=')
+printf '%s=%s\n%s=%s\n' "$B1" "$EXP" "$B2" "$EXP" >"$CPD_NDSLOG_DIR/authlog.log"
+printf 'method=client_auth, clientmac=aa:bb:cc:dd:ee:01, session_start=1, session_end=%s\nmethod=client_auth, clientmac=22:33:44:55:66:77, session_start=2, session_end=%s\n' "$EXP" "$EXP" >"$CPD_NDSLOG_DIR/binauthlog.log"
+NDS_RUNNING=1 call overview client_action deauth aa:bb:cc:dd:ee:01 >/dev/null
+# authlog：目标 mac 解码后不再出现，无关 mac 仍在
+if grep -qF "$B1" "$CPD_NDSLOG_DIR/authlog.log"; then echo "  FAIL authlog 目标 mac 未清"; fail=1; else echo "  OK   authlog 目标 mac 已清"; fi
+if grep -qF "$B2" "$CPD_NDSLOG_DIR/authlog.log"; then echo "  OK   authlog 无关 mac 保留"; else echo "  FAIL authlog 无关 mac 被误删"; fail=1; fi
+# binauthlog：目标 mac 行不在，无关 mac 行仍在
+if grep -qF 'clientmac=aa:bb:cc:dd:ee:01' "$CPD_NDSLOG_DIR/binauthlog.log"; then echo "  FAIL binauthlog 目标 mac 未清"; fail=1; else echo "  OK   binauthlog 目标 mac 已清"; fi
+if grep -qF 'clientmac=22:33:44:55:66:77' "$CPD_NDSLOG_DIR/binauthlog.log"; then echo "  OK   binauthlog 无关 mac 保留"; else echo "  FAIL binauthlog 无关 mac 被误删"; fail=1; fi
+# 清日志后，NDS 停服也不再把这个 mac 算成已认证（auth_restore 遍历不到它）
+out10=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
+ck "清日志后目标 mac 不再已认证" '"authenticated":false' "$(row "$out10" 'aa:bb:cc:dd:ee:01')"
 
 echo "== B1 设置页：脚本任意 .sh，文件夹必须含 default.sh =="
 mkdir -p "$CPD_ROOT/default/wireless" "$S/up/d1/foo" "$S/up/df/foo" "$S/up/d2/bar"

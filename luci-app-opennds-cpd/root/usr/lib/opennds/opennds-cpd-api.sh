@@ -241,8 +241,16 @@ busy_probe() {
 
 # 运行时动作：小写失败转大写重试一次
 ndsctl_mac() { # $1=子命令 $2=小写 mac
-	ndsctl "$1" "$2" >/dev/null 2>&1 && return 0
-	ndsctl "$1" "$(mac_upper "$2")" >/dev/null 2>&1
+	local sub="$1" mac="$2"
+	ndsctl "$sub" "$mac" >/dev/null 2>&1 || ndsctl "$sub" "$(mac_upper "$mac")" >/dev/null 2>&1
+	# 用户口径（2026-11-21）：任何"改变客户端身份"的动作都要先清原状态再应用
+	# 新状态。deauth（解除认证/移出名单/拉黑前的踢下线）是身份变更的统一落点，
+	# 踢完立刻清掉该 mac 在 openNDS 两份落盘日志里的全部记录。
+	# 顺序关键：必须在 ndsctl deauth 之后——deauth 自己会往 binauthlog 写一条
+	# deauth 记录，清早了那条又留下。authlog 清掉后，NDS 重启的 auth_restore
+	# 也遍历不到该 mac，不会又把它恢复成已认证。
+	# deauth 失败（NDS 没运行）也照清：移出操作时 NDS 本来可能就是停的。
+	[ "$sub" = 'deauth' ] && purge_client_logs "$mac"
 	return 0
 }
 
@@ -1221,7 +1229,7 @@ ov_client_row() {
 		expires=$(fmt_time "$se")
 	fi
 	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
-	# 详情时间：认证时间取落盘最早认证时刻（不随 NDS 重启变），
+	# 详情时间：认证时间取落盘最近一次认证时刻（用户口径：只认本次认证），
 	# 上线时间由 hostapd 关联时长倒推（只有正在关联的设备才算得出）。
 	local auth_t online_t
 	auth_t=$(auth_start_fmt "$lm")
@@ -1300,7 +1308,7 @@ EOF5
 # 不再自建缓存——自建缓存只在 NDS 运行时才写得到，首次安装/停服时是空的。
 #
 # AUTH_CACHE 每行：小写mac<TAB>到期时间戳（只留有效期内且未被主动登出的）
-# AUTH_START 每行：小写mac<TAB>首次认证时刻（binauthlog 里该 mac 最早的 auth
+# AUTH_START 每行：小写mac<TAB>最近一次认证时刻（binauthlog 里该 mac 最大的 auth
 # 记录 session_start）。ndsctl 的 session_start 会在 NDS 恢复认证时被冲成当前
 # 时间，所以详情「认证时间」以这个落盘值为准——它不随停服/重启变化。
 # authlog.mountpoint 可由 uci opennds.@opennds[0].log_mountpoint 覆盖；
@@ -1349,6 +1357,43 @@ authlog_dir() { # 算出 openNDS 落盘日志目录
 	printf '/tmp/ndslog'
 }
 
+# 清除某 MAC 在 openNDS 两份落盘日志里的全部记录（用户口径 2026-11-21：
+# 任何改变客户端身份的动作都先清原状态、再应用新状态）。
+#   authlog.log    ：每行 base64(mac)=到期戳，按解码后的 mac 精确删对应行
+#   binauthlog.log ：每行含 clientmac=<mac>，按 mac 精确删对应行
+# 只删该 mac 的行，其他客户端日志原样保留。文件缺失时静默返回。
+# $1=小写 mac
+purge_client_logs() {
+	local lm="$1" dir f bl kb exp dec
+	dir=$(authlog_dir)
+	f="$dir/authlog.log"
+	bl="$dir/binauthlog.log"
+
+	# authlog：逐行解码 key，命中目标 mac 的行丢掉，其余原样写回
+	if [ -f "$f" ]; then
+		while IFS='=' read -r kb exp; do
+			dec=$(printf '%s' "$kb" | awk "$B64_DEC_AWK" | tr 'A-Z' 'a-z')
+			[ "$dec" = "$lm" ] && continue
+			printf '%s=%s\n' "$kb" "$exp"
+		done <"$f" >"$f.cpd.new"
+		cat "$f.cpd.new" >"$f"
+		rm -f "$f.cpd.new"
+	fi
+
+	# binauthlog：删掉所有 clientmac 命中目标 mac 的行（大小写都覆盖）
+	if [ -f "$bl" ]; then
+		awk -v m="$lm" '
+			{
+				low = tolower($0)
+				if (index(low, "clientmac=" m) > 0) next
+				print
+			}' "$bl" >"$bl.cpd.new"
+		cat "$bl.cpd.new" >"$bl"
+		rm -f "$bl.cpd.new"
+	fi
+	return 0
+}
+
 auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ AUTH_CACHE
 	AUTH_CACHE=''
 	AUTH_START=''
@@ -1382,7 +1427,9 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 "
 	done <"$f"
 
-	# 首次认证时刻：读 binauthlog 里认证成功的记录，取该 mac 最早的 session_start。
+	# 本次认证时刻：读 binauthlog 里认证成功的记录，取该 mac 最近一次 session_start。
+	# 用户口径（2026-11-21）：认证时间只认本次认证——11-21 认证的就显示 11-21，
+	# 不再显示历史上最早那次。故取最大值（最近），不是最早。
 	# 关键：binauth 传进来的 method 是 client_auth / ndsctl_auth（明文认证流程最终
 	# 是 client_auth），不是单纯的 auth；判据必须和 binauth_log.sh 一样取末段
 	# （action=${method##*_}），否则会把真正的认证行全过滤掉，认证时间永远显示 —。
@@ -1406,9 +1453,10 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 			if (match($0, /session_start=[0-9]+/))
 				ss = substr($0, RSTART + 14, RLENGTH - 14)
 			if (ss == "" || mac !~ /:/) next
-			if (!(mac in first) || (ss + 0) < (first[mac] + 0)) first[mac] = ss
+			# 取最近一次（最大时间戳），实现「认证时间只认本次认证」
+			if (!(mac in last) || (ss + 0) > (last[mac] + 0)) last[mac] = ss
 		}
-		END { for (m in first) print m "\t" first[m] }
+		END { for (m in last) print m "\t" last[m] }
 		' "$bl")
 	fi
 	return 0
@@ -1429,7 +1477,7 @@ auth_expire_fmt() { # $1=小写 mac
 	fmt_time "$e" || printf ''
 }
 
-# 详情「认证时间」：该 mac 落盘的最早认证时刻 → 格式化时间；没有则空串
+# 详情「认证时间」：该 mac 落盘的最近一次认证时刻 → 格式化时间；没有则空串
 auth_start_fmt() { # $1=小写 mac
 	[ -n "$AUTH_START" ] || return 0
 	local e
