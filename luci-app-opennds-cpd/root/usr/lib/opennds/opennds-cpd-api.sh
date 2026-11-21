@@ -989,6 +989,29 @@ ws_sta_one() { # $1=运行时接口名
 		got=$(iwinfo "$ifn" assoclist 2>/dev/null |
 			awk -v i="$ifn" '/^[0-9A-Fa-f][0-9A-Fa-f:]{15}[[:space:]]/ {print tolower($1) "\t" i "\t-"}')
 	fi
+	# 关联时长（详情「上线时间」数据源）：OpenWrt 官方 hostapd ubus get_clients
+	# 不带 connected_time，ubus 路径第三列基本都是 -。iw station dump 才有
+	# "connected time: N seconds"，单独查一次按 MAC 补进第三列；MAC/iface 仍
+	# 以 ubus 为权威，这里只补时长，不改前两列。
+	if [ -n "$got" ] && command -v iw >/dev/null 2>&1; then
+		local secs tfa tfb
+		secs=$(iw dev "$ifn" station dump 2>/dev/null |
+			awk '/^[[:space:]]*Station[[:space:]]/ {cur = tolower($2)}
+			     /connected time:/ { if (cur != "") print cur "\t" $3 }')
+		if [ -n "$secs" ]; then
+			# 时长表通过环境变量传给 awk，避免临时文件（ws_sta_map 是并行跑
+			# ws_sta_one 的，后台子 shell 里建临时文件不稳）。
+			got=$(printf '%s\n' "$got" | SECS="$secs" awk -F'\t' -v OFS='\t' '
+				BEGIN { n = split(ENVIRON["SECS"], rows, "\n")
+					for (i = 1; i <= n; i++) {
+						if (rows[i] == "") continue
+						split(rows[i], f, "\t"); s[f[1]] = f[2]
+					}
+				}
+				$3 == "-" && ($1 in s) { $3 = s[$1] }
+				{ print }')
+		fi
+	fi
 	[ -n "$got" ] && printf '%s\n' "$got"
 }
 
@@ -1190,7 +1213,13 @@ ov_client_row() {
 	[ "$blk" = 'true' ] && authorized=false
 
 	joined=$(fmt_time "$ss")
-	expires=$(fmt_time "$se")
+	# NDS 停止 / 客户端离线走补行路径时 se 为空，到期时间会被显示成 —。
+	# 只要是落盘认证记录里还在有效期的客户端，就用 authlog 记的到期时间兜底。
+	if [ -z "$se" ] && auth_cache_get "$lm"; then
+		expires=$(auth_expire_fmt "$lm")
+	else
+		expires=$(fmt_time "$se")
+	fi
 	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
 	# 详情时间：认证时间取落盘最早认证时刻（不随 NDS 重启变），
 	# 上线时间由 hostapd 关联时长倒推（只有正在关联的设备才算得出）。
@@ -1322,6 +1351,7 @@ authlog_dir() { # 算出 openNDS 落盘日志目录
 
 auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ AUTH_CACHE
 	AUTH_CACHE=''
+	AUTH_START=''
 	local dir f now lm exp kb lastm
 	now=$(date +%s)
 	dir=$(authlog_dir)
@@ -1347,11 +1377,13 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 "
 	done <"$f"
 
-	# 首次认证时刻：读 binauthlog 里 method=auth 的记录（auth_client 那种不带
-	# session_start，跳过）。每行形如：
-	#   Wed Nov 20 10:00:00 2024, method=auth, clientmac=aa:bb:..., ..., session_start=1732..., session_end=1732...
-	# 同一 mac 取最早的一条（首次认证），用 awk 按 mac 去重、只留最小时间戳。
-	AUTH_START=''
+	# 首次认证时刻：读 binauthlog 里认证成功的记录，取该 mac 最早的 session_start。
+	# 关键：binauth 传进来的 method 是 client_auth / ndsctl_auth（明文认证流程最终
+	# 是 client_auth），不是单纯的 auth；判据必须和 binauth_log.sh 一样取末段
+	# （action=${method##*_}），否则会把真正的认证行全过滤掉，认证时间永远显示 —。
+	# auth_client 那行不带 session_start，天然被 ss=="" 排除；各 *_deauth 末段是
+	# deauth，也不会混进来。每行形如：
+	#   Wed Nov 20 10:00:00 2024, method=client_auth, clientmac=aa:bb:..., ..., session_start=1732..., session_end=1732...
 	if [ -f "$bl" ]; then
 		AUTH_START=$(awk '
 		{
@@ -1362,7 +1394,10 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 			}
 			if (match($0, /method=[^,[:space:]]+/))
 				meth = substr($0, RSTART + 7, RLENGTH - 7)
-			if (meth != "auth" || mac == "") next
+			# 取 method 末段：client_auth -> auth；ndsctl_auth -> auth
+			n = split(meth, parts, "_")
+			act = parts[n]
+			if (act != "auth" || mac == "") next
 			if (match($0, /session_start=[0-9]+/))
 				ss = substr($0, RSTART + 14, RLENGTH - 14)
 			if (ss == "" || mac !~ /:/) next
@@ -1377,6 +1412,16 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 auth_cache_get() { # $1=小写 mac → 0=在有效期内认证过
 	[ -n "$AUTH_CACHE" ] || return 1
 	printf '%s\n' "$AUTH_CACHE" | grep -qF "$1	"
+}
+
+# 详情「到期时间」落盘兜底：$1=小写 mac → 打印到期时间戳（无则空串）。
+# NDS 停止 / 客户端离线时走补行路径，ndsctl 没有 session_end，se 传空会让
+# 到期时间显示 —；authlog.log 里本就记着到期时间，直接取它。
+auth_expire_fmt() { # $1=小写 mac
+	[ -n "$AUTH_CACHE" ] || return 0
+	local e
+	e=$(printf '%s\n' "$AUTH_CACHE" | awk -F'\t' -v m="$1" '$1 == m {print $2; exit}')
+	fmt_time "$e" || printf ''
 }
 
 # 详情「认证时间」：该 mac 落盘的最早认证时刻 → 格式化时间；没有则空串

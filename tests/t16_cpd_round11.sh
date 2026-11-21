@@ -191,11 +191,12 @@ IEOF
 chmod +x "$S/bin/ip"
 
 echo "== A7 详情时间：认证时间取落盘首次认证；上线时间由关联时长倒推；默认会话时长 =="
-# binauthlog：aa:bb:..:01 有两条 auth（首次 T1、后来 T2），取最早的 T1
+# binauthlog：真机 binauth_log.sh 认证成功写的是 method=client_auth（末段才是
+# auth），不是 method=auth。aa:bb:..:01 有两条（首次 T1、后来 T2），取最早的 T1。
 T1=$((NOW - 3600))
 T2=$((NOW - 600))
-printf 'Wed Nov 20 10:00:00 2024, method=auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T1" "$T1" >"$CPD_NDSLOG_DIR/binauthlog.log"
-printf 'Wed Nov 20 11:00:00 2024, method=auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T2" "$T2" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'Wed Nov 20 10:00:00 2024, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T1" "$T1" >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'Wed Nov 20 11:00:00 2024, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T2" "$T2" >>"$CPD_NDSLOG_DIR/binauthlog.log"
 # hostapd 桩带 connected_time=120 秒（aa:bb..01 已连 120 秒）
 cat >"$S/bin/ubus" <<'UEOF'
 #!/bin/sh
@@ -246,7 +247,17 @@ case "$r7" in *'"onlineTime":"20'*) echo "  OK   上线时间有值（关联时�
 ck "默认会话时长=600" '"defaultSession":600' "$out7"
 # 认证时间必须等于首次 T1（比 T2 早），用 fmt 后的具体字符串核对
 T1FMT=$(date -d "@$T1" '+%Y-%m-%d %H:%M' 2>/dev/null)
-ck "认证时间=首次认证时刻" "\"authTime\":\"$T1FMT\"" "$r7"
+ck "认证时间=首次认证时刻（client_auth）" "\"authTime\":\"$T1FMT\"" "$r7"
+
+echo "== A8 NDS 关闭：已认证客户端详情认证时间/到期时间都不为 — =="
+# 关 NDS 后走补行路径，ss/se 从 ndsctl 拿不到；认证时间取落盘 binauthlog，
+# 到期时间从 authlog.log 的 session_end 兜底，两个都不能是空。
+out8=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
+r8=$(row "$out8" 'aa:bb:cc:dd:ee:01')
+case "$r8" in *'"authTime":"20'*) echo "  OK   关 NDS 后认证时间仍显示落盘值";; *) echo "  FAIL 关 NDS 后认证时间为空"; echo "       $r8"; fail=1;; esac
+EXP_FMT=$(date -d "@$EXP" '+%Y-%m-%d %H:%M' 2>/dev/null)
+ck "关 NDS 后到期时间=authlog 的 session_end" "\"expires\":\"$EXP_FMT\"" "$r8"
+
 # 上线时间 = now - 120，允许 2 秒误差：这里只校验格式与存在，精确值由前端展示
 : >"$CPD_NDSLOG_DIR/binauthlog.log"
 printf '120' >"$MOCK_UCI_ROOT/opennds/opennds/sessiontimeout"
@@ -273,6 +284,73 @@ J
 fi
 UEOF
 chmod +x "$S/bin/ubus"
+
+echo "== A9 ubus 无 connected_time 时，iw station dump 兜底出上线时间 =="
+# 真机 hostapd ubus get_clients 是多行 pretty-print、且不带 connected_time。
+# 重建多行 ubus 桩（紧凑单行会让 awk 只解析出一个 MAC），让 iw 桩给出时长。
+cat >"$S/bin/ubus" <<'UEOF'
+#!/bin/sh
+if [ "$1" = call ] && [ "$2" = network.wireless ]; then
+cat <<'J'
+{
+	"radio2": {
+		"up": true,
+		"interfaces": [
+			{
+				"section": "default_radio2",
+				"ifname": "phy2-ap0",
+				"config": {
+					"mode": "ap",
+					"ssid": "互联网"
+				}
+			}
+		]
+	}
+}
+J
+fi
+if [ "$1" = call ] && [ "$2" = hostapd.phy2-ap0 ]; then
+cat <<'J'
+{
+	"num_sta": 2,
+	"clients": {
+		"AA:BB:CC:DD:EE:01": { "address": "aa:bb:cc:dd:ee:01" },
+		"22:33:44:55:66:77": { "address": "22:33:44:55:66:77" }
+	}
+}
+J
+fi
+UEOF
+chmod +x "$S/bin/ubus"
+cat >"$S/bin/iw" <<'IEOF'
+#!/bin/sh
+case "$*" in
+"dev phy2-ap0 station dump")
+	printf '%s\n' \
+		'Station aa:bb:cc:dd:ee:01 (on phy2-ap0)' \
+		'\tconnected time:  90 seconds' \
+		'\tsignal: -50 dBm' \
+		'Station 22:33:44:55:66:77 (on phy2-ap0)' \
+		'\tconnected time:  30 seconds'
+		;;
+"dev phy2-ap0 info") printf '\tssid "互联网"\n' ;;
+"dev") printf '\tInterface phy2-ap0\n' ;;
+esac
+IEOF
+chmod +x "$S/bin/iw"
+out9=$(NDS_RUNNING=1 call overview dashboard)
+r9=$(row "$out9" 'aa:bb:cc:dd:ee:01')
+case "$r9" in *'"onlineTime":"20'*) echo "  OK   ubus 无时长时 iw 兜底出上线时间";; *) echo "  FAIL iw 兜底上线时间"; echo "       $r9"; fail=1;; esac
+# 恢复原 iw 桩
+cat >"$S/bin/iw" <<'IEOF'
+#!/bin/sh
+case "$*" in
+"dev phy0-ap0 info") echo "	ssid Guest WiFi" ;;
+"dev") printf '\tInterface phy0-ap0\n' ;;
+*) : ;;
+esac
+IEOF
+chmod +x "$S/bin/iw"
 
 echo "== B1 设置页：脚本任意 .sh，文件夹必须含 default.sh =="
 mkdir -p "$CPD_ROOT/default/wireless" "$S/up/d1/foo" "$S/up/df/foo" "$S/up/d2/bar"
