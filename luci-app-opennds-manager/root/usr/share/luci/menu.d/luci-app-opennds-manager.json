@@ -1,6 +1,6 @@
 {
   "admin/services/opennds-manager": {
-    "title": "openNDS",
+    "title": "强制门户",
     "order": 60,
     "action": { "type": "firstchild" },
     "depends": { "acl": [ "luci-app-opennds-manager" ] }
