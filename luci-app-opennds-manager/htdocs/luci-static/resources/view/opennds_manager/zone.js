@@ -49,7 +49,7 @@ var CSS = '\
 .zd-save-state{font-size:11.5px;color:#9aa6b2;margin-left:4px}\
 .zd-save-state.dirty{color:#b57d17}\
 .zd-save-state.ok{color:#2e9468}\
-.zd-mask{position:absolute;top:0;left:0;right:0;min-height:100vh;z-index:700;background:rgba(24,34,44,.42);display:none;padding:20px}\
+.zd-mask{position:fixed;inset:0;overflow-y:auto;z-index:700;background:rgba(24,34,44,.42);display:none;padding:20px}\
 .zd-mask.on{display:flex}\
 .zd-modal{background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);width:min(480px,100%);margin:auto}\
 .zd-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-bottom:1px solid #e9edf0}\

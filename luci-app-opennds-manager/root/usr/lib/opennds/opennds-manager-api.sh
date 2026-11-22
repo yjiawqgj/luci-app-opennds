@@ -836,6 +836,15 @@ ov_lease_map() {
 		"$(dhcp_leases_file)" 2>/dev/null
 }
 
+lease_ip_for() { # $1=小写 mac → 租约里的 IP（dnsmasq 行：到期 MAC IP 主机名 clientid）
+	# 未认证 / 刚连上的客户端 ndsctl 常不带 ip，ARP 也可能是 STALE 残留；
+	# 但只要它连着 WIFI 拿到 DHCP 租约，租约文件里必有它的 IP。用来兜底，
+	# 别让「连着 WIFI 的未认证客户端没 IP」。
+	local m="$1"
+	awk -v m="$m" 'tolower($2) == m && $3 != "" && $3 != "*" {print $3; exit}' \
+		"$(dhcp_leases_file)" 2>/dev/null
+}
+
 ov_host_for() { # $1=小写 mac（租约是小写）
 	local m="$1" k v h=''
 	if [ -n "$CPD_LEASE_MAP" ]; then
@@ -1155,8 +1164,11 @@ ov_client_row() {
 	case "$ukb" in '' | null | *[!0-9]*) ukb=0 ;; esac
 	up=$((ukb * 1024))
 	down=$((dkb * 1024))
-	# openNDS 对 trusted 客户端不一定填 ip；用邻居表补，别让"在线却没 IP"
+	# openNDS 对 trusted / 未认证客户端不一定填 ip；先用邻居表补，
+	# 邻居表没有（未认证客户端 ARP 常是 STALE 残留被过滤）再查 DHCP 租约：
+	# 连着 WIFI 的设备一定有租约，别让"在线却没 IP"。
 	[ -z "$ip" ] && ip=$(neigh_ip_for "$lm")
+	[ -z "$ip" ] && ip=$(lease_ip_for "$lm")
 	# 有线客户端的 clientif 探不到时用邻居表的设备名兜底：
 	# 列表「接入点」一列要显示 br-lan（前端再加「（有线）」）
 	case "$cif" in

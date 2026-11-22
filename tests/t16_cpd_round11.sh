@@ -534,4 +534,44 @@ p2=$( ( . "$TS" >/dev/null 2>&1; portal_from_name "$CPD_ROOT/global" oldfolder )
 ck "文件夹 default.sh 被解析为主入口" '/newfolder/default.sh' "$p1"
 ck "旧 theme.sh 仍兼容" '/oldfolder/theme.sh' "$p2"
 
+# ===== A13 未认证客户端连着 WIFI 但 ndctl 无 IP：从 DHCP 租约补 IP =====
+# 场景：22:33 这台未认证客户端仍连着 WIFI（在 hostapd 关联表里），
+# 但 ndsctl 给它空 ip、邻居表也没有它（ARP 是 STALE 残留被过滤）。
+# 它在 DHCP 租约文件里有 IP → 列表应显示租约里的 10.0.0.33，不再是 —。
+echo "== A13 未认证客户端无 ndsctl IP、无 ARP：从 DHCP 租约补 IP =="
+# 清掉前面用例留下的落盘日志，让身份纯由 ndsctl 决定（22:33 = Preauthenticated 未认证）
+: >"$CPD_NDSLOG_DIR/authlog.log"
+: >"$CPD_NDSLOG_DIR/binauthlog.log"
+LEASE_FILE="$S/etc/dhcp.leases"
+printf '0 aa:bb:cc:dd:ee:01 10.0.0.9 host1 *\n0 22:33:44:55:66:77 10.0.0.33 host2 *\n' >"$LEASE_FILE"
+uci set "opennds.@opennds[0].dhcp_leases_file=$LEASE_FILE"
+# ip 桩：邻居表只有 aa:bb，没有 22:33（模拟其 ARP 残留被过滤）
+cat >"$S/bin/ip" <<'IEOF'
+#!/bin/sh
+case "$*" in
+	*neigh*) printf '%s\n' '10.0.0.9 dev br-lan lladdr aa:bb:cc:dd:ee:01 REACHABLE' ;;
+	*addr*) printf '%s\n' '2: br-lan    inet 10.0.0.1/24 brd 10.0.0.255 scope global br-lan' ;;
+esac
+IEOF
+chmod +x "$S/bin/ip"
+# ndsctl 桩：22:33 的 ip 置空（未认证客户端常见），其余照旧
+cat >"$S/bin/ndsctl" <<NEOF
+#!/bin/sh
+case "\$1" in
+	status) echo 'openNDS daemon v10.0.0'; exit 0 ;;
+	json) cat <<J
+{"client_list_length":"2","clients":{
+"AA:BB:CC:DD:EE:01": {"mac":"AA:BB:CC:DD:EE:01","ip":"10.0.0.9","clientif":"phy2-ap0","state":"Authenticated","session_start":"$NOW","session_end":"$EXP","last_active":"$NOW"},
+"22:33:44:55:66:77": {"mac":"22:33:44:55:66:77","ip":"","clientif":"phy2-ap0","state":"Preauthenticated","session_start":"$NOW","session_end":"null","last_active":"$NOW"}
+}}
+J
+		exit 0 ;;
+esac
+NEOF
+chmod +x "$S/bin/ndsctl"
+out13=$(NDS_RUNNING=1 call overview dashboard)
+r13=$(row "$out13" '22:33:44:55:66:77')
+ck "A13-1 未认证客户端无 ndctl/ARP IP 时从租约补出 IP" '"ip":"10.0.0.33"' "$r13"
+ck "A13-2 该客户端仍是未认证身份" '"authenticated":false' "$r13"
+
 done_report

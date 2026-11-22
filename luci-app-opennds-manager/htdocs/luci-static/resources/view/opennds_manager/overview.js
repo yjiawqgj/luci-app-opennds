@@ -90,7 +90,7 @@ var CSS = '\
 .ovd-rowbtn.danger{color:#c94848;border-color:#e8c9c9}\
 .ovd-rowbtn.danger:hover{background:#fdf4f4;border-color:#d9a8a8}\
 .ovd-empty{text-align:center;color:#9aa6b2;font-size:12.5px;padding:26px 10px}\
-.ovd-mask{position:absolute;top:0;left:0;right:0;min-height:100vh;background:rgba(22,30,38,.5);display:none;padding:18px;z-index:700}\
+.ovd-mask{position:fixed;inset:0;overflow-y:auto;background:rgba(22,30,38,.5);display:none;padding:18px;z-index:700}\
 .ovd-mask.on{display:flex}\
 .ovd-dialog{background:#fff;border-radius:10px;width:100%;max-width:660px;margin:auto;box-shadow:0 18px 48px rgba(20,30,40,.24)}\
 .ovd-dialog.dtl{max-width:460px}\
@@ -761,17 +761,24 @@ return view.extend({
 			tbody.innerHTML = items.map(function (c) {
 				var blocked = !!c.blocked, trusted = !!c.trusted;
 				var authed = !!c.authenticated, pre = !!c.preauth;
+				var preAct = pre ? 'unpreauth' : 'preauth';
+				var preLabel = pre ? _('移除免认证') : _('免认证');
 				var trustAct = trusted ? 'untrust' : 'trust';
 				var trustLabel = trusted ? _('移除可信任') : _('可信任客户端');
 				var tg = tagOf(c);
 				var tags = '<span class="ovd-tag ' + tg[0] + '">' + tg[1] + '</span>';
-				/* 独立的「免认证 / 移除免认证」按钮已取消（2026-11-22 用户口径）：
-				 * 未认证客户端的「编辑」按钮改叫「免认证」，点它弹参数窗，
-				 * 窗内「确定」= 执行原 preauth 那一套（加入免认证名单）+ 写入参数。 */
-				var editLabel = (tg[0] === 't-unauth') ? _('免认证') : _('编辑');
-				var editHTML = trusted ? '' :
+				/* 免认证按钮：所有身份都保留（2026-11-22 用户纠正），位置仍在「详情」之后。
+				 * 只有未客户端这一行特殊——它那个按钮改走编辑弹窗：点开填参数、确定时
+				 * 真加入免认证（openEdit/saveEdit 里按 t-unauth 分流）。其余身份照旧
+				 * 直接 preauth/unpreauth。
+				 * 「编辑」按钮：可信任不显示（不受超时/流量限制）；未认证也不显示——
+				 * 它已经在免认证那个位置出现，不能重复占一个「编辑」。 */
+				var unauth = (tg[0] === 't-unauth');
+				var preBtnAct = unauth ? 'edit' : preAct;
+				var preBtnLabel = unauth ? _('免认证') : preLabel;
+				var editHTML = (trusted || unauth) ? '' :
 					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
-					(blocked ? ' disabled' : '') + '>' + editLabel + '</button>';
+					(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
 				var deauthDis = ((!authed && !pre && !trusted) || blocked) ? ' disabled' : '';
 				return '<tr>' +
 					'<td><div class="ovd-host"><span class="ovd-host-name">' +
@@ -782,6 +789,8 @@ return view.extend({
 				'<td><div class="ovd-acts">' +
 				'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
 				(blocked ? ' disabled' : '') + '>' + _('详情') + '</button>' +
+				'<button type="button" class="ovd-rowbtn" data-act="' + preBtnAct + '" data-mac="' + esc(c.mac) + '"' +
+				'>' + preBtnLabel + '</button>' +
 				'<button type="button" class="ovd-rowbtn" data-act="' + trustAct + '" data-mac="' + esc(c.mac) + '"' +
 				'>' + trustLabel + '</button>' +
 					editHTML +
