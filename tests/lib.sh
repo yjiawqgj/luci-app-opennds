@@ -41,6 +41,10 @@ tmp_setup() { # $1=用例名
 	export CPD_NDSLOG_DIR="$S/ndslog"   # openNDS 原生认证落盘日志，沙箱隔离
 	export CPD_STOP_WAIT="${CPD_STOP_WAIT:-2}"
 	export CPD_READY_WAIT="${CPD_READY_WAIT:-2}"
+	# stop_fully 的稳定确认/补停轮数：真机默认 5s×3 防 procd respawn，
+	# 沙箱里压短，避免每个停止用例都睡十几秒。
+	export CPD_STOP_STABLE="${CPD_STOP_STABLE:-1}"
+	export CPD_STOP_ROUNDS="${CPD_STOP_ROUNDS:-2}"
 	mkdir -p "$CPD_ROOT" "$ZONE_UP" "$MOCK_UCI_ROOT" "$S/etc" "$S/lock"
 	printf 'config opennds\n\toption enabled 0\n' >"$OPENNDS_CONF"
 	printf 'config main\n' >"$ZONE_DETECT_CONFIG"

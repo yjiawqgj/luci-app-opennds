@@ -21,13 +21,19 @@ var CSS = '\
 .ovd-status-line{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 0 2px}\
 .ovd-dot{width:10px;height:10px;border-radius:50%;background:#2e9468;box-shadow:0 0 0 3px #e4f4ec;flex:none}\
 .ovd-dot.off{background:#c94848;box-shadow:0 0 0 3px #fbe8e8}\
+.ovd-dot.busy{background:#d98c13;box-shadow:0 0 0 3px #fbeed6}\
 .ovd-status-text{font-size:20px;font-weight:650;color:#2e9468;letter-spacing:.5px}\
 .ovd-status-text.off{color:#c94848}\
+.ovd-status-text.busy{color:#c07a0c}\
 .ovd-status-text.pending{color:#9aa6b2}\
 .ovd-switch{position:relative;width:42px;height:24px;flex:none;padding:0;border:1px solid #c9d2da;border-radius:999px;background:#e3e8ec;cursor:pointer;transition:background .15s,border-color .15s}\
 .ovd-switch .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}\
 .ovd-switch[aria-checked="true"]{background:#2e9468;border-color:#2e9468}\
 .ovd-switch[aria-checked="true"] .knob{transform:translateX(18px)}\
+.ovd-switch.busy{background:#d98c13;border-color:#d98c13}\
+.ovd-switch.busy .knob{transform:translateX(18px)}\
+.ovd-switch.busy.off{background:#d98c13;border-color:#d98c13}\
+.ovd-switch.busy.off .knob{transform:translateX(0)}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -171,6 +177,32 @@ return view.extend({
 		var locked = false, pollTimer = null, modalOpen = 0;
 		var editRow = null;
 
+		/* 开关过渡态（2026-11-22 用户口径）：点关闭/开启后，等待后端真正生效
+		 * 的这几秒里，按钮与文字显示黄色「正在关闭 / 正在启动」，而不是继续
+		 * 显示旧的绿色/红色——避免用户以为没点上。下一轮轮询确认 running
+		 * 到达目标后才清除，切回红色「未运行」/绿色「运行」。
+		 * 原生 apply 流程会刷新页面，所以过渡态用 sessionStorage 跨刷新保留；
+		 * 带时间戳，超过 90 秒视为 stale 直接丢弃，避免卡在黄灯。 */
+		var TRANS_KEY = 'cpd.runTransition';
+		function transitionRead() {
+			try {
+				var v = sessionStorage.getItem(TRANS_KEY);
+				if (!v) return null;
+				var p = v.split('|');
+				if (p[0] !== 'off' && p[0] !== 'on') { sessionStorage.removeItem(TRANS_KEY); return null; }
+				var ts = Number(p[1]);
+				if (!ts || Date.now() - ts > 90000) { sessionStorage.removeItem(TRANS_KEY); return null; }
+				return p[0];
+			} catch (e) { return null; }
+		}
+		function transitionSet(want) {
+			try { sessionStorage.setItem(TRANS_KEY, want + '|' + Date.now()); } catch (e) {}
+		}
+		function transitionClear() {
+			try { sessionStorage.removeItem(TRANS_KEY); } catch (e) {}
+		}
+		var transition = transitionRead(); // 'off' | 'on' | null
+
 		var body = E('div', { 'class': 'ovd-page' });
 
 		/* ---------- 顶部提示条（只剩「配置无法解析」这一种） ---------- */
@@ -206,6 +238,17 @@ return view.extend({
 		var offTimer = null;
 		var loaded = false;
 
+		/* 轮询确认 running 到达本次目标后，撤掉黄灯恢复常规配色。
+		 * 只在状态"稳下来"时清：点关闭时旧值可能仍是 true，不能提前撤。 */
+		function settleTransition() {
+			if (!transition) return;
+			if ((transition === 'off' && state.running === false) ||
+				(transition === 'on' && state.running === true)) {
+				transition = null;
+				transitionClear();
+			}
+		}
+
 		function applyStatus(st) {
 			if (!st || !st.ok) return;
 			state.enabled = st.enabled === 1;
@@ -222,6 +265,7 @@ return view.extend({
 			if (st.running === 1) {
 				if (offTimer) { window.clearTimeout(offTimer); offTimer = null; }
 				state.running = true;
+				settleTransition();
 				return;
 			}
 			/* 刚变成「未运行」：procd 重启 openNDS 时进程会短暂消失，一次轮询
@@ -232,6 +276,7 @@ return view.extend({
 					CPD.api('overview', 'run_state').then(function (j) {
 						if (j && j.ok) {
 							state.running = (j.running === 1);
+							settleTransition();
 							renderStatus();
 						}
 					}).catch(function () {});
@@ -239,6 +284,7 @@ return view.extend({
 				return;
 			}
 			state.running = false;
+			settleTransition();
 		}
 
 		function renderAllSafe() {
@@ -292,6 +338,19 @@ return view.extend({
 		]);
 
 		function renderStatus() {
+			/* 过渡态优先：已点开关、后端还没确认到位 → 整块黄灯，标题写
+			 * 「正在关闭 / 正在启动」，旋钮拨向目标位置。等 settleTransition
+			 * 确认到位后清除，才回到下面的常规配色。 */
+			if (transition) {
+				var closing = (transition === 'off');
+				statusDot.className = 'ovd-dot busy';
+				statusText.className = 'ovd-status-text busy';
+				statusText.textContent = closing ? _('正在关闭') : _('正在启动');
+				runSwitch.className = 'ovd-switch busy' + (closing ? ' off' : '');
+				runSwitch.setAttribute('aria-checked', closing ? 'false' : 'true');
+				return;
+			}
+			runSwitch.className = 'ovd-switch';
 			if (!loaded) {
 				/* 首屏数据还没回来：不要先亮一下「未运行」再变绿 */
 				statusDot.className = 'ovd-dot';
@@ -319,6 +378,11 @@ return view.extend({
 			 * 留在配置里。此时若再写同样的 0/1，uci 增量里两条都没变化，
 			 * 点开关只会得到「没有需要应用的更改」，开关永远切不动。
 			 * 令牌保证每次点击都产生真实增量，worker 只看首位 0/1。 */
+			/* 先亮黄灯：原生 apply 会刷新页面，过渡态写进 sessionStorage，
+			 * 刷新后由 transitionRead() 读回继续显示，直到轮询确认到位。 */
+			transition = (want === '0') ? 'off' : 'on';
+			transitionSet(transition);
+			renderStatus();
 			var token = want + '-' + Date.now().toString(36);
 			CPD.stageUci('opennds', '@opennds[0]', 'enabled', 'opt', want)
 				.then(function () {
@@ -328,6 +392,9 @@ return view.extend({
 					return CPD.applyStaged();
 				})
 				.catch(function (e) {
+					transition = null;
+					transitionClear();
+					renderStatus();
 					CPD.toast(CPD.errText(e, _('操作失败')), 'err');
 				});
 		}

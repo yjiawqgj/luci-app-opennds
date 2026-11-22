@@ -5804,8 +5804,49 @@ restart_exec() { # 概览页「重启」：跑着的走完整 stop→等退出�
 	fi
 }
 
+# 彻底停止 openNDS（用户口径 2026-11-22：点关闭后按钮在开/关之间来回横跳，
+# 真机上再手动执行一次 service opennds stop 才显示 inactive、页面才稳定）。
+# 根因：opennds 由 procd 托管且带 respawn（官方 init：respawn 360 20 15），
+# 主程序 conf.c 读到 enabled!=1 就 exit(0)。点关闭时 enabled=0 已随这批应用
+# commit，旧进程自退后 procd 把它当意外退出反复拉起；stop 又只等 pidof 空
+# 一次就返回，没确认实例真的关掉，于是进程一会儿有一会儿没，页面 5 秒轮询
+# 撞上就"开/关"横跳。
+# 修法：stop 后做"稳定确认"——连续 CPD_STOP_STABLE 秒看不到进程才算停透；
+# 观察期进程又冒出来（被 respawn/残留）就再补一次 stop（等价于用户真机上
+# 补敲的那次 service opennds stop）；多轮仍不退才强杀 + 清链收尾。
+stop_fully() {
+	local i quiet round=0
+	local max_round="${CPD_STOP_ROUNDS:-3}"
+	local stable="${CPD_STOP_STABLE:-5}"
+	while [ "$round" -lt "$max_round" ]; do
+		"$NDS_INIT" stop 9>&- >/dev/null 2>&1
+		i=0
+		while nds_running && [ "$i" -lt "${CPD_STOP_WAIT:-45}" ]; do
+			sleep 1 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+		# 等不到退出（残留/卡住）才强杀：此刻实例已被 procd delete，不会 respawn
+		if nds_running; then
+			log "openNDS stop 后仍在运行，强制结束进程"
+			kill $(pidof opennds) 2>/dev/null
+			sleep 1 2>/dev/null || sleep 1
+		fi
+		# 稳定确认：连续 stable 秒无进程 = 停透；期间又出现 = 被拉起，下一轮补 stop
+		quiet=0
+		while [ "$quiet" -lt "$stable" ]; do
+			nds_running && break
+			sleep 1 2>/dev/null || sleep 1
+			quiet=$((quiet + 1))
+		done
+		[ "$quiet" -ge "$stable" ] && break
+		round=$((round + 1))
+	done
+	"$LIBOPENNDS" delete_chains 9>&- >/dev/null 2>&1
+	return 0
+}
+
 toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 worker）
-	local want="$1" lo tp i=0
+	local want="$1" lo tp
 	if [ "$want" = '1' ]; then
 		# 用户点「启动」才补：登录模式 3 且脚本路径为空（缺失），不覆盖用户自己设的值
 		lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
@@ -5817,11 +5858,7 @@ toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 work
 		"$NDS_INIT" start 9>&- >/dev/null 2>&1
 		wait_ready_n "${CPD_READY_WAIT:-24}"
 	else
-		"$NDS_INIT" stop 9>&- >/dev/null 2>&1
-		while nds_running && [ "$i" -lt "${CPD_STOP_WAIT:-45}" ]; do
-			sleep 1 2>/dev/null || sleep 1
-			i=$((i + 1))
-		done
+		stop_fully
 	fi
 	return 0
 }

@@ -218,4 +218,66 @@ grep -q '"running":0' "$CPD_APPLY_STATE" &&
 	echo "  OK   令牌停止终态 running:0" ||
 	{ echo "  FAIL 令牌停止终态不对: $(cat "$CPD_APPLY_STATE")"; fail=1; }
 
+echo "== C11 stop 后进程被 respawn 拉回：补第二次 stop 直到停透（2026-11-22 横跳根因） =="
+# 真机现象：点关闭 → enabled=0 让主进程自退 → procd 又拉起 → 页面 5s 轮询
+# 撞上就开/关横跳；手动再敲一次 service stop 才 inactive。
+# 沙箱复现：pidof 桩看一个"存活计数文件"——第一次 stop 只把进程藏起来，
+# 稳定确认期又把它放回来（模拟 respawn）；第二次 stop 才真正清掉。
+PIDOF_ALIVE="$S/alive"
+C11_COUNTER="$S/stopcount"
+mk_alive() { : >"$PIDOF_ALIVE"; }
+cat >"$S/pidof11" <<'STUB'
+#!/bin/sh
+[ -e "$PIDOF_ALIVE" ] && { echo 1234; exit 0; }
+exit 1
+STUB
+cat >"$S/init11.sh" <<'STUB'
+#!/bin/sh
+echo "$1" >> "$NDS_INIT_LOG"
+case "$1" in
+	stop)
+		n=0; [ -f "$C11_COUNTER" ] && n=$(cat "$C11_COUNTER")
+		n=$((n + 1)); printf '%s' "$n" >"$C11_COUNTER"
+		rm -f "$PIDOF_ALIVE"
+		if [ "$n" -lt 2 ]; then
+			# 第一次 stop：稳定确认期间被 respawn 拉回
+			( sleep 1; : >"$PIDOF_ALIVE" ) >/dev/null 2>&1 &
+		fi
+		;;
+	start) : >"$PIDOF_ALIVE" ;;
+esac
+exit 0
+STUB
+chmod +x "$S/pidof11" "$S/init11.sh"
+export NDS_INIT="$S/init11.sh"
+export PIDOF_ALIVE C11_COUNTER
+# 用高优先级 PATH 让 pidof 走新桩：直接把桩放到 mock/bin 前面的独立目录
+mkdir -p "$S/bin11"
+cp "$S/pidof11" "$S/bin11/pidof"
+chmod +x "$S/bin11/pidof"
+OLD_PATH="$PATH"
+export PATH="$S/bin11:$PATH"
+# 稳定确认给足 2 秒，确保能撞上 1 秒后的 respawn；最多 3 轮
+CPD_STOP_STABLE=2 CPD_STOP_ROUNDS=3
+export CPD_STOP_STABLE CPD_STOP_ROUNDS
+mk_alive
+mk_pr '0-c11-respawn'
+: >"$NDS_INIT_LOG"
+: >"$C11_COUNTER"
+call apply_worker
+wait_term || { echo "  FAIL worker 没写终态"; fail=1; }
+export PATH="$OLD_PATH"
+stops=$(grep -c '^stop$' "$NDS_INIT_LOG" 2>/dev/null || echo 0)
+[ "$stops" -ge 2 ] && echo "  OK   进程被拉回后补了第二次 stop（共 $stops 次）" ||
+	{ echo "  FAIL 只调了 $stops 次 stop，没补停"; fail=1; }
+[ ! -e "$PIDOF_ALIVE" ] && echo "  OK   补停后进程确实退出" ||
+	{ echo "  FAIL 进程仍在"; fail=1; }
+grep -q '"running":0' "$CPD_APPLY_STATE" &&
+	echo "  OK   终态 running:0（不再横跳）" ||
+	{ echo "  FAIL 终态不对: $(cat "$CPD_APPLY_STATE")"; fail=1; }
+# 还原桩，避免影响后续（当前已是最后一条用例）
+export NDS_INIT="$S/init.sh"
+CPD_STOP_STABLE=1 CPD_STOP_ROUNDS=2
+export CPD_STOP_STABLE CPD_STOP_ROUNDS
+
 done_report
