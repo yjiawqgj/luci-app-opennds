@@ -81,7 +81,7 @@ var CSS = '\
 .ovd-tag.t-auth{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}\
 .ovd-tag.t-unauth{color:#7c8894;border-color:#dfe5ea;background:transparent}\
 .ovd-tag.t-pre{color:#fff;border-color:#2e9468;background:#2e9468}\
-.ovd-tag.t-trusted{color:#fff;border-color:#9a6b00;background:#9a6b00}\
+.ovd-tag.t-trusted{color:#fff;border-color:#f0c419;background:#f0c419}\
 .ovd-tag.t-black{color:#fff;border-color:#252b31;background:#252b31}\
 .ovd-acts{display:flex;flex-wrap:wrap;gap:5px}\
 .ovd-rowbtn{font-family:inherit;font-size:11px;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:4px;height:26px;padding:0 8px;cursor:pointer;white-space:nowrap}\
@@ -90,14 +90,14 @@ var CSS = '\
 .ovd-rowbtn.danger{color:#c94848;border-color:#e8c9c9}\
 .ovd-rowbtn.danger:hover{background:#fdf4f4;border-color:#d9a8a8}\
 .ovd-empty{text-align:center;color:#9aa6b2;font-size:12.5px;padding:26px 10px}\
-.ovd-mask{position:fixed;inset:0;background:rgba(22,30,38,.5);display:none;align-items:center;justify-content:center;padding:18px;z-index:700}\
+.ovd-mask{position:absolute;top:0;left:0;right:0;min-height:100vh;background:rgba(22,30,38,.5);display:none;padding:18px;z-index:700}\
 .ovd-mask.on{display:flex}\
-.ovd-dialog{background:#fff;border-radius:10px;width:100%;max-width:660px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 18px 48px rgba(20,30,40,.24)}\
+.ovd-dialog{background:#fff;border-radius:10px;width:100%;max-width:660px;margin:auto;box-shadow:0 18px 48px rgba(20,30,40,.24)}\
 .ovd-dialog.dtl{max-width:460px}\
 .ovd-dhead{padding:15px 20px;border-bottom:1px solid #d7dde3;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}\
 .ovd-dhead h3{font-size:16px;font-weight:650;margin:0}\
 .ovd-dsub{font-size:11.5px;color:#9aa6b2;font-family:ui-monospace,Consolas,monospace;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\
-.ovd-dbody{padding:0 20px 8px;overflow:auto;flex:1}\
+.ovd-dbody{padding:0 20px 8px}\
 .ovd-dfoot{padding:13px 20px;border-top:1px solid #d7dde3;display:flex;justify-content:flex-end;gap:8px;background:#fff;border-radius:0 0 10px 10px}\
 .ovd-dsec{padding:14px 0;border-bottom:1px solid #e9edf0}\
 .ovd-dsec:last-child{border-bottom:0}\
@@ -761,15 +761,17 @@ return view.extend({
 			tbody.innerHTML = items.map(function (c) {
 				var blocked = !!c.blocked, trusted = !!c.trusted;
 				var authed = !!c.authenticated, pre = !!c.preauth;
-				var preAct = pre ? 'unpreauth' : 'preauth';
-				var preLabel = pre ? _('移除免认证') : _('免认证');
 				var trustAct = trusted ? 'untrust' : 'trust';
 				var trustLabel = trusted ? _('移除可信任') : _('可信任客户端');
 				var tg = tagOf(c);
 				var tags = '<span class="ovd-tag ' + tg[0] + '">' + tg[1] + '</span>';
+				/* 独立的「免认证 / 移除免认证」按钮已取消（2026-11-22 用户口径）：
+				 * 未认证客户端的「编辑」按钮改叫「免认证」，点它弹参数窗，
+				 * 窗内「确定」= 执行原 preauth 那一套（加入免认证名单）+ 写入参数。 */
+				var editLabel = (tg[0] === 't-unauth') ? _('免认证') : _('编辑');
 				var editHTML = trusted ? '' :
 					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
-					(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
+					(blocked ? ' disabled' : '') + '>' + editLabel + '</button>';
 				var deauthDis = ((!authed && !pre && !trusted) || blocked) ? ' disabled' : '';
 				return '<tr>' +
 					'<td><div class="ovd-host"><span class="ovd-host-name">' +
@@ -777,13 +779,11 @@ return view.extend({
 					'<td class="ovd-mono">' + esc(c.ip || '—') + '</td>' +
 					'<td class="ovd-mono">' + esc(c.mac) + '</td>' +
 					'<td>' + esc(clientAp(c)) + '</td>' +
-					'<td><div class="ovd-acts">' +
-					'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
-					(blocked ? ' disabled' : '') + '>' + _('详情') + '</button>' +
-					'<button type="button" class="ovd-rowbtn" data-act="' + preAct + '" data-mac="' + esc(c.mac) + '"' +
-					'>' + preLabel + '</button>' +
-					'<button type="button" class="ovd-rowbtn" data-act="' + trustAct + '" data-mac="' + esc(c.mac) + '"' +
-					'>' + trustLabel + '</button>' +
+				'<td><div class="ovd-acts">' +
+				'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
+				(blocked ? ' disabled' : '') + '>' + _('详情') + '</button>' +
+				'<button type="button" class="ovd-rowbtn" data-act="' + trustAct + '" data-mac="' + esc(c.mac) + '"' +
+				'>' + trustLabel + '</button>' +
 					editHTML +
 					'<button type="button" class="ovd-rowbtn danger" data-act="deauth" data-mac="' + esc(c.mac) + '"' +
 					deauthDis + '>' + _('解除认证') + '</button>' +
@@ -1024,7 +1024,7 @@ return view.extend({
 			'class': 'ovd-dialog', 'role': 'dialog', 'aria-modal': 'true'
 		}, [
 			E('div', { 'class': 'ovd-dhead' }, [
-				E('h3', {}, _('客户端编辑')),
+				E('h3', { 'id': 'ovd-ed-title' }, _('客户端编辑')),
 				E('span', { 'class': 'ovd-dsub', 'id': 'ovd-ed-sub' }, '')
 			]),
 			E('div', { 'class': 'ovd-dbody', 'id': 'ovd-ed-body' }),
@@ -1058,6 +1058,10 @@ return view.extend({
 			if (row.trusted) return;
 			editRow = row;
 			editInputs = {};
+			/* 未认证客户端点的是改名后的「免认证」按钮：标题跟着叫「免认证」；
+			 * 其余身份点的是「编辑」按钮，标题仍是「客户端编辑」。 */
+			var titleEl = document.getElementById('ovd-ed-title');
+			if (titleEl) titleEl.textContent = (tagOf(row)[0] === 't-unauth') ? _('免认证') : _('客户端编辑');
 			var sub = document.getElementById('ovd-ed-sub');
 			if (sub) sub.textContent = (row.host || '—') + ' · ' + (row.ip || '—') + ' · ' + row.mac;
 			var edBody = document.getElementById('ovd-ed-body');
@@ -1092,7 +1096,13 @@ return view.extend({
 					if (e && e.input) e.input.disabled = true;
 				});
 			}
-			edBody.appendChild(timeSec);
+			/* 会话时长只对免认证客户端有意义：它写进 preemptivemac 条目，重启后
+			 * 按新参数重新认证才生效（2026-11-22 用户口径）。所以「连接时间」区域
+			 * 只在免认证相关场景出现——未认证点「免认证」进去、已是免认证点「编辑」进去。
+			 * 已认证/黑名单的编辑弹窗不显示这一块。
+			 * 注意：输入框本身仍由 limitRowEd 建好存入 editInputs，保证保存逻辑读得到。 */
+			var edKind = tagOf(row)[0];
+			if (edKind === 't-pre' || edKind === 't-unauth') edBody.appendChild(timeSec);
 			edBody.appendChild(speedSec);
 			edBody.appendChild(quotaSec);
 
@@ -1174,14 +1184,25 @@ return view.extend({
 			}
 			var mac = editRow.mac;
 			var lm = String(mac || '').toLowerCase();
-			stageEditLimits(lm, args).then(function () {
+			var isUnauthEntry = (tagOf(editRow)[0] === 't-unauth');
+			var done = function () {
 				closeEdit();
-				/* 编辑框下的「确定」只写 uci 增量，不 commit、不重启；
+				/* 确定只写 uci 增量，不 commit、不重启；
 				   反馈就是右上角「未保存的配置」，不弹任何横幅 */
 				refresh();
-			}, function (e) {
+			};
+			var failed = function (e) {
 				CPD.notify(CPD.errText(e, _('记录失败')), 'err');
-			});
+			};
+			if (isUnauthEntry) {
+				/* 改名后的「免认证」按钮：确定 = 跑原来 preauth 那一套（摘黑名单、
+				 * 摘可信任、写 preemptivemac），再叠加窗里填的参数，一步到位加入免认证。 */
+				stageAction('preauth', mac).then(function () {
+					return stageEditLimits(lm, args);
+				}).then(done, failed);
+			} else {
+				stageEditLimits(lm, args).then(done, failed);
+			}
 		}
 
 		/* ---------- 详情弹窗（只读） ---------- */
@@ -1252,7 +1273,7 @@ return view.extend({
 			dtlBody.innerHTML = '';
 			var tg = tagOf(row);
 			dtlBody.appendChild(dtlSec(_('状态'), [
-				dtlRow(_('认证属性'), E('span', { 'class': 'ovd-tag ' + tg[0] }, tg[1]))
+				dtlRow(_('属性'), E('span', { 'class': 'ovd-tag ' + tg[0] }, tg[1]))
 			]));
 			dtlBody.appendChild(dtlSec(_('基本信息'), [
 				dtlRow(_('主机名'), row.host || '—'),

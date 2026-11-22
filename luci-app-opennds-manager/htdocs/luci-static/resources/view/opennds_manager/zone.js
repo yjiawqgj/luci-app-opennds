@@ -49,13 +49,13 @@ var CSS = '\
 .zd-save-state{font-size:11.5px;color:#9aa6b2;margin-left:4px}\
 .zd-save-state.dirty{color:#b57d17}\
 .zd-save-state.ok{color:#2e9468}\
-.zd-mask{position:fixed;inset:0;z-index:700;background:rgba(24,34,44,.42);display:none;align-items:center;justify-content:center;padding:20px}\
+.zd-mask{position:absolute;top:0;left:0;right:0;min-height:100vh;z-index:700;background:rgba(24,34,44,.42);display:none;padding:20px}\
 .zd-mask.on{display:flex}\
-.zd-modal{background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);width:min(480px,100%);max-height:min(78vh,560px);display:flex;flex-direction:column;overflow:hidden}\
-.zd-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-bottom:1px solid #e9edf0;flex:none}\
+.zd-modal{background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);width:min(480px,100%);margin:auto}\
+.zd-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-bottom:1px solid #e9edf0}\
 .zd-modal-head h3{font-size:14.5px;font-weight:650;margin:0}\
-.zd-modal-body{padding:8px 18px 14px;overflow:auto;flex:1 1 auto}\
-.zd-modal-foot{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid #e9edf0;background:#fbfcfd;flex:none}\
+.zd-modal-body{padding:8px 18px 14px}\
+.zd-modal-foot{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid #e9edf0;background:#fbfcfd;border-radius:0 0 10px 10px}\
 .zd-modal-foot .zd-tool-meta{margin-right:auto}\
 .zd-script-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid #e9edf0}\
 .zd-script-row:last-child{border-bottom:0}\
