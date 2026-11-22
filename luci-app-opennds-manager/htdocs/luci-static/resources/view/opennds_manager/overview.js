@@ -80,8 +80,8 @@ var CSS = '\
 .ovd-tag{font-size:10px;font-weight:500;line-height:1.5;padding:0 6px;border-radius:999px;border:1px solid;white-space:nowrap}\
 .ovd-tag.t-auth{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}\
 .ovd-tag.t-unauth{color:#7c8894;border-color:#dfe5ea;background:transparent}\
-.ovd-tag.t-pre{color:#8a6116;border-color:#e7d3a6;background:#faf1dc}\
-.ovd-tag.t-trusted{color:#1a6b41;border-color:#a9d5bd;background:#dff2e6}\
+.ovd-tag.t-pre{color:#fff;border-color:#2e9468;background:#2e9468}\
+.ovd-tag.t-trusted{color:#fff;border-color:#9a6b00;background:#9a6b00}\
 .ovd-tag.t-black{color:#fff;border-color:#252b31;background:#252b31}\
 .ovd-acts{display:flex;flex-wrap:wrap;gap:5px}\
 .ovd-rowbtn{font-family:inherit;font-size:11px;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:4px;height:26px;padding:0 8px;cursor:pointer;white-space:nowrap}\
