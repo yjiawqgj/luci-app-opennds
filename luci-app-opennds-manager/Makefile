@@ -6,9 +6,9 @@ LUCI_DESCRIPTION:=Manage openNDS captive portal: zones, sessions, exemptions, \
 LUCI_DEPENDS:=+luci-base +rpcd-mod-file +opennds +flock +iw
 LUCI_PKGARCH:=all
 
-PKG_NAME:=luci-app-opennds-cpd
+PKG_NAME:=luci-app-opennds-manager
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=17
+PKG_RELEASE:=1
 PKG_LICENSE:=Apache-2.0
 PKG_MAINTAINER:=
 
@@ -23,7 +23,7 @@ define Package/$(PKG_NAME)/postinst
 # 只做文件权限与目录准备：绝不修改 openNDS 的任何配置项。
 # 插件所有界面数据一律从现有 /etc/config/opennds 读取，不写默认值、不清空列表。
 [ -n "$${IPKG_INSTROOT}" ] || {
-	chmod 755 /usr/lib/opennds/opennds-cpd-api.sh
+	chmod 755 /usr/lib/opennds/opennds-manager-api.sh
 	chmod 755 /usr/lib/opennds/theme_zone_detect.sh
 	mkdir -p /usr/lib/opennds/cpd/wireless /usr/lib/opennds/cpd/wired
 	mkdir -p /usr/lib/opennds/cpd/blacklist

@@ -28,7 +28,7 @@ import subprocess
 import sys
 
 ROOT = os.environ.get('CPD_CHECK_ROOT') or os.path.dirname(os.path.abspath(__file__))
-PKG = os.path.join(ROOT, 'luci-app-opennds-cpd')
+PKG = os.path.join(ROOT, 'luci-app-opennds-manager')
 
 errors = []
 warnings = []
@@ -288,7 +288,7 @@ for p in walk('.js'):
 # ============================================================
 # 6. common.js 的契约：暂存/应用/复位/指示器四个入口一个都不能少
 # ============================================================
-common = os.path.join(PKG, 'htdocs', 'luci-static', 'resources', 'opennds_cpd', 'common.js')
+common = os.path.join(PKG, 'htdocs', 'luci-static', 'resources', 'opennds_manager', 'common.js')
 if not os.path.isfile(common):
     errors.append('缺少 common.js')
 else:
@@ -307,7 +307,7 @@ else:
 # ============================================================
 # 7. 每个视图都必须接上 LuCI 底部三个按钮
 # ============================================================
-VIEW_DIR = os.path.join(PKG, 'htdocs', 'luci-static', 'resources', 'view', 'opennds_cpd')
+VIEW_DIR = os.path.join(PKG, 'htdocs', 'luci-static', 'resources', 'view', 'opennds_manager')
 if os.path.isdir(VIEW_DIR):
     for f in sorted(os.listdir(VIEW_DIR)):
         if not f.endswith('.js'):
@@ -323,7 +323,7 @@ if os.path.isdir(VIEW_DIR):
             errors.append('view/%s: 用了 CPD.stageUci 却没有 CPD.applyStaged —— '
                           '「保存并应用」不会提交，配置永远不会落盘' % f)
 else:
-    errors.append('缺少 view/opennds_cpd 目录')
+    errors.append('缺少 view/opennds_manager 目录')
 
 # ============================================================
 # 7b. 黑名单门户的三方契约（用户明确要求这一组功能必须在）
@@ -331,7 +331,7 @@ else:
 #     前端选门户 → 后端扫/删/传 → 分发脚本按选中项出示页面，
 #     任何一环被删掉，黑名单就会变成"名单里有人但没人被拦"。
 # ============================================================
-_api = os.path.join(PKG, 'root', 'usr', 'lib', 'opennds', 'opennds-cpd-api.sh')
+_api = os.path.join(PKG, 'root', 'usr', 'lib', 'opennds', 'opennds-manager-api.sh')
 _theme = os.path.join(PKG, 'root', 'usr', 'lib', 'opennds', 'theme_zone_detect.sh')
 _blj = os.path.join(VIEW_DIR, 'blacklist.js')
 if os.path.isfile(_api):

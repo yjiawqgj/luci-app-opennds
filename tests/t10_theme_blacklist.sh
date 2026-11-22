@@ -16,7 +16,7 @@
 . "$(dirname "$0")/lib.sh"
 tmp_setup t10
 
-THEME_SRC="$REPO/luci-app-opennds-cpd/root/usr/lib/opennds/theme_zone_detect.sh"
+THEME_SRC="$REPO/luci-app-opennds-manager/root/usr/lib/opennds/theme_zone_detect.sh"
 TS="$S/theme.sh"
 cp "$THEME_SRC" "$TS" || exit 1
 

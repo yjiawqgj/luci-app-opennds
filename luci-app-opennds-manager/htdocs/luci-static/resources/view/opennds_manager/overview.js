@@ -157,7 +157,7 @@ var LIMIT_ROWS = [
 
 return view.extend({
 	load: function () {
-		return L.require('opennds_cpd.common').then(function (m) { CPD = m; });
+		return L.require('opennds_manager.common').then(function (m) { CPD = m; });
 	},
 
 	render: function () {
@@ -292,7 +292,7 @@ return view.extend({
 			[renderStatus, renderWarnbar, renderStats, renderIface, renderAps, renderList]
 				.forEach(function (fn) {
 					try { fn(); } catch (e) {
-						if (window.console && console.error) console.error('[opennds-cpd] render', e);
+						if (window.console && console.error) console.error('[opennds-manager] render', e);
 					}
 				});
 		}

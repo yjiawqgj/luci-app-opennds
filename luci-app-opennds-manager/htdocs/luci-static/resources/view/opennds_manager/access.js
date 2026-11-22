@@ -13,7 +13,7 @@ var CPD = null;
 
 return view.extend({
 	load: function () {
-		return L.require('opennds_cpd.common').then(function (m) { CPD = m; });
+		return L.require('opennds_manager.common').then(function (m) { CPD = m; });
 	},
 
 	render: function () {
@@ -69,10 +69,7 @@ return view.extend({
 			return null;
 		}
 
-		function portOnly() {
-			return !state.domains.trim() && !!state.ports.trim();
-		}
-
+		
 		/* ---------- 渲染 ---------- */
 		function renderAll() {
 			body.innerHTML = '';

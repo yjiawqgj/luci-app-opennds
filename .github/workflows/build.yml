@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'luci-app-opennds-cpd/**'
+      - 'luci-app-opennds-manager/**'
       - 'tests/**'
       - '_selfcheck.py'
       - '.github/workflows/build.yml'
@@ -80,27 +80,27 @@ jobs:
 
       - name: Install package into buildroot
         run: |
-          cp -r luci-app-opennds-cpd sdk/package/
+          cp -r luci-app-opennds-manager sdk/package/
           cd sdk
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          echo 'CONFIG_PACKAGE_luci-app-opennds-cpd=m' >> .config
+          echo 'CONFIG_PACKAGE_luci-app-opennds-manager=m' >> .config
           make defconfig
 
       - name: Build
         run: |
           cd sdk
-          make package/luci-app-opennds-cpd/compile V=s -j"$(nproc)"
+          make package/luci-app-opennds-manager/compile V=s -j"$(nproc)"
 
       - name: Collect artifacts
         run: |
           mkdir -p out
-          find sdk/bin/packages -name '*opennds-cpd*' -type f -exec cp {} out/ \;
+          find sdk/bin/packages -name '*opennds-manager*' -type f -exec cp {} out/ \;
           ls -la out/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: luci-app-opennds-cpd_ipk-24.10
+          name: luci-app-opennds-manager_ipk-24.10
           path: out/
           if-no-files-found: error
 
@@ -132,26 +132,26 @@ jobs:
 
       - name: Install package into buildroot
         run: |
-          cp -r luci-app-opennds-cpd sdk/package/
+          cp -r luci-app-opennds-manager sdk/package/
           cd sdk
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          echo 'CONFIG_PACKAGE_luci-app-opennds-cpd=m' >> .config
+          echo 'CONFIG_PACKAGE_luci-app-opennds-manager=m' >> .config
           make defconfig
 
       - name: Build
         run: |
           cd sdk
-          make package/luci-app-opennds-cpd/compile V=s -j"$(nproc)"
+          make package/luci-app-opennds-manager/compile V=s -j"$(nproc)"
 
       - name: Collect artifacts
         run: |
           mkdir -p out
-          find sdk/bin/packages -name '*opennds-cpd*' -type f -exec cp {} out/ \;
+          find sdk/bin/packages -name '*opennds-manager*' -type f -exec cp {} out/ \;
           ls -la out/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: luci-app-opennds-cpd_apk-snapshot
+          name: luci-app-opennds-manager_apk-snapshot
           path: out/
           if-no-files-found: error

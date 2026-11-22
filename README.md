@@ -1,4 +1,4 @@
-# luci-app-opennds-cpd
+# luci-app-opennds-manager
 
 一个 OpenWrt LuCI 插件，为 [openNDS](https://github.com/openNDS/openNDS) 强制门户（Captive Portal）提供图形化管理界面。
 
@@ -41,18 +41,18 @@
 
 产物在对应 run 的 Artifacts 里下载：
 
-- `luci-app-opennds-cpd_ipk-24.10`
-- `luci-app-opennds-cpd_apk-snapshot`
+- `luci-app-opennds-manager_ipk-24.10`
+- `luci-app-opennds-manager_apk-snapshot`
 
 也可以在本地 OpenWrt SDK 里编译：
 
 ```sh
-cp -r luci-app-opennds-cpd <sdk>/package/
+cp -r luci-app-opennds-manager <sdk>/package/
 cd <sdk>
 ./scripts/feeds update -a && ./scripts/feeds install -a
-echo 'CONFIG_PACKAGE_luci-app-opennds-cpd=m' >> .config
+echo 'CONFIG_PACKAGE_luci-app-opennds-manager=m' >> .config
 make defconfig
-make package/luci-app-opennds-cpd/compile V=s
+make package/luci-app-opennds-manager/compile V=s
 ```
 
 ## 安装
@@ -61,10 +61,10 @@ make package/luci-app-opennds-cpd/compile V=s
 
 ```sh
 # opkg 系统（24.10）
-opkg install luci-app-opennds-cpd_*.ipk
+opkg install luci-app-opennds-manager_*.ipk
 
 # apk 系统（snapshot）
-apk add --allow-untrusted luci-app-opennds-cpd-*.apk
+apk add --allow-untrusted luci-app-opennds-manager-*.apk
 ```
 
 安装脚本只做文件权限和目录准备，不动 openNDS 配置。装完刷新浏览器缓存即可在 **服务 → openNDS** 看到菜单。
@@ -72,10 +72,10 @@ apk add --allow-untrusted luci-app-opennds-cpd-*.apk
 ## 目录结构
 
 ```
-luci-app-opennds-cpd/     插件本体（唯一参与打包的目录）
+luci-app-opennds-manager/     插件本体（唯一参与打包的目录）
   Makefile                包定义、依赖、安装脚本
   htdocs/.../view/         9 个功能页 JS
-  htdocs/.../opennds_cpd/  公共 JS
+  htdocs/.../opennds_manager/  公共 JS
   root/usr/lib/opennds/    后端 API 与主题分发脚本
   root/etc/config/         区域识别配置
   root/usr/share/          菜单与 rpcd ACL 定义
@@ -84,7 +84,7 @@ tests/                     后端沙箱用例（编译前自检用）
 _selfcheck.py              静态自检（编译前自检用）
 ```
 
-版本号见 `luci-app-opennds-cpd/Makefile` 中的 `PKG_VERSION` / `PKG_RELEASE`。
+版本号见 `luci-app-opennds-manager/Makefile` 中的 `PKG_VERSION` / `PKG_RELEASE`。
 
 ## 许可
 

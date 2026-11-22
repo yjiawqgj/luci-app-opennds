@@ -114,7 +114,7 @@ function readText(f) {
 
 return view.extend({
 	load: function () {
-		return L.require('opennds_cpd.common').then(function (m) { CPD = m; });
+		return L.require('opennds_manager.common').then(function (m) { CPD = m; });
 	},
 
 	render: function () {
@@ -222,11 +222,7 @@ return view.extend({
 			};
 		}
 
-		function overallDirty() {
-			if (!state.snapshot) return false;
-			return JSON.stringify(uiSnapshot()) !== JSON.stringify(state.snapshot);
-		}
-
+		
 		function uniqueSsids() {
 			var out = [];
 			state.wireless.forEach(function (c) {

@@ -404,7 +404,7 @@ ck "status 选中文件夹门户" '"sel":"foo"' "$st"
 
 echo "== C 分发器认文件夹里的 default.sh（旧 theme.sh 仍兼容） =="
 TS="$S/theme.sh"
-cp "$REPO/luci-app-opennds-cpd/root/usr/lib/opennds/theme_zone_detect.sh" "$TS"
+cp "$REPO/luci-app-opennds-manager/root/usr/lib/opennds/theme_zone_detect.sh" "$TS"
 sed -i -e "s#^CPD_ROOT=.*#CPD_ROOT=\"$CPD_ROOT\"#" "$TS"
 mkdir -p "$CPD_ROOT/global/newfolder" "$CPD_ROOT/global/oldfolder"
 printf '#!/bin/sh\necho new\n' >"$CPD_ROOT/global/newfolder/default.sh"

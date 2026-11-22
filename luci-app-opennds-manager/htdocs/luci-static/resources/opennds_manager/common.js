@@ -7,7 +7,7 @@
 'require fs';
 'require dom';
 
-var API_PATH = '/usr/lib/opennds/opennds-cpd-api.sh';
+var API_PATH = '/usr/lib/opennds/opennds-manager-api.sh';
 
 var CSS = '\
 .cpd-page{max-width:none;width:100%;padding:18px 4px 60px;color:var(--text,#222a31)}\
@@ -63,16 +63,6 @@ function ensureStyle() {
 	document.head.appendChild(st);
 }
 
-function ensureToasts() {
-	var c = document.getElementById('cpd-toasts');
-	if (!c) {
-		c = document.createElement('div');
-		c.id = 'cpd-toasts';
-		c.setAttribute('aria-live', 'polite');
-		document.body.appendChild(c);
-	}
-	return c;
-}
 
 /* ============================================================
  * 「保存并应用」全流程（所有页面共用）
@@ -117,7 +107,7 @@ APPLY.start = function (ui) {
  * 补发 post_apply（秒回）。重活在后台 worker，页面刷新不影响它；
  * worker 完成后的 openNDS 状态由概览页自己的轮询如实展示。 */
 APPLY.onApplied = function () {
-	L.require('opennds_cpd.common').then(function (m) {
+	L.require('opennds_manager.common').then(function (m) {
 		return m.api('sys', 'post_apply');
 	}).catch(function () { /* 秒回失败不影响原生流程，worker 由下次应用补 */ });
 };

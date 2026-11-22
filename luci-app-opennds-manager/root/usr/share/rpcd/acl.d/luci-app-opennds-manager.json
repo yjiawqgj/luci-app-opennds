@@ -1,11 +1,11 @@
 {
-  "luci-app-opennds-cpd": {
+  "luci-app-opennds-manager": {
     "description": "Grant access to openNDS captive portal configuration",
     "read": {
       "ubus": { "file": [ "read", "stat", "list" ] },
       "uci": [ "opennds", "zone_detect" ],
       "file": {
-        "/usr/lib/opennds/opennds-cpd-api.sh": [ "exec" ],
+        "/usr/lib/opennds/opennds-manager-api.sh": [ "exec" ],
         "/usr/lib/opennds/zone_markers": [ "read", "stat" ],
         "/usr/lib/opennds/cpd/": [ "read", "list" ],
         "/usr/lib/opennds/cpd/*": [ "read", "list" ],
@@ -19,7 +19,7 @@
       "ubus": { "file": [ "write", "exec" ] },
       "uci": [ "opennds", "zone_detect" ],
       "file": {
-        "/usr/lib/opennds/opennds-cpd-api.sh": [ "exec" ],
+        "/usr/lib/opennds/opennds-manager-api.sh": [ "exec" ],
         "/usr/lib/opennds/zone_markers": [ "write", "read", "stat" ],
         "/usr/lib/opennds/cpd/": [ "write", "list" ],
         "/usr/lib/opennds/cpd/*": [ "write", "list" ],

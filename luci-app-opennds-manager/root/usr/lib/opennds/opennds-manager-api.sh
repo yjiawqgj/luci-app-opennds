@@ -1,6 +1,6 @@
 #!/bin/sh
-# luci-app-opennds-cpd 唯一后端脚本
-# 调用形式：opennds-cpd-api.sh <页面名> <子命令> [参数…]
+# luci-app-opennds-manager 唯一后端脚本
+# 调用形式：opennds-manager-api.sh <页面名> <子命令> [参数…]
 # 参数一律按位置逐个传，每个 k=v 是一个独立元素（不拼 &）。
 # 信封：成功 {"ok":1,…} / 失败 {"ok":0,"error":…} / 忙 {"ok":0,"busy":1,"page":…}
 # 成败一律看 ok，不看退出码；业务失败（含 busy）统一 exit 0，
@@ -30,7 +30,7 @@ out_err() {
 # stderr 日志
 log() {
 	printf '%s\n' "$*" >&2
-	logger -t opennds-cpd "$*" 2>/dev/null
+	logger -t opennds-manager "$*" 2>/dev/null
 }
 
 # 写配置失败的定位信息（rt/wg/ac/st 四个 apply 用）
@@ -113,13 +113,6 @@ list_of() {
 	uci -q get "$1" 2>/dev/null
 }
 
-mac_in_list() { # $1=list 值 $2=小写 mac
-	case " $1 " in
-		*" $2 "*) return 0 ;;
-	esac
-	return 1
-}
-
 # 在 preemptivemac 名单里找某 MAC 的整条条目
 entry_for_mac() { # $1=list 值 $2=小写 mac
 	local e
@@ -193,21 +186,21 @@ acquire_lock() {
 	mkdir -p /var/lock 2>/dev/null
 	# 预检不走重定向：exec/: 的重定向失败在 POSIX sh 里会直接退出整个脚本
 	if [ ! -d /var/lock ] || [ ! -w /var/lock ]; then
-		printf '{"ok":0,"error":"无法创建锁文件 /var/lock/opennds-cpd.lock"}\n'
+		printf '{"ok":0,"error":"无法创建锁文件 /var/lock/opennds-manager.lock"}\n'
 		exit 1
 	fi
-	if [ -e /var/lock/opennds-cpd.lock ] && [ ! -f /var/lock/opennds-cpd.lock ]; then
-		printf '{"ok":0,"error":"锁文件路径异常 /var/lock/opennds-cpd.lock"}\n'
+	if [ -e /var/lock/opennds-manager.lock ] && [ ! -f /var/lock/opennds-manager.lock ]; then
+		printf '{"ok":0,"error":"锁文件路径异常 /var/lock/opennds-manager.lock"}\n'
 		exit 1
 	fi
-	exec 9>/var/lock/opennds-cpd.lock
+	exec 9>/var/lock/opennds-manager.lock
 	if ! flock -n 9; then
 		printf '{"ok":0,"busy":1,"page":"%s"}\n' "$(json_escape "$PAGE")"
 		exit 0
 	fi
 	mkdir -p /var/run 2>/dev/null
-	printf '%s %s %s\n' "$$" "$(date +%s)" "$PAGE" > /var/run/opennds-cpd.busy 2>/dev/null
-	trap 'rm -f /var/run/opennds-cpd.busy 2>/dev/null' EXIT
+	printf '%s %s %s\n' "$$" "$(date +%s)" "$PAGE" > /var/run/opennds-manager.busy 2>/dev/null
+	trap 'rm -f /var/run/opennds-manager.busy 2>/dev/null' EXIT
 }
 
 # 只读 status 用：试抢即放（拿到立刻放开），busy=1 才算忙
@@ -223,11 +216,11 @@ busy_probe() {
 		printf '0'
 		return 0
 	fi
-	if [ -e /var/lock/opennds-cpd.lock ] && [ ! -f /var/lock/opennds-cpd.lock ]; then
+	if [ -e /var/lock/opennds-manager.lock ] && [ ! -f /var/lock/opennds-manager.lock ]; then
 		printf '0'
 		return 0
 	fi
-	exec 9>/var/lock/opennds-cpd.lock 2>/dev/null
+	exec 9>/var/lock/opennds-manager.lock 2>/dev/null
 	if flock -n 9 2>/dev/null; then
 		flock -u 9 2>/dev/null
 		b=0
@@ -271,8 +264,11 @@ wait_ready_n() {
 	return 1
 }
 
-wait_ready() { wait_ready_n 6; }
-
+# ndsctl 限时执行：openNDS 忙（刚启动/在生成门户资源）时，ndsctl 可能长时间
+# 拿不到应答。不限时的话一次轮询里的多次 ndsctl 调用会把整个请求拖过 LuCI
+# 的 RPC 超时（官方 rpc.js 默认 20 秒），页面上表现为连续的
+# 「XHR request timed out」红色横幅。有 timeout 命令就限时执行
+# （默认 8 秒；就绪探测用 NDSCTL_TIMEOUT=2 的短限时）。
 nds_running() { # openNDS 进程在跑 → 0
 	pidof opennds >/dev/null 2>&1 && return 0
 	local p c
@@ -284,11 +280,6 @@ nds_running() { # openNDS 进程在跑 → 0
 	return 1
 }
 
-# ndsctl 限时执行：openNDS 忙（刚启动/在生成门户资源）时，ndsctl 可能长时间
-# 拿不到应答。不限时的话一次轮询里的多次 ndsctl 调用会把整个请求拖过 LuCI
-# 的 RPC 超时（官方 rpc.js 默认 20 秒），页面上表现为连续的
-# 「XHR request timed out」红色横幅。有 timeout 命令就限时执行
-# （默认 8 秒；就绪探测用 NDSCTL_TIMEOUT=2 的短限时）。
 ndsctl_run() {
 	local t="${NDSCTL_TIMEOUT:-8}"
 	if command -v timeout >/dev/null 2>&1; then
@@ -438,17 +429,6 @@ parse_clients() {
 # ============================================================
 # 无线：SSID 反查（iw dev <if> info 直读，回退 uci 序号映射）
 # ============================================================
-
-ssid_for_if() { # $1=运行时接口名
-	local s
-	[ -z "$1" ] && return 1
-	s=$(iw dev "$1" info 2>/dev/null | awk '/^[[:space:]]*ssid / {print $2; exit}')
-	if [ -n "$s" ]; then
-		printf '%s' "$s"
-		return 0
-	fi
-	ssid_via_uci "$1"
-}
 
 # 回退：phyN-apM → radioN 第 M 个（mode=ap 且未禁用的）AP section
 ssid_via_uci() { # $1=接口名
@@ -879,13 +859,6 @@ EOF2
 # 或拔了网线后，ARP 条目还会挂几分钟，其间会被误算成在线有线、接入点显示
 # br-lan（真机反馈：卸载重装插件后，没开 WiFi 的设备仍进了有线卡，等缓存
 # 到期才消失）。收紧到这两个状态，残留项一律不算在线。
-neigh_live() { # $1=ARP 状态字符串 → 0=在线
-	case "$1" in
-		REACHABLE | PERMANENT) return 0 ;;
-		*) return 1 ;;
-	esac
-}
-
 neigh_ip_for() { # $1=小写 mac
 	ip -4 neigh show 2>/dev/null |
 		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && ($6 == "REACHABLE" || $6 == "PERMANENT") {print $1; exit}'
@@ -1102,12 +1075,6 @@ client_ssid() { # $1=mac（小写） $2=clientif
 }
 
 # 邻居表里有没有这个 MAC——有线设备「还连着」的判据（只认活跃状态）
-neigh_has() { # $1=小写 mac
-	command -v ip >/dev/null 2>&1 || return 1
-	ip -4 neigh show 2>/dev/null |
-		awk -v m="$1" 'tolower($4) == "lladdr" && tolower($5) == m && ($6 == "REACHABLE" || $6 == "PERMANENT") {f=1; exit} END {exit !f}'
-}
-
 # 管理接口上邻居表里的全部在线设备 MAC（小写，只认 REACHABLE/PERMANENT）：
 # 有线在线 = 管理接口的邻居表 − 无线关联表。ARP 表里有它 = 正在跟路由器说话。
 # 只认 $1（管理接口）这个 dev：WAN 口的网关 MAC 也在全局邻居表里，不按
@@ -1852,7 +1819,7 @@ lines_to_json() { # $1=多行文本
 
 # 真机自检：把 dashboard 各环节的中间值一次打出来（只读，不抢锁）。
 # 远程排障用：SSH 到设备上跑
-#   sh /usr/lib/opennds/opennds-cpd-api.sh overview selfcheck
+#   sh /usr/lib/opennds/opennds-manager-api.sh overview selfcheck
 # AP 卡片全 0 / 接入点列不出 SSID 时，看 ap_map / ap_meta / sta_map 哪层为空。
 ov_selfcheck() {
 	local running enabled t sep='' mtime=''
@@ -1893,66 +1860,6 @@ ov_run_state() {
 	running=0
 	nds_running && running=1
 	printf '{"ok":1,"running":%s,"enabled":%s}\n' "$running" "$enabled"
-}
-
-ov_set_run() { # $1=0|1
-	local want="$1"
-	case "$want" in
-		0 | 1) ;;
-		*) out_err 'set_run 参数必须是 0 或 1' ;;
-	esac
-	acquire_lock
-	uci set 'opennds.@opennds[0].enabled'="$want"
-	if [ "$want" = '1' ]; then
-		# 用户点「启动」才补：登录模式 3 且脚本路径为空（缺失），不覆盖用户自己设的值
-		lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
-		tp=$(uci_val 'opennds.@opennds[0].themespec_path' '')
-		if [ "$lo" = '3' ] && [ -z "$tp" ]; then
-			uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh'
-		fi
-	fi
-	uci commit opennds
-	if [ "$want" = '1' ]; then
-		/etc/init.d/opennds start 9>&- >/dev/null 2>&1
-	else
-		/etc/init.d/opennds stop 9>&- >/dev/null 2>&1
-	fi
-	# 返回执行后的真实状态。init.d start/stop 都是 procd 异步动作、立即返回，
-	# openNDS 真正可服务（ndsctl 能应答）要几秒。启动分支必须等就绪再回：
-	# 之前只查一次就回，用户每次点「启动」都会先看到
-	# 「操作未完全生效，请查看 openNDS 日志」的红色横幅，过一会轮询才变绿。
-	local running=0 i=0
-	if [ "$want" = '1' ]; then
-		# 启动等就绪：总预算约 13 秒（6 次 × 单次限时 2 秒 + 间隔），
-		# 正常几秒内就绪立刻返回
-		while [ "$i" -lt 6 ]; do
-			if nds_running && NDSCTL_TIMEOUT=2 ndsctl_run status >/dev/null 2>&1; then
-				running=1
-				break
-			fi
-			sleep 0.5 2>/dev/null || sleep 1
-			i=$((i + 1))
-		done
-		# 限时到了但进程确实在跑：如实回「运行中」，
-		# 统计/客户端列表等就绪后由页面轮询补齐
-		nds_running && running=1
-	else
-		# 停止等进程退出（最多约 5 秒），退了就是真的停了
-		while [ "$i" -lt 10 ]; do
-			nds_running || { running=0; break; }
-			running=1
-			sleep 0.5 2>/dev/null || sleep 1
-			i=$((i + 1))
-		done
-	fi
-	printf '{"ok":1,"running":%s,"enabled":%s}\n' "$running" "$(nds_enabled)"
-}
-
-ov_restart() {
-	acquire_lock
-	/etc/init.d/opennds restart 9>&- >/dev/null 2>&1
-	# 返回 0 只代表脚本跑完；就绪与否由前端轮询 run_state 判定（最多 20 秒）
-	printf '{"ok":1}\n'
 }
 
 # 客户端行操作（免认证 / 信任 / 拉黑 / 断开…）一律只写 uci 增量：
@@ -3404,11 +3311,6 @@ file_is_text() { # $1=文件路径
 }
 
 # ndsctl 调用（小写失败转大写重试一次），返回真实成败供计数
-ndsctl_mac_rc() { # $1=子命令 $2=小写 mac
-	ndsctl "$1" "$2" >/dev/null 2>&1 && return 0
-	ndsctl "$1" "$(mac_upper "$2")" >/dev/null 2>&1
-}
-
 # ============================================================
 # 页面：blacklist（《客户端黑名单.md》）
 # 名单 = /etc/config/opennds 的 blockedmac（由本插件的分发脚本执行拦截：
@@ -5731,8 +5633,8 @@ sys_selftest() {
 # ② 区域识别模式：把已提交的区域配置部署成门户目录与标记文件（worker）
 # ③ 重启 openNDS，让新配置真正加载（worker；本来停着的不主动拉起）
 
-CPD_APPLY_STATE="${CPD_APPLY_STATE:-/tmp/opennds_cpd_apply.state}"
-CPD_APPLY_LOCK="${CPD_APPLY_LOCK:-/var/lock/opennds-cpd-apply.lock}"
+CPD_APPLY_STATE="${CPD_APPLY_STATE:-/tmp/opennds_manager_apply.state}"
+CPD_APPLY_LOCK="${CPD_APPLY_LOCK:-/var/lock/opennds-manager-apply.lock}"
 
 apply_state_write() { # $1=JSON 整行覆盖
 	printf '%s\n' "$1" >"$CPD_APPLY_STATE" 2>/dev/null
@@ -6003,7 +5905,7 @@ sys_post_apply() {
 	apply_state_write '{"ok":1,"done":0,"phase":"starting","was_running":'"$was"',"ts":'"$ts"'}'
 	# 派生 worker：双重 fork 成孤儿 + 全部 fd 关闭（stdout 管道不关，
 	# rpcd 的应答会一直等到 EOF）。rpcd 超时只 kill 直接子进程，孤儿不受影响。
-	SELF_PATH="${0:-/usr/lib/opennds/opennds-cpd-api.sh}"
+	SELF_PATH="${0:-/usr/lib/opennds/opennds-manager-api.sh}"
 	# 经 sh 启动：不依赖执行位（SFTP/某些安装方式可能把权限弄丢）
 	( sh "$SELF_PATH" apply_worker </dev/null >/dev/null 2>&1 & ) 2>/dev/null
 	printf '{"ok":1,"bg":1,"was_running":%s,"running":%s}\n' "$was" "$now"
@@ -6087,10 +5989,7 @@ case "$PAGE" in
 			dashboard) ov_dashboard ;;
 			selfcheck) ov_selfcheck ;;
 			run_state) ov_run_state ;;
-			set_run) ov_set_run "$1" ;;
-			restart) ov_restart ;;
 			clients) ov_clients ;;
-			client_detail) ov_client_detail "$1" ;;
 			client_action) ov_client_action "$1" "$2" ;;
 			client_edit) ov_client_edit apply "$@" ;;
 			client_edit_stage) ov_client_edit stage "$@" ;;

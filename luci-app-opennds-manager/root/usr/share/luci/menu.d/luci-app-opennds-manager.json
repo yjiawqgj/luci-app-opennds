@@ -1,0 +1,62 @@
+{
+  "admin/services/opennds-manager": {
+    "title": "openNDS",
+    "order": 60,
+    "action": { "type": "firstchild" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/overview": {
+    "title": "概览",
+    "order": 10,
+    "action": { "type": "view", "path": "opennds_manager/overview" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/zone": {
+    "title": "网络区域识别",
+    "order": 20,
+    "action": { "type": "view", "path": "opennds_manager/zone" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/session": {
+    "title": "客户端会话管理",
+    "order": 30,
+    "action": { "type": "view", "path": "opennds_manager/session" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/exempt": {
+    "title": "特权客户端",
+    "order": 40,
+    "action": { "type": "view", "path": "opennds_manager/exempt" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/blacklist": {
+    "title": "客户端黑名单",
+    "order": 50,
+    "action": { "type": "view", "path": "opennds_manager/blacklist" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/router": {
+    "title": "路由器访问",
+    "order": 60,
+    "action": { "type": "view", "path": "opennds_manager/router" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/walledgarden": {
+    "title": "Walled Garden",
+    "order": 70,
+    "action": { "type": "view", "path": "opennds_manager/walledgarden" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/access": {
+    "title": "访问限制",
+    "order": 75,
+    "action": { "type": "view", "path": "opennds_manager/access" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  },
+  "admin/services/opennds-manager/settings": {
+    "title": "设置",
+    "order": 80,
+    "action": { "type": "view", "path": "opennds_manager/settings" },
+    "depends": { "acl": [ "luci-app-opennds-manager" ] }
+  }
+}

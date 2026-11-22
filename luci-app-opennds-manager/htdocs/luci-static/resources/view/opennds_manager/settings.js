@@ -19,7 +19,7 @@ var TAB_NAMES = {
 
 return view.extend({
 	load: function () {
-		return L.require('opennds_cpd.common').then(function (m) { CPD = m; });
+		return L.require('opennds_manager.common').then(function (m) { CPD = m; });
 	},
 
 	render: function () {
@@ -119,11 +119,7 @@ return view.extend({
 		}
 
 		/* 下拉最长 10 个字符，全名放 title 悬停可见 */
-		function shortName(n) {
-			n = String(n || '');
-			return n.length > 10 ? n.slice(0, 10) + '…' : n;
-		}
-
+		
 		/* 本页上传的默认门户实际落盘目录（区域各自的门户在 cpd/wireless/<区域>/、cpd/wired/<接口>/，由区域识别页管理） */
 		function portalPath(tab) {
 			/* 全局门户：区域识别页「全局」模式用的门户 */
@@ -536,15 +532,7 @@ return view.extend({
 			});
 		}
 
-		function notSaved() {
-			if (!state.snapshot) return true;
-			return state.snapshot.upAction !== state.upAction ||
-				state.snapshot.upRate !== state.upRate ||
-				state.snapshot.downAction !== state.downAction ||
-				state.snapshot.downRate !== state.downRate ||
-				state.snapshot.device !== state.device;
-		}
-
+		
 		function handleApply() {
 			var fe = state.fupEnabled ? checkFup() : null;
 			if (fe) {

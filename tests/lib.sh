@@ -10,7 +10,7 @@
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
-API_SRC="$REPO/luci-app-opennds-cpd/root/usr/lib/opennds/opennds-cpd-api.sh"
+API_SRC="$REPO/luci-app-opennds-manager/root/usr/lib/opennds/opennds-manager-api.sh"
 
 fail=0
 
