@@ -1250,8 +1250,9 @@ return view.extend({
 			var lim = row.limits || {};
 
 			dtlBody.innerHTML = '';
+			var tg = tagOf(row);
 			dtlBody.appendChild(dtlSec(_('状态'), [
-				dtlRow(_('拉黑状态'), row.blocked ? _('已拉黑') : _('未拉黑'))
+				dtlRow(_('认证属性'), E('span', { 'class': 'ovd-tag ' + tg[0] }, tg[1]))
 			]));
 			dtlBody.appendChild(dtlSec(_('基本信息'), [
 				dtlRow(_('主机名'), row.host || '—'),

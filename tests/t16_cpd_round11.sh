@@ -203,8 +203,13 @@ echo "== A7 详情时间：认证时间取最近一次认证；上线时间由�
 # 「认证时间只认本次认证」取最近的 T2。
 T1=$((NOW - 3600))
 T2=$((NOW - 600))
+END7=$((NOW + 1800))   # 最新那次认证的到期，必须在未来（authlog 只收未过期锚点）
+# 两次独立认证：T1 那条已过期的旧账 + T2 那条当前有效会话。authlog 按真机只留
+# 最新一次的到期 END7 当锚点，反查即命中 T2 这条。
 printf 'Wed Nov 20 10:00:00 2024, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T1" "$T1" >"$CPD_NDSLOG_DIR/binauthlog.log"
-printf 'Wed Nov 20 11:00:00 2024, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T2" "$T2" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'Wed Nov 20 11:00:00 2024, method=client_auth, clientmac=aa:bb:cc:dd:ee:01, bytes_incoming=0, bytes_outgoing=0, session_start=%s, session_end=%s, token=x, custom=y\n' "$T2" "$END7" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+# 真机每次认证都会写 authlog（每个 mac 只留最新一条到期），新逻辑用它当会话锚点
+printf '%s=%s\n' "$(printf '%s' 'aa:bb:cc:dd:ee:01' | base64 | tr -d '=')" "$END7" >"$CPD_NDSLOG_DIR/authlog.log"
 # hostapd 桩带 connected_time=120 秒（aa:bb..01 已连 120 秒）
 cat >"$S/bin/ubus" <<'UEOF'
 #!/bin/sh
@@ -253,18 +258,133 @@ r7=$(row "$out7" 'aa:bb:cc:dd:ee:01')
 case "$r7" in *'"authTime":"20'*) echo "  OK   认证时间有值（不再是—）";; *) echo "  FAIL 认证时间有值"; echo "       $r7"; fail=1;; esac
 case "$r7" in *'"onlineTime":"20'*) echo "  OK   上线时间有值（关联时长倒推）";; *) echo "  FAIL 上线时间有值"; echo "       $r7"; fail=1;; esac
 ck "默认会话时长=600" '"defaultSession":600' "$out7"
-# 认证时间必须等于最近一次 T2（不是最早 T1），用 fmt 后的具体字符串核对
+# 认证时间=锚点(END7)命中的那条认证的 session_start=T2（不是更早的 T1）
 T2FMT=$(date -d "@$T2" '+%Y-%m-%d %H:%M' 2>/dev/null)
-ck "认证时间=最近一次认证时刻（client_auth）" "\"authTime\":\"$T2FMT\"" "$r7"
+END7FMT=$(date -d "@$END7" '+%Y-%m-%d %H:%M' 2>/dev/null)
+ck "认证时间=锚点命中那次的 session_start（client_auth）" "\"authTime\":\"$T2FMT\"" "$r7"
+ck "到期时间=同条 session_end（锚点）" "\"expires\":\"$END7FMT\"" "$r7"
 
-echo "== A8 NDS 关闭：已认证客户端详情认证时间/到期时间都不为 — =="
-# 关 NDS 后走补行路径，ss/se 从 ndsctl 拿不到；认证时间取落盘 binauthlog，
-# 到期时间从 authlog.log 的 session_end 兜底，两个都不能是空。
+echo "== A8 NDS 关闭：认证时间/到期时间仍为锚点命中那次写下的值 =="
+# 关 NDS 后 ndsctl 拿不到数据，时间照旧从落盘的两条日志按锚点反查，不受停服影响。
 out8=$(NDS_RUNNING=0 NDSCTL_EMPTY=1 call overview dashboard)
 r8=$(row "$out8" 'aa:bb:cc:dd:ee:01')
 case "$r8" in *'"authTime":"20'*) echo "  OK   关 NDS 后认证时间仍显示落盘值";; *) echo "  FAIL 关 NDS 后认证时间为空"; echo "       $r8"; fail=1;; esac
-EXP_FMT=$(date -d "@$EXP" '+%Y-%m-%d %H:%M' 2>/dev/null)
-ck "关 NDS 后到期时间=authlog 的 session_end" "\"expires\":\"$EXP_FMT\"" "$r8"
+ck "关 NDS 后到期时间=锚点那条的 session_end" "\"expires\":\"$END7FMT\"" "$r8"
+
+echo "== A11 认证时间/到期时间写死在认证那一次；重连/NDS重启不刷新；解除后显示—；再认证才更新 =="
+# 用户口径（2026-11-22）：
+#  - 认证时间/到期时间只认认证通过那次写下的 session_start/session_end（同一条）
+#  - 客户端断线重连、NDS 重启恢复(preemptive_auth) 都不刷新
+#  - 会话到期 / 手动解除 / 中断超时解除 → 两个都显示 —；上线时间不受影响
+#  - 再次认证通过 → 换成新的一对
+MAC1='aa:bb:cc:dd:ee:01'
+# 带 connected_time 的 ubus 桩（上线时间要有值，验证解除认证后它仍在）
+cat >"$S/bin/ubus" <<'UEOF'
+#!/bin/sh
+if [ "$1" = call ] && [ "$2" = network.wireless ]; then
+cat <<'J'
+{
+	"radio2": {
+		"up": true,
+		"interfaces": [
+			{
+				"section": "default_radio2",
+				"ifname": "phy2-ap0",
+				"config": {
+					"mode": "ap",
+					"ssid": "互联网"
+				}
+			}
+		]
+	}
+}
+J
+fi
+if [ "$1" = call ] && [ "$2" = hostapd.phy2-ap0 ]; then
+cat <<'J'
+{
+	"num_sta": 1,
+	"clients": {
+		"AA:BB:CC:DD:EE:01": {
+			"address": "aa:bb:cc:dd:ee:01",
+			"connected_time": 120
+		}
+	}
+}
+J
+fi
+UEOF
+chmod +x "$S/bin/ubus"
+
+# 场景1：06:00 认证通过，会话时长 1440 分钟 → 到期次日 06:00
+AUTH1=$((NOW - 25200))          # 早 7 小时，固定值便于断言
+END1=$((AUTH1 + 86400))
+AUTH1FMT=$(date -d "@$AUTH1" '+%Y-%m-%d %H:%M' 2>/dev/null)
+END1FMT=$(date -d "@$END1" '+%Y-%m-%d %H:%M' 2>/dev/null)
+printf '%s=%s\n' "$(printf '%s' "$MAC1" | base64 | tr -d '=')" "$END1" >"$CPD_NDSLOG_DIR/authlog.log"
+printf 'method=client_auth, clientmac=%s, session_start=%s, session_end=%s\n' "$MAC1" "$AUTH1" "$END1" >"$CPD_NDSLOG_DIR/binauthlog.log"
+r11a=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MAC1")
+ck "A11-1 认证时间=认证那次写下" "\"authTime\":\"$AUTH1FMT\"" "$r11a"
+ck "A11-1 到期时间=同条 session_end" "\"expires\":\"$END1FMT\"" "$r11a"
+
+# 场景2：NDS 重启恢复写 preemptive_auth（session_start=now），时间不能被刷新
+printf 'method=preemptive_auth, clientmac=%s, session_start=%s, session_end=%s\n' "$MAC1" "$NOW" "$END1" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+r11b=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MAC1")
+ck "A11-2 NDS重启恢复不刷新认证时间" "\"authTime\":\"$AUTH1FMT\"" "$r11b"
+ck "A11-2 NDS重启恢复不刷新到期时间" "\"expires\":\"$END1FMT\"" "$r11b"
+
+# 场景3：客户端断线重连只改 WiFi 关联时长（connected_time 变小），认证时间不变
+sed -i 's/"connected_time": 120/"connected_time": 5/' "$S/bin/ubus"
+r11c=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MAC1")
+ck "A11-3 断线重连不刷新认证时间" "\"authTime\":\"$AUTH1FMT\"" "$r11c"
+ck "A11-3 断线重连不刷新到期时间" "\"expires\":\"$END1FMT\"" "$r11c"
+
+# 场景4：有效期内被手动解除认证（ndsctl_deauth）→ 认证/到期都 —，上线时间仍在
+printf 'method=ndsctl_deauth, clientmac=%s, session_start=%s, session_end=%s\n' "$MAC1" "$AUTH1" "$END1" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+r11d=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MAC1")
+ck "A11-4 解除后认证时间显示—" '"authTime":""' "$r11d"
+ck "A11-4 解除后到期时间显示—" '"expires":""' "$r11d"
+case "$r11d" in *'"onlineTime":"20'*) echo "  OK   A11-4 上线时间仍显示（不依赖 NDS）";; *) echo "  FAIL A11-4 上线时间丢失"; echo "       $r11d"; fail=1;; esac
+
+# 场景5：10:05 再次认证通过 → 认证时间/到期时间换成新的一对
+AUTH2=$((NOW - 60))
+END2=$((AUTH2 + 86400))
+AUTH2FMT=$(date -d "@$AUTH2" '+%Y-%m-%d %H:%M' 2>/dev/null)
+END2FMT=$(date -d "@$END2" '+%Y-%m-%d %H:%M' 2>/dev/null)
+printf 'method=client_auth, clientmac=%s, session_start=%s, session_end=%s\n' "$MAC1" "$AUTH2" "$END2" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+# 真机再认证会重写 authlog 的锚点为新到期（binauth_log.sh 先删旧行再写）
+printf '%s=%s\n' "$(printf '%s' "$MAC1" | base64 | tr -d '=')" "$END2" >"$CPD_NDSLOG_DIR/authlog.log"
+r11e=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MAC1")
+ck "A11-5 再认证后认证时间更新" "\"authTime\":\"$AUTH2FMT\"" "$r11e"
+ck "A11-5 再认证后到期时间更新" "\"expires\":\"$END2FMT\"" "$r11e"
+
+echo "== A12 到期锚点反查：免认证有认证时间；会话到期重连整对换新 =="
+# 场景1：免认证客户端(preemptive_auth)首次接入，也写 authlog 锚点 → 应显示认证时间
+# （旧逻辑把 preemptive_auth 全排除，这里会显示 —；新逻辑按锚点反查能取到）
+MF='aa:bb:cc:dd:ee:01'
+MAUTH=$((NOW - 7200))
+MEND=$((NOW + 7200))
+MAUTHFMT=$(date -d "@$MAUTH" '+%Y-%m-%d %H:%M' 2>/dev/null)
+MENDFMT=$(date -d "@$MEND" '+%Y-%m-%d %H:%M' 2>/dev/null)
+: >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'method=preemptive_auth, clientmac=%s, session_start=%s, session_end=%s\n' "$MF" "$MAUTH" "$MEND" >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf '%s=%s\n' "$(printf '%s' "$MF" | base64 | tr -d '=')" "$MEND" >"$CPD_NDSLOG_DIR/authlog.log"
+r12a=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MF")
+ck "A12-1 免认证客户端认证时间=接入时刻" "\"authTime\":\"$MAUTHFMT\"" "$r12a"
+ck "A12-1 免认证客户端到期时间=锚点" "\"expires\":\"$MENDFMT\"" "$r12a"
+
+# 场景2：会话到期被踢(timeout_deauth)→免认证自动重连(preemptive_auth)+authlog换到期
+# → 锚点变成新到期，反查命中重连那条，认证/到期整对换新到重连时刻
+REAUTH=$((NOW - 60))
+REND=$((REAUTH + 86400))
+REAUTHFMT=$(date -d "@$REAUTH" '+%Y-%m-%d %H:%M' 2>/dev/null)
+RENDFMT=$(date -d "@$REND" '+%Y-%m-%d %H:%M' 2>/dev/null)
+printf 'method=timeout_deauth, clientmac=%s, session_start=%s, session_end=%s\n' "$MF" "$MAUTH" "$NOW" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'method=preemptive_auth, clientmac=%s, session_start=%s, session_end=%s\n' "$MF" "$REAUTH" "$REND" >>"$CPD_NDSLOG_DIR/binauthlog.log"
+printf '%s=%s\n' "$(printf '%s' "$MF" | base64 | tr -d '=')" "$REND" >"$CPD_NDSLOG_DIR/authlog.log"
+r12b=$(row "$(NDS_RUNNING=1 call overview dashboard)" "$MF")
+ck "A12-2 到期重连后认证时间=重连时刻" "\"authTime\":\"$REAUTHFMT\"" "$r12b"
+ck "A12-2 到期重连后到期时间=新到期" "\"expires\":\"$RENDFMT\"" "$r12b"
 
 # 上线时间 = now - 120，允许 2 秒误差：这里只校验格式与存在，精确值由前端展示
 : >"$CPD_NDSLOG_DIR/binauthlog.log"

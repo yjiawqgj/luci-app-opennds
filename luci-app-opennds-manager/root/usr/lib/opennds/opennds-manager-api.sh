@@ -1188,16 +1188,13 @@ ov_client_row() {
 	[ "$blk" = 'true' ] && authorized=false
 
 	joined=$(fmt_time "$ss")
-	# NDS 停止 / 客户端离线走补行路径时 se 为空，到期时间会被显示成 —。
-	# 只要是落盘认证记录里还在有效期的客户端，就用 authlog 记的到期时间兜底。
-	if [ -z "$se" ] && auth_cache_get "$lm"; then
-		expires=$(auth_expire_fmt "$lm")
-	else
-		expires=$(fmt_time "$se")
-	fi
+	# 详情到期时间：只认认证通过那次写下的 session_end（与认证时间同条记录），
+	# 不用 ndsctl 的 se 或 authlog 覆盖——重连 / NDS 重启都不刷新。
+	# 已被解除认证时 AUTH_PAIR 无此 mac → 空串 → 前端显示 —。
+	expires=$(auth_expire_fmt "$lm")
 	lim=$(ov_limits_json "$(entry_for_mac "$PM_LIST" "$lm")")
-	# 详情时间：认证时间取落盘最近一次认证时刻（用户口径：只认本次认证），
-	# 上线时间由 hostapd 关联时长倒推（只有正在关联的设备才算得出）。
+	# 详情时间：认证时间取认证通过时落盘的 session_start（写死不变），
+	# 上线时间由 hostapd 关联时长倒推（只有正在关联的设备才算得出，且不受 NDS 影响）。
 	local auth_t online_t
 	auth_t=$(auth_start_fmt "$lm")
 	online_t=$(online_since_fmt "$lm")
@@ -1275,13 +1272,14 @@ EOF5
 # 不再自建缓存——自建缓存只在 NDS 运行时才写得到，首次安装/停服时是空的。
 #
 # AUTH_CACHE 每行：小写mac<TAB>到期时间戳（只留有效期内且未被主动登出的）
-# AUTH_START 每行：小写mac<TAB>最近一次认证时刻（binauthlog 里该 mac 最大的 auth
-# 记录 session_start）。ndsctl 的 session_start 会在 NDS 恢复认证时被冲成当前
-# 时间，所以详情「认证时间」以这个落盘值为准——它不随停服/重启变化。
+# AUTH_PAIR  每行：小写mac<TAB>认证时刻<TAB>到期时刻，成对取自 binauthlog 同一条
+# 「认证通过」记录（client_auth / ndsctl_auth），排除 preemptive_auth（NDS 重启
+# 恢复）与已被 deauth 的客户端。详情的「认证时间」「到期时间」都从这里取，
+# 因此两者永远同一次认证、写死不变；断线重连 / NDS 重启都不刷新。
 # authlog.mountpoint 可由 uci opennds.@opennds[0].log_mountpoint 覆盖；
 # 未配置时按 openNDS 的探测顺序取第一个 tmpfs（/tmp /run /var），默认 /tmp。
 AUTH_CACHE=''
-AUTH_START=''
+AUTH_PAIR=''
 
 # base64 解码（authlog 的 mac 键去掉了末尾 =）。纯 awk，不依赖 busybox base64 -d。
 # 输入是去掉末尾 = 的 base64（authlog 原样）。每 4 个 6-bit 字符还原 3 字节；
@@ -1361,9 +1359,9 @@ purge_client_logs() {
 	return 0
 }
 
-auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ AUTH_CACHE
+auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ AUTH_CACHE / AUTH_PAIR
 	AUTH_CACHE=''
-	AUTH_START=''
+	AUTH_PAIR=''
 	local dir f now lm exp kb lastm
 	now=$(date +%s)
 	dir=$(authlog_dir)
@@ -1394,36 +1392,51 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 "
 	done <"$f"
 
-	# 本次认证时刻：读 binauthlog 里认证成功的记录，取该 mac 最近一次 session_start。
-	# 用户口径（2026-11-21）：认证时间只认本次认证——11-21 认证的就显示 11-21，
-	# 不再显示历史上最早那次。故取最大值（最近），不是最早。
-	# 关键：binauth 传进来的 method 是 client_auth / ndsctl_auth（明文认证流程最终
-	# 是 client_auth），不是单纯的 auth；判据必须和 binauth_log.sh 一样取末段
-	# （action=${method##*_}），否则会把真正的认证行全过滤掉，认证时间永远显示 —。
-	# auth_client 那行不带 session_start，天然被 ss=="" 排除；各 *_deauth 末段是
-	# deauth，也不会混进来。每行形如：
-	#   Wed Nov 20 10:00:00 2024, method=client_auth, clientmac=aa:bb:..., ..., session_start=1732..., session_end=1732...
+	# 详情认证时间/到期时间：以 authlog 的 session_end（到期时间）为「会话锚点」，
+	# 反查 binauthlog 里 session_end 落在同一锚点上的认证记录，取其中最早一次认证的
+	# session_start 当认证时间。原理：
+	#  - 同一次会话中途 WiFi 重连、NDS 重启恢复(写 preemptive_auth)都不改变到期时间，
+	#    auth_restore 用剩余时长恢复、session_end 仍是原值 → 从到期反查能聚拢到同一次
+	#    会话，取最早那条就是真正的首次认证时刻，不会被重启刷新。
+	#  - 会话到期被踢、手动解除后再认证会写入全新到期时间 → 旧记录与新锚点不符被排除，
+	#    自动换成新的一对认证时间/到期时间。
+	#  - 已解除认证的 mac 在 AUTH_CACHE 阶段就被排除，拿不到锚点 → 详情显示 —。
+	# 到期时间取「最早那条认证记录」写下的 session_end，与认证时间同条成对。
+	# 锚点容差 120 秒：auth_restore 按分钟取整恢复可能丢几秒，首次那条是精确值，
+	# 取最早时天然选中它。method 取末段（client_auth/ndsctl_auth/preemptive_auth→auth）。
 	if [ -f "$bl" ]; then
-		AUTH_START=$(awk '
-		{
-			mac = ""; ss = ""; meth = ""
-			if (match($0, /clientmac=[^,[:space:]]+/)) {
-				mac = substr($0, RSTART + 10, RLENGTH - 10)
-				mac = tolower(mac)
+		AUTH_PAIR=$(awk -v anchors="$AUTH_CACHE" '
+		BEGIN {
+			ac = split(anchors, al, "\n")
+			for (i = 1; i <= ac; i++) {
+				if (al[i] == "") continue
+				split(al[i], f, "\t")
+				if (f[1] != "") anchor[f[1]] = f[2] + 0
 			}
-			if (match($0, /method=[^,[:space:]]+/))
-				meth = substr($0, RSTART + 7, RLENGTH - 7)
-			# 取 method 末段：client_auth -> auth；ndsctl_auth -> auth
-			n = split(meth, parts, "_")
-			act = parts[n]
-			if (act != "auth" || mac == "") next
+		}
+		{
+			mac = ""; ss = ""; se = ""
+			if (match($0, /clientmac=[^,[:space:]]+/))
+				mac = tolower(substr($0, RSTART + 10, RLENGTH - 10))
+			if (mac == "" || mac !~ /:/) next
+			if (!(mac in anchor)) next
+			if (match($0, /method=[^,[:space:]]+/) == 0) next
+			meth = substr($0, RSTART + 7, RLENGTH - 7)
+			nn = split(meth, parts, "_")
+			if (parts[nn] != "auth") next
 			if (match($0, /session_start=[0-9]+/))
 				ss = substr($0, RSTART + 14, RLENGTH - 14)
-			if (ss == "" || mac !~ /:/) next
-			# 取最近一次（最大时间戳），实现「认证时间只认本次认证」
-			if (!(mac in last) || (ss + 0) > (last[mac] + 0)) last[mac] = ss
+			if (match($0, /session_end=[0-9]+/))
+				se = substr($0, RSTART + 12, RLENGTH - 12)
+			if (ss == "" || se == "") next
+			d = se + 0 - anchor[mac]
+			if (d < 0) d = -d
+			if (d > 120) next
+			if (!(mac in as) || (ss + 0) < (as[mac] + 0)) {
+				as[mac] = ss; ae[mac] = se
+			}
 		}
-		END { for (m in last) print m "\t" last[m] }
+		END { for (m in as) print m "\t" as[m] "\t" ae[m] }
 		' "$bl")
 	fi
 	return 0
@@ -1434,21 +1447,21 @@ auth_cache_get() { # $1=小写 mac → 0=在有效期内认证过
 	printf '%s\n' "$AUTH_CACHE" | grep -qF "$1	"
 }
 
-# 详情「到期时间」落盘兜底：$1=小写 mac → 打印到期时间戳（无则空串）。
-# NDS 停止 / 客户端离线时走补行路径，ndsctl 没有 session_end，se 传空会让
-# 到期时间显示 —；authlog.log 里本就记着到期时间，直接取它。
+# 详情「到期时间」：$1=小写 mac → 打印该次认证通过写下的 session_end（无则空串）。
+# 和认证时间成对取自 AUTH_PAIR 同一行，不再用 authlog / ndsctl 的值覆盖，
+# 保证「认证时间 + 到期时间」永远绑同一次认证、写死不变。
 auth_expire_fmt() { # $1=小写 mac
-	[ -n "$AUTH_CACHE" ] || return 0
+	[ -n "$AUTH_PAIR" ] || return 0
 	local e
-	e=$(printf '%s\n' "$AUTH_CACHE" | awk -F'\t' -v m="$1" '$1 == m {print $2; exit}')
+	e=$(printf '%s\n' "$AUTH_PAIR" | awk -F'\t' -v m="$1" '$1 == m {print $3; exit}')
 	fmt_time "$e" || printf ''
 }
 
-# 详情「认证时间」：该 mac 落盘的最近一次认证时刻 → 格式化时间；没有则空串
+# 详情「认证时间」：该 mac 认证通过时写下的 session_start → 格式化时间；无则空串
 auth_start_fmt() { # $1=小写 mac
-	[ -n "$AUTH_START" ] || return 0
+	[ -n "$AUTH_PAIR" ] || return 0
 	local e
-	e=$(printf '%s\n' "$AUTH_START" | awk -F'\t' -v m="$1" '$1 == m {print $2; exit}')
+	e=$(printf '%s\n' "$AUTH_PAIR" | awk -F'\t' -v m="$1" '$1 == m {print $2; exit}')
 	fmt_time "$e" || printf ''
 }
 
