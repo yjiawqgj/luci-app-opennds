@@ -52,6 +52,11 @@ var CSS = '\
 .cpd-tab{font-family:inherit;font-size:13px;line-height:1.4;padding:9px 14px;border:0;border-bottom:2px solid transparent;background:transparent!important;cursor:pointer;color:inherit;margin-bottom:-1px;outline:none!important;box-shadow:none!important}\
 .cpd-tab:hover,.cpd-tab:focus,.cpd-tab:active{background:transparent!important;outline:none!important;box-shadow:none!important;border-top:0;border-left:0;border-right:0}\
 .cpd-tab.on{font-weight:700;border-bottom-color:#2274a5}\
+.cpd-switch{position:relative;width:42px;height:24px;flex:none;padding:0;border:1px solid #c9d2da;border-radius:999px;background:#e3e8ec;cursor:pointer;transition:background .15s,border-color .15s;vertical-align:middle}\
+.cpd-switch .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}\
+.cpd-switch[aria-checked="true"]{background:#2e9468;border-color:#2e9468}\
+.cpd-switch[aria-checked="true"] .knob{transform:translateX(18px)}\
+.cpd-switch-row{display:inline-flex;align-items:center;gap:10px;padding:6px 0;cursor:pointer}\
 @media (max-width:640px){.cpd-ta{font-size:16px}.cpd-actions .cbi-button,.cpd-actions .btn{flex:1 1 30%}}\
 ';
 
@@ -346,6 +351,26 @@ var CPD = L.Class.extend({
 		return E('div', { 'class': 'cpd-sec' }, [
 			E('h3', {}, [title])
 		]);
+	},
+	/* 与概览页一致的开关按钮（.cpd-switch + 滑块 + aria-checked）。
+	 * checked: 布尔初值；label: aria-label；onChange(checked): 点击回调。
+	 * 返回 button，并挂 setChecked(v) 供外部在异步后同步视觉。 */
+	switchBtn: function (checked, label, onChange) {
+		ensureStyle();
+		var btn = E('button', {
+			'class': 'cpd-switch', 'type': 'button', 'role': 'switch',
+			'aria-label': label || ''
+		}, E('span', { 'class': 'knob', 'aria-hidden': 'true' }));
+		btn.setAttribute('aria-checked', checked ? 'true' : 'false');
+		btn.addEventListener('click', function () {
+			var next = btn.getAttribute('aria-checked') !== 'true';
+			btn.setAttribute('aria-checked', next ? 'true' : 'false');
+			if (typeof onChange === 'function') onChange(next);
+		});
+		btn.setChecked = function (v) {
+			btn.setAttribute('aria-checked', v ? 'true' : 'false');
+		};
+		return btn;
 	},
 
 	/* ---------- 与 openwrt 原生「未保存的配置」对接 ----------

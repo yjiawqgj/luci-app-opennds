@@ -503,8 +503,7 @@ return view.extend({
 		function renderWiredConfig() {
 			wiredConfig.innerHTML = '';
 			if (!state.wiredActive || !state.wired || !state.wired.iface) {
-				wiredConfig.appendChild(E('p', { 'class': 'zd-empty-hint' },
-					_('点击上方有线区域卡片，为它选择认证脚本。')));
+				/* 不再显示「点击上方有线区域卡片…」提示（用户要求删除） */
 				wiredSaveRow.style.display = 'none';
 				return;
 			}
@@ -927,7 +926,7 @@ return view.extend({
 
 		body.appendChild(CPD.pageHead(
 			_('网络区域识别'), 'Network Zone Detection',
-			_('选择配置模式，为 Wi-Fi 区域选择认证脚本。')));
+			_('可以为有线连接的客户端和不同WIFI下的客户端设置不同的验证门户。')));
 
 		body.appendChild(E('div', { 'class': 'cpd-sec' }, [
 			E('h3', {}, [_('区域选择')]),

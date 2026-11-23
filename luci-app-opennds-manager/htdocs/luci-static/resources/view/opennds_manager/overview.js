@@ -169,6 +169,12 @@ return view.extend({
 			running: false, enabled: false, engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
+			/* 本地身份覆盖（key=小写 MAC）：行内操作只写 uci 暂存，后端
+			 * ov_client_row 读的是已提交配置 /etc/config/opennds，refresh
+			 * 拉回来身份不变 → 标签不跟随。这里在暂存成功后立即覆盖该客户端
+			 * 的 blocked/trusted/preauth/authenticated 并重绘，5 秒轮询也套用
+			 * 同一份覆盖，不回滚；「复位」时清空，交回后端真实身份。 */
+			localTags: {},
 			/* 不默认选中任何卡片：进来先看全部客户端，点哪张卡筛哪类
 			 * （2026-11-19 用户口径，此前默认选中「在线客户端」） */
 			filter: null, ap: null, query: '', fupEnabled: true,
@@ -734,12 +740,46 @@ return view.extend({
 			});
 		}
 
+		/* 渲染前把本地身份覆盖套到后端返回的客户端上（不改动 state.clients
+		 * 原对象，避免 5 秒轮询重新赋值时丢失覆盖基准）。只覆盖 4 个身份位，
+		 * 其余字段（IP/流量/时间/限额等）照用后端真实值。 */
+		function decorated(c) {
+			var ov = state.localTags[String(c.mac || '').toLowerCase()];
+			if (!ov) return c;
+			var d = {};
+			for (var k in c) if (c.hasOwnProperty(k)) d[k] = c[k];
+			for (var f in ov) if (ov.hasOwnProperty(f)) d[f] = ov[f];
+			return d;
+		}
+
 		function tagOf(c) {
 			if (c.blocked) return ['t-black', _('黑名单')];
 			if (c.trusted) return ['t-trusted', _('可信任')];
 			if (c.preauth && c.authenticated) return ['t-pre', _('免认证')];
 			if (c.authenticated) return ['t-auth', _('已认证')];
 			return ['t-unauth', _('未认证')];
+		}
+
+		/* 每类行内操作成功后要立刻呈现的身份。与 stageAction 写进暂存的
+		 * 名单一一对应；未列出的字段保持后端原值。preauth 位按「进了
+		 * preemptivemac 名单」置位，authenticated 仍按运行时真实值——tagOf
+		 * 里免认证要 preauth&&authenticated，但加入名单后要等应用生效才真正
+		 * 登录，所以这里对免认证/可信任 additionally 置 authenticated，让标签
+		 * 立即反映用户的操作意图（暂存态，底部「未保存的配置」角标仍亮着）。 */
+		var ACTION_IDENTITY = {
+			preauth:   { preauth: true,  authenticated: true,  trusted: false, blocked: false },
+			unpreauth: { preauth: false, authenticated: false },
+			trust:     { trusted: true,  preauth: false, authenticated: false, blocked: false },
+			untrust:   { trusted: false, authenticated: false },
+			block:     { blocked: true,  trusted: false, preauth: false, authenticated: false },
+			unblock:   { blocked: false },
+			deauth:    { authenticated: false, preauth: false, trusted: false }
+		};
+
+		function setLocalIdentity(act, mac) {
+			var id = ACTION_IDENTITY[act];
+			if (!id || !mac) return;
+			state.localTags[String(mac).toLowerCase()] = id;
 		}
 
 		function renderList() {
@@ -773,7 +813,8 @@ return view.extend({
 			 *             黑名单要先解除拉黑。可信任/免认证的解除认证会同时把
 			 *             客户端从对应名单里清除（2026-11-20 用户口径，双向一致）
 			 *   拉黑/解除拉黑 —— 永远可用（身份切换的入口） */
-			tbody.innerHTML = items.map(function (c) {
+			tbody.innerHTML = items.map(function (raw) {
+				var c = decorated(raw);
 				var blocked = !!c.blocked, trusted = !!c.trusted;
 				var authed = !!c.authenticated, pre = !!c.preauth;
 				var preAct = pre ? 'unpreauth' : 'preauth';
@@ -825,8 +866,9 @@ return view.extend({
 					var act = b.getAttribute('data-act');
 					var mac = b.getAttribute('data-mac');
 					var isPre = b.getAttribute('data-pre') === '1';
-					var row = state.clients.filter(function (c) { return c.mac === mac; })[0];
-					if (!row) return;
+					var found = state.clients.filter(function (c) { return c.mac === mac; })[0];
+					if (!found) return;
+					var row = decorated(found);
 					if (act === 'detail') openDetail(row);
 					else if (act === 'edit') openEdit(row, isPre);
 					else askAction(act, row);
@@ -1041,6 +1083,10 @@ return view.extend({
 
 		function performAction(act, row) {
 			stageAction(act, row.mac).then(function () {
+				/* 暂存成功后立即登记本地身份并先重绘一次，标签当场跟随；
+				 * 随后的 refresh 会用同一份覆盖重新套上，5 秒轮询不回滚。 */
+				setLocalIdentity(act, row.mac);
+				renderList();
 				refresh();
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('记录失败')), 'err');
@@ -1230,6 +1276,7 @@ return view.extend({
 				/* 改名后的「免认证」按钮：确定 = 跑原来 preauth 那一套（摘黑名单、
 				 * 摘可信任、写 preemptivemac），再叠加窗里填的参数，一步到位加入免认证。 */
 				stageAction('preauth', mac).then(function () {
+					setLocalIdentity('preauth', mac);
 					return stageEditLimits(lm, args);
 				}).then(done, failed);
 			} else {
@@ -1435,8 +1482,12 @@ return view.extend({
 			});
 		};
 		this.handleReset = function () {
-			/* 复位 = 丢弃本会话未提交的增量 */
-			return CPD.revertStaged().catch(function (e) {
+			/* 复位 = 丢弃本会话未提交的增量，本地身份覆盖一并清掉，
+			 * 标签回到后端真实身份。 */
+			state.localTags = {};
+			return CPD.revertStaged().then(function () {
+				refresh();
+			}).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('复位失败')), 'err');
 			});
 		};

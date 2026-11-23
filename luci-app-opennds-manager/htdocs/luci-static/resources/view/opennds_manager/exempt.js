@@ -62,28 +62,32 @@ return view.extend({
 				isPre ? _('自动认证') : _('信任客户端'),
 				isPre ? 'Auto Authentication' : 'Trusted Clients');
 			sec.appendChild(E('p', { 'class': 'cpd-note' }, isPre
-				? _('允许指定客户端跳过门户认证，自动通过认证，同时保留 openNDS 对客户端的流量统计、配额、速度和会话时长管理。')
-				: _('允许指定客户端绕过 openNDS 的正常认证和客户端流量管理机制，获得无条件访问权限。')));
+				? _('可以为无法进行强制门户认证的设备自动放行，比如摄像头、传感器等。但与信任客户端不同，自动认证的客户端同样受到强制门户的管理。')
+				: _('指定客户端将不受强制门户的管理，拥有完全自由的网络。')));
 
 			if (isPre) {
-				var tgl = E('button', {
-					'class': 'cbi-button ' + (state.preemptEnabled ? 'cbi-button-positive' : ''),
-					'click': function () {
-						state.preemptEnabled = state.preemptEnabled ? 0 : 1;
-						renderAll();
-						/* 开关切换立即落成 uci 暂存：右上角马上出现「未保存的配置」，
-						 * 与 openwrt 原生按钮逻辑接轨（保存/保存并应用/复位都能接管它） */
-						CPD.stageUci('opennds', '@opennds[0]', 'allow_preemptive_authentication',
-							'opt', String(state.preemptEnabled)).then(null, function (e) {
-								CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
-							});
-					}
-				}, state.preemptEnabled ? _('已启用') : _('已关闭'));
-				sec.appendChild(tgl);
-				if (!state.preemptEnabled) {
-					sec.appendChild(E('p', { 'class': 'cpd-note', 'style': 'margin-top:6px' },
-						_('当前未启用自动预授权：尚未出现在客户端列表里的设备不会被自动放行')));
-				}
+				var statusLabel = E('span', {}, state.preemptEnabled ? _('已启用') : _('已关闭'));
+				var hint = E('p', { 'class': 'cpd-note', 'style': 'margin-top:6px' },
+					_('当前未启用自动预授权：尚未出现在客户端列表里的设备不会被自动放行'));
+				hint.style.display = state.preemptEnabled ? 'none' : '';
+				var tgl = CPD.switchBtn(!!state.preemptEnabled, _('自动认证开关'), function (on) {
+					state.preemptEnabled = on ? 1 : 0;
+					statusLabel.textContent = on ? _('已启用') : _('已关闭');
+					hint.style.display = on ? 'none' : '';
+					/* 开关切换立即落成 uci 暂存：右上角马上出现「未保存的配置」，
+					 * 与 openwrt 原生按钮逻辑接轨（保存/保存并应用/复位都能接管它）。
+					 * 失败时把开关拨回，避免视觉与暂存状态不一致。 */
+					CPD.stageUci('opennds', '@opennds[0]', 'allow_preemptive_authentication',
+						'opt', String(state.preemptEnabled)).then(null, function (e) {
+							tgl.setChecked(!on);
+							state.preemptEnabled = on ? 0 : 1;
+							statusLabel.textContent = on ? _('已关闭') : _('已启用');
+							hint.style.display = on ? '' : 'none';
+							CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
+						});
+				});
+				sec.appendChild(E('div', { 'class': 'cpd-switch-row' }, [tgl, statusLabel]));
+				sec.appendChild(hint);
 			}
 
 			var wrap = E('div', {});

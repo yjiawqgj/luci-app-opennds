@@ -32,29 +32,29 @@ return view.extend({
 			body.innerHTML = '';
 			body.appendChild(CPD.pageHead(
 				_('路由器访问'), 'openNDS · Router Access',
-				_('配置 openNDS 对路由器的接管行为，以及对所有客户端开放的端口。')));
+				_('控制客户端访问路由器')));
 
 			var sec1 = CPD.section(_('接管'), 'Takeover');
-			var chk = E('input', { type: 'checkbox', id: 'cpd-takeover-off' });
-			chk.checked = state.takeoverOff;
-			chk.addEventListener('change', function () {
-				state.takeoverOff = chk.checked;
-				/* 勾选立即落成 uci 暂存：右上角马上出现「未保存的配置」 */
+			/* 开关打开 = 关闭接管（与原复选框勾选语义一致）：passthrough=1。
+			 * 控件换成概览页同款开关，行为与数据口径不变。 */
+			var tgl = CPD.switchBtn(!!state.takeoverOff, _('关闭接管'), function (on) {
+				state.takeoverOff = on;
+				/* 切换立即落成 uci 暂存：右上角马上出现「未保存的配置」 */
 				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough',
-					'opt', state.takeoverOff ? '1' : '0').then(null, function (e) {
+					'opt', on ? '1' : '0').then(null, function (e) {
+						tgl.setChecked(!on);
+						state.takeoverOff = !on;
 						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
 					});
 			});
 			sec1.appendChild(E('div', {}, [
-				E('label', { 'style': 'display:inline-flex;align-items:center;gap:9px;padding:8px 0;cursor:pointer' }, [
-					chk, E('span', {}, _('关闭接管'))
-				]),
+				E('div', { 'class': 'cpd-switch-row' }, [tgl, E('span', {}, _('关闭接管'))]),
 				E('p', { 'class': 'cpd-note' }, _('如果你不知道该功能作用，请保持默认。'))
 			]));
 			body.appendChild(sec1);
 
 			var sec2 = CPD.section(_('开放端口'), 'Open Ports');
-			sec2.appendChild(E('p', { 'class': 'cpd-note' }, _('对所有客户端生效。')));
+			sec2.appendChild(E('p', { 'class': 'cpd-note' }, _('22、53、443端口自动放行')));
 			if (!state.fw4) {
 				sec2.appendChild(E('div', { 'class': 'cpd-warnbar' },
 					_('当前系统未使用 fw4（nftables），openNDS 不支持 users_to_router 规则，本页配置不会生效。')));
