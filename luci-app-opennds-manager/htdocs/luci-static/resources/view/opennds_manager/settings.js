@@ -13,8 +13,9 @@
 
 var CPD = null;
 var TAB_NAMES = {
+	global: _('全局门户'),
 	wireless: _('无线区域'), wired: _('有线区域'),
-	blacklist: _('黑名单'), global: _('全局门户')
+	blacklist: _('黑名单')
 };
 
 return view.extend({
@@ -35,7 +36,7 @@ return view.extend({
 			iface: 'br-lan',
 			device: 'br-lan',
 			ifaces: [],
-			tab: 'wireless',
+			tab: 'global',
 			fupEnabled: true,
 			snapshot: null
 		};
@@ -129,7 +130,7 @@ return view.extend({
 
 		function renderPortalTabs() {
 			portalBox.innerHTML = '';
-			var tabs = ['wireless', 'wired', 'blacklist', 'global'];
+			var tabs = ['global', 'wireless', 'wired', 'blacklist'];
 			/* 与顶部页面切换同风格：无背景色，选中只加粗 + 下划线，不改变文字颜色 */
 			var tabRow = E('div', { 'role': 'tablist',
 				'style': 'display:flex;flex-wrap:wrap;border-bottom:1px solid #e3e9ee;margin-top:16px' });
