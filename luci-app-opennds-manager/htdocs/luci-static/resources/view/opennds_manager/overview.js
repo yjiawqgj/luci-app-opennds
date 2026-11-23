@@ -755,17 +755,19 @@ return view.extend({
 		function tagOf(c) {
 			if (c.blocked) return ['t-black', _('黑名单')];
 			if (c.trusted) return ['t-trusted', _('可信任')];
-			if (c.preauth && c.authenticated) return ['t-pre', _('免认证')];
+			/* 免认证只看 preemptivemac 名单位（与演示页、inFilter 的 preauth
+			 * 筛选、后端 N_PRE 计数同一口径）。不再附加 authenticated：加入
+			 * 名单后设备往往还没重新认证（authenticated=false），若要求两者
+			 * 都为真，已加入免认证的设备会被错标成「未认证」。 */
+			if (c.preauth) return ['t-pre', _('免认证')];
 			if (c.authenticated) return ['t-auth', _('已认证')];
 			return ['t-unauth', _('未认证')];
 		}
 
 		/* 每类行内操作成功后要立刻呈现的身份。与 stageAction 写进暂存的
 		 * 名单一一对应；未列出的字段保持后端原值。preauth 位按「进了
-		 * preemptivemac 名单」置位，authenticated 仍按运行时真实值——tagOf
-		 * 里免认证要 preauth&&authenticated，但加入名单后要等应用生效才真正
-		 * 登录，所以这里对免认证/可信任 additionally 置 authenticated，让标签
-		 * 立即反映用户的操作意图（暂存态，底部「未保存的配置」角标仍亮着）。 */
+		 * preemptivemac 名单」置位；tagOf 现在只看名单位，authenticated 保留
+		 * 后端运行时真值即可（这里额外置 true 已不影响标签，仅为兼容旧读法）。 */
 		var ACTION_IDENTITY = {
 			preauth:   { preauth: true,  authenticated: true,  trusted: false, blocked: false },
 			unpreauth: { preauth: false, authenticated: false },
