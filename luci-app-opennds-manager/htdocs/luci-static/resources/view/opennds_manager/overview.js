@@ -78,6 +78,7 @@ var CSS = '\
 .ovd-host-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\
 .ovd-tags{display:flex;gap:4px;flex-wrap:wrap}\
 .ovd-tag{font-size:10px;font-weight:500;line-height:1.5;padding:0 6px;border-radius:999px;border:1px solid;white-space:nowrap}\
+.ovd-dialog .ovd-tag.big{font-size:13px;font-weight:600;padding:3px 11px;line-height:1.6}\
 .ovd-tag.t-auth{color:#2e7d5b;border-color:#bfe0cf;background:#eef8f2}\
 .ovd-tag.t-unauth{color:#7c8894;border-color:#dfe5ea;background:transparent}\
 .ovd-tag.t-pre{color:#fff;border-color:#2e9468;background:#2e9468}\
@@ -90,9 +91,9 @@ var CSS = '\
 .ovd-rowbtn.danger{color:#c94848;border-color:#e8c9c9}\
 .ovd-rowbtn.danger:hover{background:#fdf4f4;border-color:#d9a8a8}\
 .ovd-empty{text-align:center;color:#9aa6b2;font-size:12.5px;padding:26px 10px}\
-.ovd-mask{position:fixed;inset:0;overflow-y:auto;background:rgba(22,30,38,.5);display:none;padding:18px;z-index:700}\
-.ovd-mask.on{display:flex}\
-.ovd-dialog{background:#fff;border-radius:10px;width:100%;max-width:660px;margin:auto;box-shadow:0 18px 48px rgba(20,30,40,.24)}\
+.ovd-mask{position:fixed;inset:0;overflow-y:auto;overscroll-behavior:contain;background:rgba(22,30,38,.5);display:none;padding:72px 18px 28px;z-index:9999}\
+.ovd-mask.on{display:block}\
+.ovd-dialog{background:#fff;border-radius:10px;width:100%;max-width:660px;margin:0 auto;box-shadow:0 18px 48px rgba(20,30,40,.24)}\
 .ovd-dialog.dtl{max-width:460px}\
 .ovd-dhead{padding:15px 20px;border-bottom:1px solid #d7dde3;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}\
 .ovd-dhead h3{font-size:16px;font-weight:650;margin:0}\
@@ -175,7 +176,21 @@ return view.extend({
 			sortKey: null, sortDir: 1
 		};
 		var locked = false, pollTimer = null, modalOpen = 0;
-		var editRow = null;
+		var savedBodyOverflow = '';
+		var editRow = null, editIsPreEntry = false;
+		/* 弹窗打开时锁住页面滚动：滚轮只作用于遮罩内的弹窗，
+		 * 页面本身不可滚动，全程只出现弹窗这一条滚动条；关闭后恢复。 */
+		function modalEnter() {
+			if (modalOpen === 0) {
+				savedBodyOverflow = document.body.style.overflow;
+				document.body.style.overflow = 'hidden';
+			}
+			modalOpen++;
+		}
+		function modalLeave() {
+			if (modalOpen > 0) modalOpen--;
+			if (modalOpen === 0) document.body.style.overflow = savedBodyOverflow;
+		}
 
 		/* 开关过渡态（2026-11-22 用户口径）：点关闭/开启后，等待后端真正生效
 		 * 的这几秒里，按钮与文字显示黄色「正在关闭 / 正在启动」，而不是继续
@@ -766,16 +781,19 @@ return view.extend({
 				var trustAct = trusted ? 'untrust' : 'trust';
 				var trustLabel = trusted ? _('移除可信任') : _('可信任客户端');
 				var tg = tagOf(c);
+				/* 详情弹窗里的「属性」标签调大：用 big 类，列表里的标签保持原样 */
 				var tags = '<span class="ovd-tag ' + tg[0] + '">' + tg[1] + '</span>';
-				/* 免认证按钮：所有身份都保留（2026-11-22 用户纠正），位置仍在「详情」之后。
-				 * 只有未客户端这一行特殊——它那个按钮改走编辑弹窗：点开填参数、确定时
-				 * 真加入免认证（openEdit/saveEdit 里按 t-unauth 分流）。其余身份照旧
-				 * 直接 preauth/unpreauth。
-				 * 「编辑」按钮：可信任不显示（不受超时/流量限制）；未认证也不显示——
+				/* 免认证按钮（2026-11-23 用户口径）：所有类型客户端的「免认证」
+				 * 按钮都改为弹出编辑弹窗，只有在弹窗里点确定才真正加入免认证名单。
+				 * 用 data-pre="1" 标记这个入口，saveEdit 据此决定确定时执行 preauth。
+				 * 已是免认证的客户端按钮是「移除免认证」，它仍是取消动作，走 preAct
+				 * (=unpreauth) 直接确认，不受此影响。 */
+				var preBtnAct = pre ? 'unpreauth' : 'edit';
+				var preBtnPre = pre ? '' : ' data-pre="1"';
+				var preBtnLabel = preLabel;
+				/* 「编辑」按钮：可信任不显示（不受超时/流量限制）；未认证也不显示——
 				 * 它已经在免认证那个位置出现，不能重复占一个「编辑」。 */
 				var unauth = (tg[0] === 't-unauth');
-				var preBtnAct = unauth ? 'edit' : preAct;
-				var preBtnLabel = unauth ? _('免认证') : preLabel;
 				var editHTML = (trusted || unauth) ? '' :
 					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
 					(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
@@ -790,7 +808,7 @@ return view.extend({
 				'<button type="button" class="ovd-rowbtn" data-act="detail" data-mac="' + esc(c.mac) + '"' +
 				(blocked ? ' disabled' : '') + '>' + _('详情') + '</button>' +
 				'<button type="button" class="ovd-rowbtn" data-act="' + preBtnAct + '" data-mac="' + esc(c.mac) + '"' +
-				'>' + preBtnLabel + '</button>' +
+				preBtnPre + '>' + preBtnLabel + '</button>' +
 				'<button type="button" class="ovd-rowbtn" data-act="' + trustAct + '" data-mac="' + esc(c.mac) + '"' +
 				'>' + trustLabel + '</button>' +
 					editHTML +
@@ -806,10 +824,11 @@ return view.extend({
 					if (locked) return;
 					var act = b.getAttribute('data-act');
 					var mac = b.getAttribute('data-mac');
+					var isPre = b.getAttribute('data-pre') === '1';
 					var row = state.clients.filter(function (c) { return c.mac === mac; })[0];
 					if (!row) return;
 					if (act === 'detail') openDetail(row);
-					else if (act === 'edit') openEdit(row);
+					else if (act === 'edit') openEdit(row, isPre);
 					else askAction(act, row);
 				});
 			});
@@ -1062,15 +1081,17 @@ return view.extend({
 			]);
 		}
 
-		function openEdit(row) {
-			/* 照演示页：可信任客户端不受超时与流量限制，编辑按钮本来就不显示 */
-			if (row.trusted) return;
+		function openEdit(row, isPreEntry) {
+			/* isPreEntry=从「免认证」按钮进来：所有类型客户端都允许弹这个窗，
+			 * 包括可信任客户端（点了确定会先摘可信任再加入免认证）。只有普通
+			 * 「编辑」入口仍维持可信任不编辑（它不受超时/流量限制）。 */
+			if (row.trusted && !isPreEntry) return;
 			editRow = row;
 			editInputs = {};
-			/* 未认证客户端点的是改名后的「免认证」按钮：标题跟着叫「免认证」；
-			 * 其余身份点的是「编辑」按钮，标题仍是「客户端编辑」。 */
+			editIsPreEntry = !!isPreEntry;
+			/* 从「免认证」按钮进来的标题叫「免认证」，其余「编辑」入口叫「客户端编辑」。 */
 			var titleEl = document.getElementById('ovd-ed-title');
-			if (titleEl) titleEl.textContent = (tagOf(row)[0] === 't-unauth') ? _('免认证') : _('客户端编辑');
+			if (titleEl) titleEl.textContent = isPreEntry ? _('免认证') : _('客户端编辑');
 			var sub = document.getElementById('ovd-ed-sub');
 			if (sub) sub.textContent = (row.host || '—') + ' · ' + (row.ip || '—') + ' · ' + row.mac;
 			var edBody = document.getElementById('ovd-ed-body');
@@ -1111,7 +1132,9 @@ return view.extend({
 			 * 已认证/黑名单的编辑弹窗不显示这一块。
 			 * 注意：输入框本身仍由 limitRowEd 建好存入 editInputs，保证保存逻辑读得到。 */
 			var edKind = tagOf(row)[0];
-			if (edKind === 't-pre' || edKind === 't-unauth') edBody.appendChild(timeSec);
+			/* 连接时间只在免认证相关场景显示：从「免认证」按钮进来的（确定后成为
+			 * 免认证）以及已是免认证点「编辑」的。其它身份的普通「编辑」不显示。 */
+			if (editIsPreEntry || edKind === 't-pre') edBody.appendChild(timeSec);
 			edBody.appendChild(speedSec);
 			edBody.appendChild(quotaSec);
 
@@ -1131,13 +1154,13 @@ return view.extend({
 			}
 
 			editMask.classList.add('on');
-			modalOpen++;
+			modalEnter();
 		}
 
 		function closeEdit() {
 			editMask.classList.remove('on');
 			editRow = null;
-			if (modalOpen > 0) modalOpen--;
+			modalLeave();
 		}
 
 		function cancelEdit() {
@@ -1193,7 +1216,7 @@ return view.extend({
 			}
 			var mac = editRow.mac;
 			var lm = String(mac || '').toLowerCase();
-			var isUnauthEntry = (tagOf(editRow)[0] === 't-unauth');
+			var isUnauthEntry = editIsPreEntry;
 			var done = function () {
 				closeEdit();
 				/* 确定只写 uci 增量，不 commit、不重启；
@@ -1282,7 +1305,7 @@ return view.extend({
 			dtlBody.innerHTML = '';
 			var tg = tagOf(row);
 			dtlBody.appendChild(dtlSec(_('状态'), [
-				dtlRow(_('属性'), E('span', { 'class': 'ovd-tag ' + tg[0] }, tg[1]))
+				dtlRow(_('属性'), E('span', { 'class': 'ovd-tag big ' + tg[0] }, tg[1]))
 			]));
 			dtlBody.appendChild(dtlSec(_('基本信息'), [
 				dtlRow(_('主机名'), row.host || '—'),
@@ -1314,10 +1337,12 @@ return view.extend({
 				dtlRow(_('下载超额限速（Kb/s）'), limText(lim.overQuotaDownloadRate, tr))
 			]));
 			detailMask.classList.add('on');
+			modalEnter();
 		}
 
 		function closeDetail() {
 			detailMask.classList.remove('on');
+			modalLeave();
 		}
 
 		detailMask.addEventListener('click', function (ev) {

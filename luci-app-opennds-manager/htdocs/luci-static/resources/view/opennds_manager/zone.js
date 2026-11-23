@@ -49,9 +49,9 @@ var CSS = '\
 .zd-save-state{font-size:11.5px;color:#9aa6b2;margin-left:4px}\
 .zd-save-state.dirty{color:#b57d17}\
 .zd-save-state.ok{color:#2e9468}\
-.zd-mask{position:fixed;inset:0;overflow-y:auto;z-index:700;background:rgba(24,34,44,.42);display:none;padding:20px}\
-.zd-mask.on{display:flex}\
-.zd-modal{background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);width:min(480px,100%);margin:auto}\
+.zd-mask{position:fixed;inset:0;overflow-y:auto;overscroll-behavior:contain;z-index:9999;background:rgba(24,34,44,.42);display:none;padding:72px 18px 28px}\
+.zd-mask.on{display:block}\
+.zd-modal{background:#fff;border-radius:10px;box-shadow:0 18px 48px rgba(20,30,40,.22);width:min(480px,100%);margin:0 auto}\
 .zd-modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-bottom:1px solid #e9edf0}\
 .zd-modal-head h3{font-size:14.5px;font-weight:650;margin:0}\
 .zd-modal-body{padding:8px 18px 14px}\
@@ -139,6 +139,21 @@ return view.extend({
 		};
 
 		var body = E('div', { 'class': 'cpd-page' });
+
+		/* 弹窗打开时锁住页面滚动：滚轮只作用于遮罩内弹窗，关闭后恢复。
+		 * 两个弹窗共用计数（不会同时打开）。 */
+		var zdModalOpen = 0, zdSavedOverflow = '';
+		function zdModalEnter() {
+			if (zdModalOpen === 0) {
+				zdSavedOverflow = document.body.style.overflow;
+				document.body.style.overflow = 'hidden';
+			}
+			zdModalOpen++;
+		}
+		function zdModalLeave() {
+			if (zdModalOpen > 0) zdModalOpen--;
+			if (zdModalOpen === 0) document.body.style.overflow = zdSavedOverflow;
+		}
 
 		/* 忙碌提示不再挂在页面上：保存并应用期间由原生弹窗显示等待状态，
 		 * 直到后端真正跑完才关闭（见 common.js 的 APPLY 流程） */
@@ -733,10 +748,12 @@ return view.extend({
 			}
 			total.textContent = _('共 %s 个脚本').format(String(items.length));
 			scriptsMask.classList.add('on');
+			zdModalEnter();
 		}
 
 		function closeScriptsModal() {
 			scriptsMask.classList.remove('on');
+			zdModalLeave();
 		}
 
 		scriptsMask.addEventListener('click', function (ev) {
@@ -805,6 +822,7 @@ return view.extend({
 				}
 				total.textContent = _('共 %s 个未匹配文件').format(String(umItems.length));
 				unmatchedMask.classList.add('on');
+				zdModalEnter();
 			}, function (e) {
 				CPD.toast((e && e.error) || _('获取未匹配列表失败'), 'err');
 			});
@@ -812,6 +830,7 @@ return view.extend({
 
 		function closeUnmatchedModal() {
 			unmatchedMask.classList.remove('on');
+			zdModalLeave();
 		}
 
 		unmatchedMask.addEventListener('click', function (ev) {
