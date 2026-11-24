@@ -43,6 +43,13 @@ var CSS = '\
 .ovd-boot-btn.off{border-color:#c94848;color:#c94848;cursor:pointer}\
 .ovd-boot-btn.on.on-disabled{border-color:#c6e2d5;color:#8fbca6;cursor:not-allowed}\
 .ovd-boot-btn.off.off-disabled{border-color:#edcdcd;color:#da9898;cursor:not-allowed}\
+.ovd-status-autorun{flex:0 0 auto;min-width:0;text-align:left}\
+.ovd-autorun-btns{display:flex;gap:8px;padding:10px 0 2px}\
+.ovd-autorun-btn{display:inline-flex;align-items:center;justify-content:center;font-family:inherit;border:1px solid;background:#fff;border-radius:5px;padding:6px 12px;font-size:13px;line-height:1.2;white-space:nowrap}\
+.ovd-autorun-btn.on{border-color:#2e9468;color:#2e9468;cursor:pointer}\
+.ovd-autorun-btn.off{border-color:#d98c13;color:#d98c13;cursor:pointer}\
+.ovd-autorun-btn.on.on-disabled{border-color:#c6e2d5;color:#8fbca6;cursor:not-allowed}\
+.ovd-autorun-btn.off.off-disabled{border-color:#e8cfa3;color:#b8935a;cursor:not-allowed}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -175,7 +182,7 @@ return view.extend({
 		CPD.style();
 
 		var state = {
-			running: false, enabled: false, bootEnabled: false, engaged: 1, busy: 0, scope: 'default',
+			running: false, enabled: false, bootEnabled: false, autorun: true, engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			/* 本地身份覆盖（key=小写 MAC）：行内操作只写 uci 暂存，后端
@@ -283,6 +290,7 @@ return view.extend({
 			if (!st || !st.ok) return;
 			state.enabled = st.enabled === 1;
 			state.bootEnabled = (st.boot === 1 || st.boot === true);
+			state.autorun = (st.autorun === 1 || st.autorun === true);
 			state.engaged = st.engaged;
 			state.busy = st.busy;
 			state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
@@ -320,7 +328,7 @@ return view.extend({
 
 		function renderAllSafe() {
 			/* 任何一段渲染抛异常都不能连累后面的区块 */
-			[renderStatus, renderBoot, renderWarnbar, renderStats, renderIface, renderAps, renderList]
+			[renderStatus, renderBoot, renderAutorun, renderWarnbar, renderStats, renderIface, renderAps, renderList]
 				.forEach(function (fn) {
 					try { fn(); } catch (e) {
 						if (window.console && console.error) console.error('[opennds-manager] render', e);
@@ -386,6 +394,25 @@ return view.extend({
 			bootOffBtn.disabled = !on;
 			bootOnBtn.className = 'ovd-boot-btn on' + (on ? ' on-disabled' : '');
 			bootOffBtn.className = 'ovd-boot-btn off' + (!on ? ' off-disabled' : '');
+		}
+
+		/* openNDS 11.2.0 auto_run（休眠开关）：与运行/自启都独立。
+		 * auto_run=1 →「已唤醒」绿色、不可点；「进入休眠」可点。
+		 * auto_run=0 →「已唤醒」可点；「进入休眠」琥珀色、不可点。
+		 * 与当前运行/过渡态无关，只读 state.autorun。 */
+		var autorunOnBtn = E('button', {
+			'class': 'ovd-autorun-btn on', 'type': 'button', 'click': handleAutorunWake
+		}, _('已唤醒'));
+		var autorunOffBtn = E('button', {
+			'class': 'ovd-autorun-btn off', 'type': 'button', 'click': handleAutorunSleep
+		}, _('进入休眠'));
+
+		function renderAutorun() {
+			var on = !!state.autorun;
+			autorunOnBtn.disabled = on;
+			autorunOffBtn.disabled = !on;
+			autorunOnBtn.className = 'ovd-autorun-btn on' + (on ? ' on-disabled' : '');
+			autorunOffBtn.className = 'ovd-autorun-btn off' + (!on ? ' off-disabled' : '');
 		}
 
 		function renderStatus() {
@@ -525,6 +552,38 @@ return view.extend({
 
 		function handleBootDisable() {
 			setBoot('0', _('确认关闭开机自启？'), _('确定关闭'));
+		}
+
+		/* openNDS 11.2.0 auto_run（休眠开关）：走原生暂存 + 保存应用流程，
+		 * 与运行开关 doToggle 同节奏（倒计时 /「配置更改已应用。」/ 刷新页面）。
+		 * 11.2.0 源码 conf.c 每 2 秒重读 auto_run，commit 后无需重启即生效。
+		 * 与 pending_run 不同，auto_run 本身就是最终状态（commit 后落地、不被
+		 * worker 消费删除），且当前态的按钮已禁用、点不到同值，故直接写 0/1，
+		 * 不需要一次性令牌。 */
+		function setAutorun(want, warnText, okText) {
+			if (locked) return;
+			CPD.confirm(null, warnText, okText, want === '0', function () {
+				locked = true;
+				CPD.stageUci('opennds', '@opennds[0]', 'auto_run', 'opt', want)
+					.then(function () {
+						return CPD.applyStaged();
+					})
+					.then(function (j) {
+						if (j && j.nochange) locked = false;
+					})
+					.catch(function (e) {
+						locked = false;
+						CPD.toast(CPD.errText(e, _('操作失败')), 'err');
+					});
+			});
+		}
+
+		function handleAutorunWake() {
+			setAutorun('1', _('确认唤醒 openNDS（脱离休眠、开始管理网络）？'), _('确定唤醒'));
+		}
+
+		function handleAutorunSleep() {
+			setAutorun('0', _('确认让 openNDS 进入休眠（停止管理网络）？'), _('确定休眠'));
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
@@ -1568,6 +1627,12 @@ return view.extend({
 					E('h3', {}, _('服务')),
 					E('div', { 'class': 'ovd-boot-btns' }, [
 						bootOnBtn, bootOffBtn
+					])
+				]),
+				E('div', { 'class': 'ovd-status-autorun' }, [
+					E('h3', {}, _('休眠')),
+					E('div', { 'class': 'ovd-autorun-btns' }, [
+						autorunOnBtn, autorunOffBtn
 					])
 				])
 			])

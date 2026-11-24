@@ -140,6 +140,18 @@ nds_enabled() { # 空/缺键按 1（官方默认启用）
 	esac
 }
 
+# openNDS 11.2.0 新增 auto_run（休眠开关）：
+# 默认 0 = 进程在跑但不设防火墙/不出门户；必须 1 且网关接口可用才真正工作。
+# 老版本(10.3.1)没有这个键，缺键按 1 处理，避免升级后误判成休眠。
+nds_autorun() {
+	local v
+	v=$(uci -q get 'opennds.@opennds[0].auto_run' 2>/dev/null)
+	case "$v" in
+		'') printf '1' ;;
+		*) printf '%s' "$v" ;;
+	esac
+}
+
 nds_engaged() { # login_option_enabled=='3' 且 themespec_path 指向本插件脚本 → 1
 	local lo tp
 	lo=$(uci_get 'opennds.@opennds[0].login_option_enabled')
@@ -734,9 +746,11 @@ mac_in_bl() {
 	return 1
 }
 
-# openNDS 官方 MAC 黑名单语义：blockedmac 只在 macmechanism='block' 时生效。
-# 名单有内容而用户没设过 mechanism 时补成 'block'；用户已设的值一律不碰
-# （'allow' 是白名单模式，属于用户自己的选择，前端会另行提示名单不生效）。
+# openNDS 10.3.1 官方 MAC 黑名单语义：blockedmac 只在 macmechanism='block' 时生效。
+# 名单有内容而用户没设过 mechanism 时补成 'block'；用户已设的值一律不碰。
+# 注：11.2.0 官方已移除 macmechanism/blockedmac（conf.c 不再读取），写的这个键
+# 会被忽略、无害；本插件的黑名单实际靠 theme_zone_detect.sh 自己拦截 blockedmac
+# 名单实现，与官方该键无关，故此处保留写法不破坏 10.3.1 兼容。
 # $1=opennds section 名（不含配置前缀）
 ensure_block_mechanism() { # $1=section
 	local mm
@@ -1357,12 +1371,14 @@ purge_client_logs() {
 		rm -f "$f.cpd.new"
 	fi
 
-	# binauthlog：删掉所有 clientmac 命中目标 mac 的行（大小写都覆盖）
+	# binauthlog：删掉所有 clientmac 命中目标 mac 的行（大小写都覆盖）。
+	# 10.3.1 是 clientmac=<mac>；11.2.0 是 clientmac="<mac>"（带引号），两种都要删。
 	if [ -f "$bl" ]; then
 		awk -v m="$lm" '
 			{
 				low = tolower($0)
 				if (index(low, "clientmac=" m) > 0) next
+				if (index(low, "clientmac=\"" m "\"") > 0) next
 				print
 			}' "$bl" >"$bl.cpd.new"
 		cat "$bl.cpd.new" >"$bl"
@@ -1390,13 +1406,14 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 		# auth_restore 同款判据：binauthlog 里该 mac 最后一条若是普通 deauth
 		# （用户主动登出/超时/ndsctl 踢下线）则不恢复；shutdown_deauth 是停 NDS
 		# 造成的，仍算认证。
-		# 关键：真机 binauthlog 写的是无引号 `method=ndsctl_deauth`（见
-		# binauth_log.sh 的 loginfo），必须用官方那种 awk -F'method=' 提取；
-		# 用 `method="..."` 带引号的 sed 会永远匹配不到，导致 deauth 后落盘
-		# 记录没被排除、客户端又被判回「已认证」。
+		# method 提取要同时兼容两种官方格式（都在 binauth_log.sh 里）：
+		#  - 10.3.1 / auth_client：`method=ndsctl_deauth, clientmac=...` 无引号
+		#  - 11.2.0 其它方法：`method="client_auth", clientmac="...", timestamp=...` 带引号
+		# 提取后统一去掉首尾双引号，否则 `"shutdown_deauth"` 不等于 shutdown_deauth，
+		# 会把用户主动登出误判成仍认证。
 		lastm=''
 		[ -f "$bl" ] && lastm=$(grep -F "$lm" "$bl" 2>/dev/null | tail -1 |
-			awk -F'method=' '{print $2}' | awk -F', ' '{printf "%s", $1}')
+			awk -F'method=' '{print $2}' | awk -F', ' '{printf "%s", $1}' | tr -d '"')
 		case "$lastm" in
 			*deauth) [ "$lastm" = 'shutdown_deauth' ] || continue ;;
 		esac
@@ -1428,12 +1445,18 @@ auth_cache_load() { # 读原生 authlog + binauthlog（排除主动登出）→ 
 		}
 		{
 			mac = ""; ss = ""; se = ""
-			if (match($0, /clientmac=[^,[:space:]]+/))
-				mac = tolower(substr($0, RSTART + 10, RLENGTH - 10))
+			# 兼容两种 binauthlog 格式：10.3.1 无引号、11.2.0 method/clientmac 带引号。
+			# 提取后统一去掉首尾双引号（gsub 只删值里的 "，MAC/数值不含引号，安全）。
+			if (match($0, /clientmac=[^,[:space:]]+/)) {
+				mac = substr($0, RSTART + 10, RLENGTH - 10)
+				gsub(/"/, "", mac)
+				mac = tolower(mac)
+			}
 			if (mac == "" || mac !~ /:/) next
 			if (!(mac in anchor)) next
 			if (match($0, /method=[^,[:space:]]+/) == 0) next
 			meth = substr($0, RSTART + 7, RLENGTH - 7)
+			gsub(/"/, "", meth)
 			nn = split(meth, parts, "_")
 			if (parts[nn] != "auth") next
 			if (match($0, /session_start=[0-9]+/))
@@ -1804,12 +1827,13 @@ EOF2
 }
 
 ov_status_fields() { # 输出 status 的 JSON 片段（不含外层花括号）
-	local mif mip='' boot=0
+	local mif mip='' boot=0 autorun=0
 	mif=$(managed_iface)
 	[ -n "$mif" ] && mip=$(iface_ip "$mif")
 	nds_boot_enabled && boot=1
-	printf '"running":%s,"enabled":%s,"boot":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"defaultSession":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
-		"$CPD_RUNNING" "$CPD_ENABLED" "$boot" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
+	[ "$(nds_autorun)" = '1' ] && autorun=1
+	printf '"running":%s,"enabled":%s,"boot":%s,"autorun":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"defaultSession":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
+		"$CPD_RUNNING" "$CPD_ENABLED" "$boot" "$autorun" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
 		"${CPD_DEFSESSION:-1440}" \
 		"$(json_escape "$CPD_SCOPE")" "$(json_escape "$CPD_CONFERR")" \
 		"$N_ONLINE" "$N_WIRED" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL" \
@@ -1921,6 +1945,33 @@ ov_boot_set() {
 	local b=0
 	nds_boot_enabled && b=1
 	printf '{"ok":1,"boot":%s}\n' "$b"
+}
+
+# openNDS 11.2.0 auto_run（休眠开关）查询：{"ok":1,"autorun":1|0}
+ov_autorun_state() {
+	local a=0
+	[ "$(nds_autorun)" = '1' ] && a=1
+	printf '{"ok":1,"autorun":%s}\n' "$a"
+}
+
+# 切换 auto_run：autorun_set 1=脱离休眠 / 0=休眠。
+# 与开机自启、运行开关都独立——只改配置里的 auto_run 键。
+# 11.2.0 源码 conf.c 会每 2 秒重读 auto_run / gatewayinterface，
+# 无需重启 openNDS 即可进出休眠；但走 openwrt 原生保存应用流程落地，
+# 保证 uci 暂存与其它配置一致、用户能看到「未保存的配置」提示。
+# 前端按 doToggle 的同款节奏（stageUci + applyStaged）调用，故这里只需
+# 提供只读回读；真正写入走前端 stageUci('opennds','@opennds[0]','auto_run',...)。
+ov_autorun_set() {
+	local want="$1" sid a=0
+	case "$want" in
+		1|0) ;;
+		*) out_err 'auto_run 参数只能是 1 或 0' ;;
+	esac
+	sid=$(ensure_opennds_conf) || out_err '未找到 openNDS 配置节'
+	uci set "opennds.$sid.auto_run"="$want" || out_err '写 auto_run 失败'
+	uci commit opennds 2>/dev/null
+	[ "$(nds_autorun)" = '1' ] && a=1
+	printf '{"ok":1,"autorun":%s}\n' "$a"
 }
 
 # 客户端行操作（免认证 / 信任 / 拉黑 / 断开…）一律只写 uci 增量：
@@ -5592,6 +5643,15 @@ sys_ensure_sec() { # $1=config $2=sid → stdout 输出可写 section 名
 				printf '%s' "$name"
 				return 0
 			fi
+			# openNDS 11.2.0 要求具名段 `config opennds 'setup'`：
+			# libopennds.sh 的 formatcheck 找不到该段就直接 exit 1，门户全程失效。
+			# 10.3.1 无此要求、建的是匿名 cpd 段；11.2.0 统一改建成 setup。
+			# 具名段仍可用 @opennds[0] 路径访问，故其它引用无需改。
+			if [ "$conf" = 'opennds' ] && [ "$typ" = 'opennds' ]; then
+				uci_w set "$conf.setup=$typ" || return 1
+				printf 'setup'
+				return 0
+			fi
 			uci_w set "$conf.cpd=$typ" || return 1
 			printf 'cpd'
 			;;
@@ -6017,11 +6077,13 @@ sys_post_apply() {
 ZONE_BLACKLIST_CONF="${ZONE_BLACKLIST_CONF:-/etc/config/zone_blacklist}"
 
 # 确保 /etc/config/opennds 存在且有一个 opennds 类型节。
-# 官方 opennds 包自带这个文件（opennds.conf 模板，节名就是 `config opennds`），
+# 官方 opennds 包自带这个文件（opennds.conf 模板）。
+# 10.3.1 模板节名是匿名 `config opennds`；11.2.0 改为具名 `config opennds 'setup'`，
+# 且 libopennds.sh 的 formatcheck 强制要求此名，否则门户脚本 exit 1。
 # 极简安装可能没有它 —— 前端 uci 暂存第一步 uci/load 读的就是这个文件，
 # 缺了会报「RPC call to uci/get failed with ubus code 4: 未找到资源」。
 # 缺文件/缺节时补一个空节并 commit（rpcd 的 uci/get 只认已提交内容）。
-# 输出可写 section 名（'@opennds[0]' 或新建的 'cpd'），失败返回非 0。
+# 输出可写 section 名（'@opennds[0]' 或新建的 'setup'），失败返回非 0。
 ensure_opennds_conf() {
 	local sid='@opennds[0]'
 	if [ ! -f "$OPENNDS_CONF" ]; then
@@ -6031,12 +6093,13 @@ ensure_opennds_conf() {
 		printf '%s' "$sid"
 		return 0
 	fi
-	if ! uci_w set 'opennds.cpd=opennds'; then
+	# 11.2.0 必须建成具名 setup 段（具名段 @opennds[0] 路径仍可访问）
+	if ! uci_w set 'opennds.setup=opennds'; then
 		return 1
 	fi
 	uci commit opennds 2>/dev/null
-	log "已补建缺失的 openNDS 配置节（$OPENNDS_CONF）"
-	printf 'cpd'
+	log "已补建缺失的 openNDS 配置节（$OPENNDS_CONF，具名 setup）"
+	printf 'setup'
 	return 0
 }
 
@@ -6083,6 +6146,8 @@ case "$PAGE" in
 			run_state) ov_run_state ;;
 			boot_state) ov_boot_state ;;
 			boot_set) ov_boot_set "$1" ;;
+			autorun_state) ov_autorun_state ;;
+			autorun_set) ov_autorun_set "$1" ;;
 			clients) ov_clients ;;
 			client_action) ov_client_action "$1" "$2" ;;
 			client_edit) ov_client_edit apply "$@" ;;
