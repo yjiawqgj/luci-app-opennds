@@ -115,4 +115,17 @@ else
 	echo '  OK   未运行不再弹确认启动，按钮直接禁用'
 fi
 
+echo '== C8 路由器访问页：控制开关语义反转 + 说明文本补句号 =='
+R="$V/router.js"
+assert_has "$R" "CPD.section(_('控制'))" '区块标题由接管改成控制'
+assert_has "$R" "state.controlOn ? '0' : '1'" '开关打开写 passthrough=0'
+assert_has "$R" 'Number(j.passthrough) === 0' '回读 passthrough=0 为打开(绿色)'
+assert_has "$R" "_('控制客户端访问路由器。')" '副标题补句号'
+assert_has "$R" "_('22、53、443端口自动放行。')" '端口说明补句号'
+if grep -q '接管' "$R" 2>/dev/null; then
+	echo '  FAIL 旧的「接管」字样还在'; fail=1
+else
+	echo '  OK   旧「关闭接管」字样已删除'
+fi
+
 done_report

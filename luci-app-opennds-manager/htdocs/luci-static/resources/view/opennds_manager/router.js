@@ -1,6 +1,6 @@
 /*
  * 路由器访问 · openNDS CPD（LuCI view）
- * 照《路由器访问.md》与演示：接管开关 + 开放端口列表；编辑器「保存」先过
+ * 照《路由器访问.md》与演示：控制开关 + 开放端口列表；编辑器「保存」先过
  * 后端 validate（只读），只有底部「应用」才写 uci 并重启 openNDS。
  */
 'use strict';
@@ -17,7 +17,7 @@ return view.extend({
 
 	render: function () {
 		var state = {
-			takeoverOff: false,
+			controlOn: true,
 			fw4: 1,
 			editing: false,
 			saved: '',
@@ -32,29 +32,30 @@ return view.extend({
 			body.innerHTML = '';
 			body.appendChild(CPD.pageHead(
 				_('路由器访问'), 'openNDS · Router Access',
-				_('控制客户端访问路由器')));
+				_('控制客户端访问路由器。')));
 
-			var sec1 = CPD.section(_('接管'), 'Takeover');
-			/* 开关打开 = 关闭接管（与原复选框勾选语义一致）：passthrough=1。
-			 * 控件换成概览页同款开关，行为与数据口径不变。 */
-			var tgl = CPD.switchBtn(!!state.takeoverOff, _('关闭接管'), function (on) {
-				state.takeoverOff = on;
+			var sec1 = CPD.section(_('控制'));
+			/* 控制开关与配置的对应关系（2026-11-24 用户口径）：
+			 * passthrough=0 → 开关绿色打开（正在控制）；=1 → 关闭。
+			 * 说明文字紧跟标题，开关本身不再带文字标签。 */
+			var tgl = CPD.switchBtn(!!state.controlOn, _('控制'), function (on) {
+				state.controlOn = on;
 				/* 切换立即落成 uci 暂存：右上角马上出现「未保存的配置」 */
 				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough',
-					'opt', on ? '1' : '0').then(null, function (e) {
+					'opt', on ? '0' : '1').then(null, function (e) {
 						tgl.setChecked(!on);
-						state.takeoverOff = !on;
+						state.controlOn = !on;
 						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
 					});
 			});
 			sec1.appendChild(E('div', {}, [
-				E('div', { 'class': 'cpd-switch-row' }, [tgl, E('span', {}, _('关闭接管'))]),
-				E('p', { 'class': 'cpd-note' }, _('如果你不知道该功能作用，请保持默认。'))
+				E('p', { 'class': 'cpd-note' }, _('如果你不知道该功能作用，请保持默认。')),
+				E('div', { 'class': 'cpd-switch-row' }, [tgl])
 			]));
 			body.appendChild(sec1);
 
 			var sec2 = CPD.section(_('开放端口'), 'Open Ports');
-			sec2.appendChild(E('p', { 'class': 'cpd-note' }, _('22、53、443端口自动放行')));
+			sec2.appendChild(E('p', { 'class': 'cpd-note' }, _('22、53、443端口自动放行。')));
 			if (!state.fw4) {
 				sec2.appendChild(E('div', { 'class': 'cpd-warnbar' },
 					_('当前系统未使用 fw4（nftables），openNDS 不支持 users_to_router 规则，本页配置不会生效。')));
@@ -171,12 +172,12 @@ return view.extend({
 			return state.saved;
 		}
 
-		/* 规则列表 + 接管开关 → uci 暂存（右上角「未保存的配置」由它产生） */
+		/* 规则列表 + 控制开关 → uci 暂存（右上角「未保存的配置」由它产生） */
 		function stageRules(rules) {
 			return Promise.all([
 				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router', 'list', rules || []),
 				CPD.stageUci('opennds', '@opennds[0]', 'users_to_router_passthrough', 'opt',
-					state.takeoverOff ? '1' : '0')
+					state.controlOn ? '0' : '1')
 			]);
 		}
 
@@ -209,7 +210,7 @@ return view.extend({
 		function refresh() {
 			CPD.api('router', 'status').then(function (j) {
 				if (!j.ok) { CPD.toast(j.error || _('读取状态失败'), 'err'); return; }
-				state.takeoverOff = (j.passthrough === 1);
+				state.controlOn = (Number(j.passthrough) === 0);
 				state.fw4 = j.fw4;
 				state.saved = j.text || '';
 				state.draft = state.saved;
