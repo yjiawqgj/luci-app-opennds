@@ -113,7 +113,17 @@ APPLY.start = function (ui) {
  * worker 完成后的 openNDS 状态由概览页自己的轮询如实展示。 */
 APPLY.onApplied = function () {
 	L.require('opennds_manager.common').then(function (m) {
-		return m.api('sys', 'post_apply');
+		return m.api('sys', 'post_apply').then(function (j) {
+			/* 有设备踢不下来：原生应用随后就刷新页面，提示会被冲掉。
+			 * 跨刷新用 sessionStorage 带到概览页；后端同时保留这条待办，
+			 * 下次应用会自动重试。 */
+			if (j && Number(j.deauth_failed) > 0) {
+				try {
+					sessionStorage.setItem('cpd_deauth_failed',
+						Number(j.deauth_failed) + '|' + Date.now());
+				} catch (e) {}
+			}
+		});
 	}).catch(function () { /* 秒回失败不影响原生流程，worker 由下次应用补 */ });
 };
 
@@ -570,6 +580,44 @@ var CPD = L.Class.extend({
 		}, function (e) {
 			throw { error: self.errText(e, _('暂存配置失败')) };
 		});
+	},
+
+	/* 待踢一次性令牌：MAC|时间戳。pending_deauth 是「应用后即删」的瞬态键，
+	 * 用纯 MAC 去重会让残留时二次操作零增量（右上角无提示、应用无反应）。
+	 * 所有会解除认证的前端操作都用它，后端按 | 取 MAC，兼容旧纯 MAC 值。 */
+	deauthToken: function (mac) {
+		return String(mac || '').toLowerCase() + '|' + Date.now().toString(36);
+	},
+
+	/* 名单「按本页改动」差量同步：base 是上一次同步后的快照，want 是本页
+	 * 现在的名单。只把 want 相对 base 的增删写进当前 uci 暂存值——其它页面
+	 * 先暂存、还没应用的条目不在 base 里，自然不会被本页的整表保存冲掉。
+	 * 每次同步成功后调用方把 base 更新成 want，本页连续编辑就能正确撤销。 */
+	stageListSync: function (conf, sid, opt, base, want) {
+		var self = this;
+		var b = {}, w = {}, add = [], rem = [];
+		(base || []).forEach(function (x) { b[String(x)] = 1; });
+		(want || []).forEach(function (x) { w[String(x)] = 1; });
+		(want || []).forEach(function (x) { if (!b[String(x)]) add.push(String(x)); });
+		(base || []).forEach(function (x) { if (!w[String(x)]) rem.push(String(x)); });
+		var p = Promise.resolve(null);
+		if (add.length) {
+			p = p.then(function () {
+				return self.stageListEdit(conf, sid, opt, function (arr) {
+					var out = arr.slice();
+					add.forEach(function (x) { if (out.indexOf(x) < 0) out.push(x); });
+					return out;
+				});
+			});
+		}
+		if (rem.length) {
+			p = p.then(function () {
+				return self.stageListEdit(conf, sid, opt, function (arr) {
+					return arr.filter(function (x) { return rem.indexOf(x) < 0; });
+				});
+			});
+		}
+		return p;
 	},
 
 	/* 保存并应用：完全走 openwrt 原生流程（倒计时弹窗、「配置更改已应用。」、

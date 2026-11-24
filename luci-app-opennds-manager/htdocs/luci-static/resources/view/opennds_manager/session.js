@@ -148,8 +148,11 @@ return view.extend({
 			});
 			if (scope === 'override') {
 				jobs.push(CPD.api('exempt', 'status').then(function (j) {
-					return CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list',
-						rebuildPreempt(j.preempt || []));
+					/* 只重建后端这份名单里的条目：用差量写，概览页先暂存、
+					 * 还没应用的客户端不会被整表覆盖掉。 */
+					var base = j.preempt || [];
+					return CPD.stageListSync('opennds', '@opennds[0]', 'preemptivemac',
+						base, rebuildPreempt(base));
 				}));
 			}
 			return Promise.all(jobs).then(function () {

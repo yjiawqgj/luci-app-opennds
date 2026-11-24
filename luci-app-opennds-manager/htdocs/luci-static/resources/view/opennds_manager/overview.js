@@ -36,14 +36,13 @@ var CSS = '\
 .ovd-switch.busy.off .knob{transform:translateX(0)}\
 .ovd-status-wrap{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}\
 .ovd-status-main{flex:0 1 auto;min-width:0}\
-.ovd-status-boot{flex:0 0 auto;text-align:right}\
+.ovd-status-boot{flex:0 0 auto;min-width:0;text-align:left}\
 .ovd-boot-btns{display:flex;gap:8px;padding:10px 0 2px}\
-.ovd-boot-btn{font-family:inherit;border-radius:6px;padding:7px 18px;font-size:14px;line-height:1.2;cursor:pointer;background:#fff;transition:background .15s}\
-.ovd-boot-btn.on{border:1.5px solid #2e9468;color:#2e9468}\
-.ovd-boot-btn.on:hover:not(:disabled){background:#eaf6f0}\
-.ovd-boot-btn.off{border:1.5px solid #c94848;color:#c94848}\
-.ovd-boot-btn.off:hover:not(:disabled){background:#fdf0f0}\
-.ovd-boot-btn:disabled{cursor:not-allowed;opacity:.38;filter:grayscale(1)}\
+.ovd-boot-btn{display:inline-flex;align-items:center;justify-content:center;font-family:inherit;border:1px solid;background:#fff;border-radius:5px;padding:6px 12px;font-size:13px;line-height:1.2;white-space:nowrap}\
+.ovd-boot-btn.on{border-color:#2e9468;color:#2e9468;cursor:pointer}\
+.ovd-boot-btn.off{border-color:#c94848;color:#c94848;cursor:pointer}\
+.ovd-boot-btn.on.on-disabled{border-color:#c6e2d5;color:#8fbca6;cursor:not-allowed}\
+.ovd-boot-btn.off.off-disabled{border-color:#edcdcd;color:#da9898;cursor:not-allowed}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -379,10 +378,14 @@ return view.extend({
 		}, _('关闭'));
 
 		function renderBoot() {
-			/* 已启用自启 →「开启」灰掉不可点、「关闭」可点；未启用反之。
-			 * 与当前运行/过渡态无关，所以这里只读 bootEnabled。 */
-			bootOnBtn.disabled = !!state.bootEnabled;
-			bootOffBtn.disabled = !state.bootEnabled;
+			/* 已启用自启 →「开启」不可点、「关闭」可点；未启用反之。
+			 * 与当前运行/过渡态无关，所以这里只读 bootEnabled。
+			 * 不可点不用灰：保留绿/红色相，只把文字和边框调淡。 */
+			var on = !!state.bootEnabled;
+			bootOnBtn.disabled = on;
+			bootOffBtn.disabled = !on;
+			bootOnBtn.className = 'ovd-boot-btn on' + (on ? ' on-disabled' : '');
+			bootOffBtn.className = 'ovd-boot-btn off' + (!on ? ' off-disabled' : '');
 		}
 
 		function renderStatus() {
@@ -431,6 +434,9 @@ return view.extend({
 			transition = (want === '0') ? 'off' : 'on';
 			transitionSet(transition);
 			renderStatus();
+			/* 原生应用会刷新页面：从这一刻起锁住其它按钮，避免倒计时窗口里
+			 * 连点叠加暂存；失败/空操作要显式解锁，成功则随刷新自然结束。 */
+			locked = true;
 			var token = want + '-' + Date.now().toString(36);
 			CPD.stageUci('opennds', '@opennds[0]', 'enabled', 'opt', want)
 				.then(function () {
@@ -439,7 +445,11 @@ return view.extend({
 				.then(function () {
 					return CPD.applyStaged();
 				})
+				.then(function (j) {
+					if (j && j.nochange) locked = false;
+				})
 				.catch(function (e) {
+					locked = false;
 					transition = null;
 					transitionClear();
 					renderStatus();
@@ -461,17 +471,31 @@ return view.extend({
 
 		function handleRestart() {
 			if (locked) return;
-			/* 重启与开关同一节奏：二次确认 → 暂存 pending_restart → 原生应用流程。
-			 * 真正的重启由 apply_worker 在应用后执行（stop → 等退出 → start → 等就绪），
-			 * 页面按原生节奏刷新，状态由本页轮询如实展示 —— 不再出现"先报已重启、
-			 * 过两秒又变未运行"的假横幅。 */
+			/* 未运行时「重启」没有对象：后端原实现会拉起进程，但 enabled=0
+			 * 已经提交，主程序读到就立刻退出，worker 还报成功——看着像点了没反应。
+			 * 按用户口径改成明确的「启动」：走开关同一条链（enabled=1 + 令牌）。 */
+			if (!state.running) {
+				CPD.confirm(null, _('当前未运行，确认启动？'), _('确定启动'), false,
+					function () { doToggle('1'); }, true);
+				return;
+			}
+			/* 运行中：重启与开关同一节奏：二次确认 → 暂存 pending_restart → 原生应用流程。
+			 * 真正的重启由 apply_worker 在应用后执行（stop → 等退出 → start → 等就绪）。
+			 * pending_restart 也带一次性令牌：固定 '1' 残留时二次点击会产生零增量，
+			 * 和解除认证是同一个坑。 */
 			CPD.confirm(null, _('确认重启？'), _('确定重启'), false,
 				function () {
-					CPD.stageUci('zone_detect', 'main', 'pending_restart', 'opt', '1')
+					locked = true;
+					CPD.stageUci('zone_detect', 'main', 'pending_restart', 'opt',
+						'restart-' + Date.now().toString(36))
 						.then(function () {
 							return CPD.applyStaged();
 						})
+					.then(function (j) {
+						if (j && j.nochange) locked = false;
+					})
 					.catch(function (e) {
+						locked = false;
 						CPD.toast(CPD.errText(e, _('操作失败')), 'err');
 					});
 				});
@@ -608,9 +632,10 @@ return view.extend({
 		}
 
 		function filteredClients() {
-			/* 接入点筛选模式：该 AP 上「正在连着」的全部客户端（不分身份，
-			 * 黑名单客户端连着也算——它已连上 WIFI、有 IP，卡片不依赖 NDS） */
-			var b = state.clients.filter(function (c) {
+			/* 过滤必须和显示同一口径：列表行用的是 decorated()（套了本地
+			 * 身份覆盖），筛选若还拿未经覆盖的原对象，刚点过「加入免认证」
+			 * 的设备会带着免认证标签留在「未认证」列表里。 */
+			var b = state.clients.map(decorated).filter(function (c) {
 				if (state.ap) return apFilterMatch(c) && !!c.online;
 				return inFilter(c);
 			});
@@ -637,8 +662,46 @@ return view.extend({
 		/* ---------- 渲染：统计卡片 ---------- */
 		var statGrid = E('div', { 'class': 'ovd-stat-grid' });
 
+		/* 卡片数字本地预览：行内操作已经让标签和筛选当场跟随，数字不能还
+		 * 停在后端已提交值上（那要等「保存并应用」才变，看着像没生效）。
+		 * 按 tagOf 的优先级把被操作过的客户端从旧类别挪到新类别；
+		 * 后端数字仍是权威，应用后刷新自然覆盖回来。
+		 * 未认证卡在 NDS 未运行时按用户口径恒为 0，这里不预览。 */
+		var COUNT_KEY = {
+			't-black': 'blacklist', 't-trusted': 'trusted', 't-pre': 'preauth',
+			't-auth': 'authenticated', 't-unauth': 'unauthenticated'
+		};
+		function previewCounts() {
+			var n = {}, k;
+			for (k in state.counts) if (state.counts.hasOwnProperty(k)) n[k] = state.counts[k];
+			var lm, raw, from, to, fk, tk, i;
+			for (lm in state.localTags) {
+				if (!state.localTags.hasOwnProperty(lm)) continue;
+				raw = null;
+				for (i = 0; i < state.clients.length; i++) {
+					if (String(state.clients[i].mac || '').toLowerCase() === lm) {
+						raw = state.clients[i];
+						break;
+					}
+				}
+				if (!raw) continue;
+				from = tagOf(raw)[0];
+				to = tagOf(decorated(raw))[0];
+				if (from === to) continue;
+				fk = COUNT_KEY[from];
+				tk = COUNT_KEY[to];
+				if (!state.running) {
+					if (fk === 'unauthenticated') fk = null;
+					if (tk === 'unauthenticated') tk = null;
+				}
+				if (fk && n[fk] != null) n[fk] = Math.max(0, Number(n[fk]) - 1);
+				if (tk && n[tk] != null) n[tk] = (Number(n[tk]) || 0) + 1;
+			}
+			return n;
+		}
+
 		function renderStats() {
-			var n = state.counts;
+			var n = previewCounts();
 			/* 卡片顺序：有线放在已认证后面（2026-11-19 用户口径） */
 			var defs = [
 				{ k: 'online', label: _('在线客户端'), num: n.online },
@@ -821,21 +884,31 @@ return view.extend({
 		/* 每类行内操作成功后要立刻呈现的身份。与 stageAction 写进暂存的
 		 * 名单一一对应；未列出的字段保持后端原值。preauth 位按「进了
 		 * preemptivemac 名单」置位；tagOf 现在只看名单位，authenticated 保留
-		 * 后端运行时真值即可（这里额外置 true 已不影响标签，仅为兼容旧读法）。 */
+		 * 后端运行时真值即可（这里额外置 true 已不影响标签，仅为兼容旧读法）。
+		 * authorized 是「有没有访问权限」：后端 ov_client_row 的口径是
+		 * (authenticated || trusted) && !blocked，未认证卡的筛选也看它；
+		 * 少了这一位就会出现「标签已变未认证、筛选却还留在在线列表」。
+		 * 连续操作用合并而不是整体替换，否则「解除拉黑」只写 blocked=false
+		 * 会把前面几次的身份覆盖全丢掉，标签又变回黑名单。 */
 		var ACTION_IDENTITY = {
-			preauth:   { preauth: true,  authenticated: true,  trusted: false, blocked: false },
-			unpreauth: { preauth: false, authenticated: false },
-			trust:     { trusted: true,  preauth: false, authenticated: false, blocked: false },
-			untrust:   { trusted: false, authenticated: false },
-			block:     { blocked: true,  trusted: false, preauth: false, authenticated: false },
+			preauth:   { preauth: true,  authenticated: true,  trusted: false, blocked: false, authorized: true },
+			unpreauth: { preauth: false, authenticated: false, authorized: false },
+			trust:     { trusted: true,  preauth: false, authenticated: false, blocked: false, authorized: true },
+			untrust:   { trusted: false, authenticated: false, authorized: false },
+			block:     { blocked: true,  trusted: false, preauth: false, authenticated: false, authorized: false },
 			unblock:   { blocked: false },
-			deauth:    { authenticated: false, preauth: false, trusted: false }
+			deauth:    { authenticated: false, preauth: false, trusted: false, authorized: false }
 		};
 
 		function setLocalIdentity(act, mac) {
 			var id = ACTION_IDENTITY[act];
 			if (!id || !mac) return;
-			state.localTags[String(mac).toLowerCase()] = id;
+			var key = String(mac).toLowerCase();
+			var prev = state.localTags[key] || {};
+			var next = {};
+			for (var f in prev) if (prev.hasOwnProperty(f)) next[f] = prev[f];
+			for (var f in id) if (id.hasOwnProperty(f)) next[f] = id[f];
+			state.localTags[key] = next;
 		}
 
 		function renderList() {
@@ -1020,8 +1093,7 @@ return view.extend({
 					 * 免认证名单和可信任名单里清掉 —— 不然可信任客户端被踢后
 					 * 下一次请求又被自动登录，等于没解除。 */
 					return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
-						if (arr.indexOf(lm) >= 0) return null;
-						return arr.concat([lm]);
+						return arr.concat([CPD.deauthToken(lm)]);
 					}).then(function () {
 						return CPD.stageListEdit('opennds', '@opennds[0]', 'preemptivemac', function (arr) {
 							var i = pmIndexOf(arr, lm);
@@ -1057,12 +1129,16 @@ return view.extend({
 							});
 						});
 						if (changed !== null) {
-							/* 这次真的往 blockedmac 写了增量才检查 macmechanism */
+							/* 这次真的往 blockedmac 写了增量才检查 macmechanism。
+							 * 查询失败不能把已经写好的名单说成「记录失败」——
+							 * 保守补写 block 机制，拉黑照样生效。 */
 							p = p.then(function () {
-								return CPD.api('blacklist', 'status').then(function (j) {
-									if (j && j.mechanism) return null;
+								var ensure = function () {
 									return CPD.stageUci('opennds', '@opennds[0]', 'macmechanism', 'opt', 'block');
-								});
+								};
+								return CPD.api('blacklist', 'status').then(function (j) {
+									return (j && j.mechanism) ? null : ensure();
+								}, ensure);
 							});
 						}
 						return p;
@@ -1097,8 +1173,7 @@ return view.extend({
 						return out.length === arr.length ? null : out;
 					}).then(function (changed) {
 						return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
-							if (arr.indexOf(lm) >= 0) return null;
-							return arr.concat([lm]);
+							return arr.concat([CPD.deauthToken(lm)]);
 						}).then(function () {
 							return changed;
 						});
@@ -1127,8 +1202,7 @@ return view.extend({
 						return arr;
 					}).then(function (changed) {
 						return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
-							if (arr.indexOf(lm) >= 0) return null;
-							return arr.concat([lm]);
+							return arr.concat([CPD.deauthToken(lm)]);
 						}).then(function () {
 							return changed;
 						});
@@ -1336,7 +1410,13 @@ return view.extend({
 					return stageEditLimits(lm, args);
 				}).then(done, failed);
 			} else {
-				stageEditLimits(lm, args).then(done, failed);
+				/* 给已认证客户端设限额 = 写 preemptivemac 条目 = 真实身份变免认证。
+				 * 和上面 preauth 入口一样登记本地覆盖，否则标签要等应用后
+				 * 后端回读才变，看着像没生效。 */
+				stageEditLimits(lm, args).then(function () {
+					setLocalIdentity('preauth', mac);
+					return null;
+				}).then(done, failed);
 			}
 		}
 
@@ -1532,6 +1612,17 @@ return view.extend({
 		/* 先把骨架画出来（标题、卡片、空表格立刻可见），数据回来再填。
 		 * 之前整页要等两次后端请求才出现，看着像卡住了。 */
 		renderAllSafe();
+		/* 上一次「保存并应用」里有设备踢不下来：原生刷新会冲掉提示，
+		 * 这里从 sessionStorage 读回来明确告知，避免再次陷入"以为成功了"。 */
+		try {
+			var dv = sessionStorage.getItem('cpd_deauth_failed');
+			if (dv) {
+				sessionStorage.removeItem('cpd_deauth_failed');
+				var dp = String(dv).split('|');
+				if (dp[0] && Date.now() - Number(dp[1] || 0) < 90000)
+					CPD.notify(_('有 %s 台设备未能解除认证，请稍后重试').format(dp[0]), 'err');
+			}
+		} catch (e) {}
 		refresh();
 
 		/* ---------- LuCI 框架底部按钮：本页只有运行控制，配置写入只走暂存 ---------- */
@@ -1549,10 +1640,12 @@ return view.extend({
 		};
 		this.handleReset = function () {
 			/* 复位 = 丢弃本会话未提交的增量，本地身份覆盖一并清掉，
-			 * 标签回到后端真实身份。 */
-			state.localTags = {};
+			 * 标签回到后端真实身份。必须等 revert 成功后再清——失败时
+			 * 界面仍显示刚才的操作结果，和右上角未保存的配置保持一致。 */
 			return CPD.revertStaged().then(function () {
-				refresh();
+				state.localTags = {};
+				renderList();
+				return refresh();
 			}).catch(function (e) {
 				CPD.notify(CPD.errText(e, _('复位失败')), 'err');
 			});

@@ -23,6 +23,7 @@ return view.extend({
 	render: function () {
 		var state = {
 			macs: [],        /* 已保存（配置里的）小写 MAC */
+			macs0: [],       /* 上次同步后的快照（差量基准） */
 			mechanism: '',   /* 当前 macmechanism（allow=白名单模式，黑名单不生效） */
 			portal: '',      /* 空串 = 内置默认门户 */
 			portals: [],     /* [{name,kind}] */
@@ -72,6 +73,7 @@ return view.extend({
 				if (!j.ok) return;
 				/* 名单里的空值/脏数据不显示 */
 				state.macs = (j.macs || []).filter(function (m) { return macOk(m); });
+				state.macs0 = state.macs.slice();
 				state.mechanism = j.mechanism || '';
 				state.portal = j.portal || '';
 				state.portals = j.portals || [];
@@ -152,10 +154,15 @@ return view.extend({
 		 * 已废弃 macmechanism/blockedmaclist，主进程不再读这两个选项）；
 		 * 门户选中项进 zone_detect.main.portal_blacklist_sel。 */
 		function stageMacs(list) {
-			return CPD.stageUci('opennds', '@opennds[0]', 'blockedmac', 'list', list)
+			/* 只写本页相对上次同步的增删：概览页先暂存、还没应用的拉黑
+			 * 不在快照里，不会被这里的整表保存冲掉。 */
+			return CPD.stageListSync('opennds', '@opennds[0]', 'blockedmac', state.macs0, list)
 				.then(function () {
 					return CPD.stageUci('zone_detect', 'main', 'portal_blacklist_sel', 'opt',
 						state.portal || null);
+				})
+				.then(function () {
+					state.macs0 = list.slice();
 				});
 		}
 

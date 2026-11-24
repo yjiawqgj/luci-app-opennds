@@ -302,6 +302,8 @@ return view.extend({
 				var lm = lines[i].toLowerCase();
 				if (!seen[lm]) { seen[lm] = 1; out.push(lm); }
 			}
+			var before = which === 'trusted' ? state.trusted.slice() : state.preempt.map(macOf);
+			var removed = before.filter(function (m) { return out.indexOf(m) < 0; });
 			if (which === 'trusted') {
 				state.trusted = out;
 			} else {
@@ -317,19 +319,46 @@ return view.extend({
 			 * 真正生效仍由底部「保存 / 保存并应用」提交 */
 			state.editing[which] = false;
 			renderAll();
-			stageExempt().then(null, function (e) {
+			stageExempt().then(function () {
+				return stageDeauthFor(removed);
+			}).then(null, function (e) {
 				CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
 			});
 		}
 
-		/* 把当前名单与开关落成 uci 暂存（顶部出现「未保存的配置」） */
+		/* 把当前名单与开关落成 uci 暂存（顶部出现「未保存的配置」）。
+		 * 名单只写本页相对上次同步的增删：概览页先暂存、尚未应用的客户端
+		 * 不在快照里，不会被这里的「整表保存」冲掉。两个名单串行写，避免
+		 * 并发的暂存读写互相覆盖。 */
 		function stageExempt() {
-			return Promise.all([
-				CPD.stageUci('opennds', '@opennds[0]', 'trustedmac', 'list', state.trusted),
-				CPD.stageUci('opennds', '@opennds[0]', 'preemptivemac', 'list', state.preempt),
-				CPD.stageUci('opennds', '@opennds[0]', 'allow_preemptive_authentication',
-					'opt', String(state.preemptEnabled))
-			]);
+			var trustedBase = state.trusted0.slice();
+			var preemptBase = state.preempt0.slice();
+			return CPD.stageUci('opennds', '@opennds[0]', 'allow_preemptive_authentication',
+				'opt', String(state.preemptEnabled))
+				.then(function () {
+					return CPD.stageListSync('opennds', '@opennds[0]', 'trustedmac',
+						trustedBase, state.trusted);
+				})
+				.then(function () {
+					return CPD.stageListSync('opennds', '@opennds[0]', 'preemptivemac',
+						preemptBase, state.preempt);
+				})
+				.then(function () {
+					state.trusted0 = state.trusted.slice();
+					state.preempt0 = state.preempt.slice();
+				});
+		}
+
+		/* 名单移除必须同时踢下线：只摘名单的话 openNDS 里的会话还在，
+		 * 设备照样能上网（和概览页「解除认证 / 取消信任」同一口径）。
+		 * 待办带一次性令牌，保存并应用后由 post_apply 统一执行。 */
+		function stageDeauthFor(macs) {
+			if (!macs || !macs.length) return Promise.resolve(null);
+			return CPD.stageListEdit('zone_detect', 'main', 'pending_deauth', function (arr) {
+				var out = arr.slice();
+				macs.forEach(function (m) { out.push(CPD.deauthToken(m)); });
+				return out;
+			});
 		}
 
 		function askRemove(which, mac, host) {
@@ -346,7 +375,9 @@ return view.extend({
 					}
 					renderAll();
 					/* 删除同样立即落成暂存，右上角可以看到这条增量 */
-					stageExempt().then(null, function (e) {
+					stageExempt().then(function () {
+						return stageDeauthFor([mac]);
+					}).then(null, function (e) {
 						CPD.notify(CPD.errText(e, _('暂存配置失败')), 'err');
 					});
 				}

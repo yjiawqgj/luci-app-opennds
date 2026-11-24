@@ -5723,7 +5723,7 @@ worker_lock() {
 # ---- 概览页开关/重启的显式请求 --------------------------------------------
 # 开关走 openwrt 原生暂存流程（和其它按钮一致），随那次的 uci 增量一起 commit
 # 的还有 zone_detect.main.pending_run（1=启动 / 0=停止）；「重启」按钮同理，
-# 带的是 zone_detect.main.pending_restart=1。worker 读到就执行。
+# 带的是 zone_detect.main.pending_restart=restart-<令牌>。worker 读到就执行。
 # 必须与"本来停着的不主动拉起"并存：普通页面应用不带这些键，worker
 # 永远不会替它们改 openNDS 状态；只有概览页自己申请的启停/重启才执行。
 
@@ -5748,13 +5748,16 @@ pending_run_take() { # 读出并立即清掉 pending_run（先清再执行：中
 
 pending_restart_take() { # 读出并立即清掉 pending_restart（先清再执行，防误重放）；
 	# 输出 1 或空。概览页「重启」按钮走原生暂存流程，随那次的 uci 增量一起 commit。
+	# 值是 restart-<令牌>（每次点击唯一，残留时也有真实增量）；旧值 1 兼容。
 	local pr
 	pr=$(uci -q get 'zone_detect.main.pending_restart' 2>/dev/null)
-	if [ "$pr" = '1' ]; then
-		uci -q delete 'zone_detect.main.pending_restart' 2>/dev/null
-		uci commit zone_detect 2>/dev/null
-		printf '%s' '1'
-	fi
+	case "$pr" in
+		1 | restart-*)
+			uci -q delete 'zone_detect.main.pending_restart' 2>/dev/null
+			uci commit zone_detect 2>/dev/null
+			printf '%s' '1'
+			;;
+	esac
 	return 0
 }
 
@@ -5762,6 +5765,12 @@ restart_exec() { # 概览页「重启」：跑着的走完整 stop→等退出�
 	if nds_running; then
 		service_restart
 	else
+		# 停着多半是用户用开关停的（enabled=0 已提交）。不把 enabled 改回来，
+		# init 拉起后主程序读到 0 立刻退出，worker 却报成功——看着像重启失效。
+		if [ "$(nds_enabled)" = '0' ]; then
+			uci set 'opennds.@opennds[0].enabled'='1' 2>/dev/null
+			uci commit opennds 2>/dev/null
+		fi
 		toggle_exec 1
 	fi
 }
@@ -5924,23 +5933,45 @@ sys_apply_state() {
 }
 
 sys_post_apply() {
-	local m lm was=0 now=0 ts
+	local m lm was=0 now=0 ts fail='' nf=0
 	nds_running && was=1
 	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：
 	# 用户设备上历史遗留的"既在可信任又在黑名单"会在这里被修正
 	sys_dedup_lists
-	# 概览页「解除认证」走暂存：待踢的 MAC 记在 zone_detect.main.pending_deauth，
-	# openwrt「保存并应用」commit 之后在这里执行（踢下线 + 清预认证队列），然后清掉
+	# 概览页「解除认证」走暂存：待踢的 MAC 带一次性令牌（MAC|令牌）记在
+	# zone_detect.main.pending_deauth，openwrt「保存并应用」commit 之后在
+	# 这里执行（踢下线 + 清预认证队列），成功的清掉、失败的留着下次重试。
 	for m in $(list_of 'zone_detect.main.pending_deauth'); do
 		[ -n "$m" ] || continue
-		lm=$(mac_lower "$m")
+		# 前端写的是「MAC|令牌」（每次点击唯一，残留时也产生真实增量）；
+		# 旧版本写的是纯 MAC，兼容处理：取 | 之前的那段当 MAC。
+		lm=$(mac_lower "${m%%|*}")
+		[ -n "$lm" ] || continue
 		remove_preauth_queue "$lm"
-		ndsctl_mac deauth "$lm"
+		if nds_running; then
+			# ndsctl_mac 把失败吞成 0，这里要真实返回码：踢不下来就必须
+			# 留下待办、也不能清落盘日志——清了日志会造成"先显示未认证、
+			# 过一会又被认证记录刷回已认证"的假象（用户实际遇到的现象）。
+			if NDSCTL_TIMEOUT=2 ndsctl_run deauth "$lm" >/dev/null 2>&1 ||
+				NDSCTL_TIMEOUT=2 ndsctl_run deauth "$(mac_upper "$lm")" >/dev/null 2>&1; then
+				purge_client_logs "$lm"
+			else
+				fail="$fail $m"
+				nf=$((nf + 1))
+				continue
+			fi
+		else
+			# NDS 没跑就没有会话可踢；移出名单仍要清队列和两份落盘日志
+			purge_client_logs "$lm"
+		fi
 	done
-	if [ -n "$(uci -q get 'zone_detect.main.pending_deauth' 2>/dev/null)" ]; then
-		uci -q delete 'zone_detect.main.pending_deauth'
-		uci commit zone_detect
-	fi
+	# 只清已经执行成功的待办；失败的留着，下次应用自动重试。
+	# 前端令牌保证「再点一次」也一定有增量，不会卡在残留键上。
+	uci -q delete 'zone_detect.main.pending_deauth' 2>/dev/null
+	for m in $fail; do
+		uci -q add_list 'zone_detect.main.pending_deauth'="$m" 2>/dev/null
+	done
+	uci commit zone_detect 2>/dev/null
 	for m in $(list_of 'opennds.@opennds[0].blockedmac'); do
 		[ -n "$m" ] || continue
 		lm=$(mac_lower "$m")
@@ -5957,7 +5988,7 @@ sys_post_apply() {
 			'' | *[!0-9]*) ts=0 ;;
 		esac
 		if [ $(( $(date +%s) - ts )) -lt 150 ]; then
-			printf '{"ok":1,"bg":1,"already":1,"was_running":%s,"running":%s}\n' "$was" "$now"
+			printf '{"ok":1,"bg":1,"already":1,"was_running":%s,"running":%s,"deauth_failed":%s}\n' "$was" "$now" "$nf"
 			return 0
 		fi
 	fi
@@ -5968,7 +5999,7 @@ sys_post_apply() {
 	SELF_PATH="${0:-/usr/lib/opennds/opennds-manager-api.sh}"
 	# 经 sh 启动：不依赖执行位（SFTP/某些安装方式可能把权限弄丢）
 	( sh "$SELF_PATH" apply_worker </dev/null >/dev/null 2>&1 & ) 2>/dev/null
-	printf '{"ok":1,"bg":1,"was_running":%s,"running":%s}\n' "$was" "$now"
+	printf '{"ok":1,"bg":1,"was_running":%s,"running":%s,"deauth_failed":%s}\n' "$was" "$now" "$nf"
 	return 0
 }
 
