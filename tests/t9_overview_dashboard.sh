@@ -400,12 +400,14 @@ case "$tr_list" in
 esac
 ck "blockedmac 原样保留" 'dc:d8:7b:53:e5:5a' "$bl_list"
 
-echo "== openNDS 停止：接入点卡片照常计数，客户端列表清空 =="
+echo "== openNDS 停止：接入点卡片照常计数，未认证卡显示连着的设备 =="
 out3=$(NDS_RUNNING=0 call overview dashboard)
 counts3=$(printf '%s' "$out3" | grep -o '"counts":{[^}]*}')
 ck "停止后在线=0（openNDS 没在管，不判在线）" '"online":0' "$counts3"
 ck "停止后已认证=0" '"authenticated":0' "$counts3"
-ck "停止后未认证=0" '"unauthenticated":0' "$counts3"
+# 未认证卡按 2026-11-24 用户口径：NDS 停了只要连着 WiFi/网线就显示。
+# 这里连着的是 5 个无线（aa01 / 11:22 / 22:33 / dc:d8 / ee09）+ 1 个有线 ee20 = 6
+ck "停止后未认证=6（连着的设备全显示，含信任/黑名单客户端）" '"unauthenticated":6' "$counts3"
 ck "停止后可信任卡仍按名单显示" '"trusted":2' "$counts3"
 ck "停止后有线卡仍按邻居表显示=1（ee20 REACHABLE；ee08 STALE 不算）" '"wired":1' "$counts3"
 ck "停止后黑名单卡仍按名单显示" '"blacklist":1' "$counts3"

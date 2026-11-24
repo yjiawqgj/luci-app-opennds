@@ -3,6 +3,7 @@
 #   1) pending_deauth / pending_restart 一次性令牌，残留时二次操作仍有增量
 #   2) deauth 失败保留待办、不清落盘日志（避免"先未认证又变回已认证"）
 #   3) 跨页面名单写改成差量，不冲掉概览页未应用的暂存
+#   4) 2026-11-24 口径：未运行时重启按钮禁用；停服时未认证卡显示连着的设备
 . "$(dirname "$0")/lib.sh"
 
 assert_has() { # $1=文件 $2=模式 $3=说明
@@ -102,5 +103,16 @@ assert_has "$REPO/luci-app-opennds-manager/htdocs/luci-static/resources/opennds_
 for p in exempt blacklist session; do
 	assert_has "$V/$p.js" 'stageListSync(' "$p 页改用差量写，不冲概览暂存"
 done
+
+echo '== C7 2026-11-24 新口径：未运行禁用重启 + 停服未认证卡显示联网设备 =='
+API="$REPO/luci-app-opennds-manager/root/usr/lib/opennds/opennds-manager-api.sh"
+assert_has "$V/overview.js" 'restartBtn.disabled = !on' 'NDS 未运行时重启按钮禁用'
+assert_has "$V/overview.js" 'if (!state.running) return online;' '停服时未认证筛选按连着就算'
+assert_has "$API" 'N_UN=\$n_conn' '停服时未认证计数按连接数'
+if grep -q '当前未运行，确认启动' "$V/overview.js" 2>/dev/null; then
+	echo '  FAIL 旧的「未运行弹确认启动」分支还在'; fail=1
+else
+	echo '  OK   未运行不再弹确认启动，按钮直接禁用'
+fi
 
 done_report

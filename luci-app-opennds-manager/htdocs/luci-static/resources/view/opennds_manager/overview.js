@@ -391,8 +391,10 @@ return view.extend({
 		function renderStatus() {
 			/* 过渡态优先：已点开关、后端还没确认到位 → 整块黄灯，标题写
 			 * 「正在关闭 / 正在启动」，旋钮拨向目标位置。等 settleTransition
-			 * 确认到位后清除，才回到下面的常规配色。 */
+			 * 确认到位后清除，才回到下面的常规配色。
+			 * 重启只在 NDS 正在运行时有意义：过渡态 / 未加载 / 未运行都禁用。 */
 			if (transition) {
+				restartBtn.disabled = true;
 				var closing = (transition === 'off');
 				statusDot.className = 'ovd-dot busy';
 				statusText.className = 'ovd-status-text busy';
@@ -404,6 +406,7 @@ return view.extend({
 			runSwitch.className = 'ovd-switch';
 			if (!loaded) {
 				/* 首屏数据还没回来：不要先亮一下「未运行」再变绿 */
+				restartBtn.disabled = true;
 				statusDot.className = 'ovd-dot';
 				statusText.className = 'ovd-status-text pending';
 				statusText.textContent = _('读取中…');
@@ -411,6 +414,9 @@ return view.extend({
 				return;
 			}
 			var on = state.running;
+			/* 未运行时重启按钮不可点击（用户口径）：没有正在跑的服务可重启。
+			 * 想启动请用左边的运行开关，两条链子不混。 */
+			restartBtn.disabled = !on;
 			statusDot.className = 'ovd-dot' + (on ? '' : ' off');
 			statusText.className = 'ovd-status-text' + (on ? '' : ' off');
 			statusText.textContent = on ? _('运行') : _('未运行');
@@ -470,16 +476,9 @@ return view.extend({
 		}
 
 		function handleRestart() {
-			if (locked) return;
-			/* 未运行时「重启」没有对象：后端原实现会拉起进程，但 enabled=0
-			 * 已经提交，主程序读到就立刻退出，worker 还报成功——看着像点了没反应。
-			 * 按用户口径改成明确的「启动」：走开关同一条链（enabled=1 + 令牌）。 */
-			if (!state.running) {
-				CPD.confirm(null, _('当前未运行，确认启动？'), _('确定启动'), false,
-					function () { doToggle('1'); }, true);
-				return;
-			}
-			/* 运行中：重启与开关同一节奏：二次确认 → 暂存 pending_restart → 原生应用流程。
+			if (locked || !state.running) return;
+			/* 未运行时按钮已禁用，不再提供「确认启动」——启动走左边的运行开关。
+			 * 运行中：重启与开关同一节奏：二次确认 → 暂存 pending_restart → 原生应用流程。
 			 * 真正的重启由 apply_worker 在应用后执行（stop → 等退出 → start → 等就绪）。
 			 * pending_restart 也带一次性令牌：固定 '1' 残留时二次点击会产生零增量，
 			 * 和解除认证是同一个坑。 */
@@ -533,8 +532,9 @@ return view.extend({
 		 * （已认证 / 免认证已登录 / 可信任）；未认证不算在线，黑名单更不算。
 		 * 「有线客户端」和无线接入点卡片一样是连接卡：连着就算，不分身份。
 		 * 免认证 / 可信任 / 有线 / 黑名单四张卡读配置名单或邻居表统计，
-		 * 不受 openNDS 是否运行影响；在线 / 已认证 / 未认证三张身份卡在
-		 * NDS 未运行时归零，列表也同步为空（2026-11-19 用户口径）。
+		 * 不受 openNDS 是否运行影响；在线 / 已认证两张身份卡在 NDS 未运行时
+		 * 归零。未认证卡按用户口径（2026-11-24）：NDS 停了只要客户端还连着
+		 * WiFi 就照显示——这些设备此刻确实没有联网认证可言，隐藏反而漏报。
 		 * filter=null = 没选任何卡片：显示全部客户端。
 		 * 点接入点卡片时列表不按身份过滤（看该 AP 上的全部在线客户端），
 		 * 操作按钮的可用性只由客户端身份决定（见 renderList）。 */
@@ -556,7 +556,10 @@ return view.extend({
 					 * （读 openNDS 原生落盘记录，不用等客户端连上 WiFi） */
 					return !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
 				case 'unauth':
-					if (!state.running) return false;
+					/* NDS 停了：连着 WiFi 的都算未认证（此刻没有认证服务在管），
+					 * 不看 authorized / preauth / blocked 的历史身份。
+					 * NDS 跑着：在线但没通过认证的才算，且排除免认证/黑名单。 */
+					if (!state.running) return online;
 					return online && !c.authorized && !c.preauth && !c.blocked;
 				case 'wired':
 					/* 有线卡 = 连着的有线设备，不分身份、黑名单客户端连着也算
@@ -666,7 +669,7 @@ return view.extend({
 		 * 停在后端已提交值上（那要等「保存并应用」才变，看着像没生效）。
 		 * 按 tagOf 的优先级把被操作过的客户端从旧类别挪到新类别；
 		 * 后端数字仍是权威，应用后刷新自然覆盖回来。
-		 * 未认证卡在 NDS 未运行时按用户口径恒为 0，这里不预览。 */
+		 * 未认证卡现在 NDS 停服也要预览（连着 WiFi 就显示），不再跳过。 */
 		var COUNT_KEY = {
 			't-black': 'blacklist', 't-trusted': 'trusted', 't-pre': 'preauth',
 			't-auth': 'authenticated', 't-unauth': 'unauthenticated'
@@ -690,11 +693,7 @@ return view.extend({
 				if (from === to) continue;
 				fk = COUNT_KEY[from];
 				tk = COUNT_KEY[to];
-				if (!state.running) {
-					if (fk === 'unauthenticated') fk = null;
-					if (tk === 'unauthenticated') tk = null;
-				}
-				if (fk && n[fk] != null) n[fk] = Math.max(0, Number(n[fk]) - 1);
+			if (fk && n[fk] != null) n[fk] = Math.max(0, Number(n[fk]) - 1);
 				if (tk && n[tk] != null) n[tk] = (Number(n[tk]) || 0) + 1;
 			}
 			return n;
