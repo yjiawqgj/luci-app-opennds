@@ -3,7 +3,8 @@
 #   1) pending_deauth / pending_restart 一次性令牌，残留时二次操作仍有增量
 #   2) deauth 失败保留待办、不清落盘日志（避免"先未认证又变回已认证"）
 #   3) 跨页面名单写改成差量，不冲掉概览页未应用的暂存
-#   4) 2026-11-24 口径：未运行时重启按钮禁用；停服时未认证卡显示连着的设备
+#   4) 2026-11-24 口径：未运行时重启按钮禁用；停服时身份按落盘记录判定，
+#      已认证客户端关 NDS 后仍已认证，不串进未认证卡
 . "$(dirname "$0")/lib.sh"
 
 assert_has() { # $1=文件 $2=模式 $3=说明
@@ -104,11 +105,20 @@ for p in exempt blacklist session; do
 	assert_has "$V/$p.js" 'stageListSync(' "$p 页改用差量写，不冲概览暂存"
 done
 
-echo '== C7 2026-11-24 新口径：未运行禁用重启 + 停服未认证卡显示联网设备 =='
+echo '== C7 2026-11-24 口径：未运行禁用重启 + 停服时身份判定与 NDS 运行无关 =='
 API="$REPO/luci-app-opennds-manager/root/usr/lib/opennds/opennds-manager-api.sh"
 assert_has "$V/overview.js" 'restartBtn.disabled = !on' 'NDS 未运行时重启按钮禁用'
-assert_has "$V/overview.js" 'if (!state.running) return online;' '停服时未认证筛选按连着就算'
-assert_has "$API" 'N_UN=\$n_conn' '停服时未认证计数按连接数'
+assert_has "$V/overview.js" 'return online && !c.authenticated && !c.trusted &&' '停服时未认证筛选按身份（已认证不入未认证卡）'
+if grep -q 'if (!state.running) return online;' "$V/overview.js" 2>/dev/null; then
+	echo '  FAIL 旧的「停服连着就算未认证」一刀切还在'; fail=1
+else
+	echo '  OK   停服已认证客户端不再被划进未认证卡'
+fi
+if grep -q 'N_UN=\$n_conn' "$API" 2>/dev/null; then
+	echo '  FAIL 后端旧的「停服未认证按连接数覆盖」还在'; fail=1
+else
+	echo '  OK   后端未认证卡统一按身份统计，不再按连接数覆盖'
+fi
 if grep -q '当前未运行，确认启动' "$V/overview.js" 2>/dev/null; then
 	echo '  FAIL 旧的「未运行弹确认启动」分支还在'; fail=1
 else

@@ -400,14 +400,22 @@ case "$tr_list" in
 esac
 ck "blockedmac 原样保留" 'dc:d8:7b:53:e5:5a' "$bl_list"
 
-echo "== openNDS 停止：接入点卡片照常计数，未认证卡显示连着的设备 =="
+echo "== openNDS 停止：身份判定与 NDS 运行无关（已认证仍是已认证）=="
+# 模拟用户现场：aa01 已认证（authlog 有效），关 NDS 时 openNDS 写 shutdown_deauth
+# （仍算认证）。按 2026-11-24 口径：连着 WiFi 的客户端一律按身份对比——
+# 已认证的进已认证卡、显示已认证标签；只有真未认证的才进未认证卡。
+mkdir -p "$CPD_NDSLOG_DIR"
+NOWX=$(date +%s); EXPX=$((NOWX+3600)); BX=$(printf '%s' 'aa:bb:cc:dd:ee:01' | base64 | tr -d '=')
+printf '%s=%s\n' "$BX" "$EXPX" >"$CPD_NDSLOG_DIR/authlog.log"
+printf 'method=client_auth, clientmac=aa:bb:cc:dd:ee:01, session_start=%s, session_end=%s\n' "$((NOWX-600))" "$EXPX" >"$CPD_NDSLOG_DIR/binauthlog.log"
+printf 'method=shutdown_deauth, clientmac=aa:bb:cc:dd:ee:01, session_start=%s, session_end=%s\n' "$((NOWX-600))" "$EXPX" >>"$CPD_NDSLOG_DIR/binauthlog.log"
 out3=$(NDS_RUNNING=0 call overview dashboard)
 counts3=$(printf '%s' "$out3" | grep -o '"counts":{[^}]*}')
 ck "停止后在线=0（openNDS 没在管，不判在线）" '"online":0' "$counts3"
-ck "停止后已认证=0" '"authenticated":0' "$counts3"
-# 未认证卡按 2026-11-24 用户口径：NDS 停了只要连着 WiFi/网线就显示。
-# 这里连着的是 5 个无线（aa01 / 11:22 / 22:33 / dc:d8 / ee09）+ 1 个有线 ee20 = 6
-ck "停止后未认证=6（连着的设备全显示，含信任/黑名单客户端）" '"unauthenticated":6' "$counts3"
+# 已认证看落盘记录，NDS 停了仍是已认证——不再被划进未认证卡
+ck "停止后已认证=1（aa01 关 NDS 后仍已认证）" '"authenticated":1' "$counts3"
+# 未认证只数真正没身份的：22:33 + ee09 = 2（可信任/黑名单/已认证都不串进来）
+ck "停止后未认证=2（只含真未认证客户端，不含已认证/可信任/黑名单）" '"unauthenticated":2' "$counts3"
 ck "停止后可信任卡仍按名单显示" '"trusted":2' "$counts3"
 ck "停止后有线卡仍按邻居表显示=1（ee20 REACHABLE；ee08 STALE 不算）" '"wired":1' "$counts3"
 ck "停止后黑名单卡仍按名单显示" '"blacklist":1' "$counts3"
@@ -416,6 +424,8 @@ seg3() { printf '%s' "$1" | tr '{' '\n' | grep -F "\"mac\":\"$2\""; }
 r3s=$(seg3 "$out3" 'aa:bb:cc:dd:ee:01')
 ck "停止后关联设备仍出行" '"mac":"aa:bb:cc:dd:ee:01"' "$r3s"
 ck "停止后关联设备 online=true（人连着）" '"online":true' "$r3s"
+# 关键：已认证客户端关 NDS 后标签仍是「已认证」——不是「未认证」
+ck "停止后已认证客户端 authenticated=true（标签仍是已认证）" '"authenticated":true' "$r3s"
 s0=$(ap_seg "$out3" '互联网')
 ck "停止后 AP 计数不变（关联表不经过 openNDS，含黑名单客户端）" '"count":4' "$s0"
 

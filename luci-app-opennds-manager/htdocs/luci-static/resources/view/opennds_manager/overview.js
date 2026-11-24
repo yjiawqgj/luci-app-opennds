@@ -532,9 +532,11 @@ return view.extend({
 		 * （已认证 / 免认证已登录 / 可信任）；未认证不算在线，黑名单更不算。
 		 * 「有线客户端」和无线接入点卡片一样是连接卡：连着就算，不分身份。
 		 * 免认证 / 可信任 / 有线 / 黑名单四张卡读配置名单或邻居表统计，
-		 * 不受 openNDS 是否运行影响；在线 / 已认证两张身份卡在 NDS 未运行时
-		 * 归零。未认证卡按用户口径（2026-11-24）：NDS 停了只要客户端还连着
-		 * WiFi 就照显示——这些设备此刻确实没有联网认证可言，隐藏反而漏报。
+		 * 不受 openNDS 是否运行影响；已认证卡读原生落盘记录，也不受运行
+		 * 影响（身份在有效期内就是已认证，NDS 停了照样显示）。
+		 * 未认证卡 = 连着 WiFi/网线、但身份确实未认证的客户端；已认证的
+		 * 客户端即使 NDS 停了也仍显示已认证标签、进已认证卡，不进这里。
+		 * 一句话：连着 WiFi 的客户端一律按身份对比，跟 NDS 跑不跑无关。
 		 * filter=null = 没选任何卡片：显示全部客户端。
 		 * 点接入点卡片时列表不按身份过滤（看该 AP 上的全部在线客户端），
 		 * 操作按钮的可用性只由客户端身份决定（见 renderList）。 */
@@ -556,11 +558,12 @@ return view.extend({
 					 * （读 openNDS 原生落盘记录，不用等客户端连上 WiFi） */
 					return !!c.authenticated && !c.trusted && !c.preauth && !c.blocked;
 				case 'unauth':
-					/* NDS 停了：连着 WiFi 的都算未认证（此刻没有认证服务在管），
-					 * 不看 authorized / preauth / blocked 的历史身份。
-					 * NDS 跑着：在线但没通过认证的才算，且排除免认证/黑名单。 */
-					if (!state.running) return online;
-					return online && !c.authorized && !c.preauth && !c.blocked;
+					/* 连着 WiFi/网线、但身份确实未认证的客户端才算。
+					 * 已认证（落盘记录在有效期内）即使 NDS 停了也仍是已认证，
+					 * 进已认证卡、显示已认证标签，不进这里——身份判定一律
+					 * 按身份位，跟 NDS 是否运行无关（2026-11-24 用户口径）。 */
+					return online && !c.authenticated && !c.trusted &&
+						!c.preauth && !c.blocked;
 				case 'wired':
 					/* 有线卡 = 连着的有线设备，不分身份、黑名单客户端连着也算
 					 * （与 AP 卡片同口径：连上 br-lan 就有 IP，2026-11-21 用户口径） */
@@ -669,7 +672,8 @@ return view.extend({
 		 * 停在后端已提交值上（那要等「保存并应用」才变，看着像没生效）。
 		 * 按 tagOf 的优先级把被操作过的客户端从旧类别挪到新类别；
 		 * 后端数字仍是权威，应用后刷新自然覆盖回来。
-		 * 未认证卡现在 NDS 停服也要预览（连着 WiFi 就显示），不再跳过。 */
+		 * 未认证卡也照常预览（连着 WiFi 且身份确实未认证才显示；已认证的
+		 * 即使 NDS 停了也仍在已认证卡，不预览成未认证）。 */
 		var COUNT_KEY = {
 			't-black': 'blacklist', 't-trusted': 'trusted', 't-pre': 'preauth',
 			't-auth': 'authenticated', 't-unauth': 'unauthenticated'
