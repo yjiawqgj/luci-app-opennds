@@ -34,6 +34,16 @@ var CSS = '\
 .ovd-switch.busy .knob{transform:translateX(18px)}\
 .ovd-switch.busy.off{background:#d98c13;border-color:#d98c13}\
 .ovd-switch.busy.off .knob{transform:translateX(0)}\
+.ovd-status-wrap{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}\
+.ovd-status-main{flex:0 1 auto;min-width:0}\
+.ovd-status-boot{flex:0 0 auto;text-align:right}\
+.ovd-boot-btns{display:flex;gap:8px;padding:10px 0 2px}\
+.ovd-boot-btn{font-family:inherit;border-radius:6px;padding:7px 18px;font-size:14px;line-height:1.2;cursor:pointer;background:#fff;transition:background .15s}\
+.ovd-boot-btn.on{border:1.5px solid #2e9468;color:#2e9468}\
+.ovd-boot-btn.on:hover:not(:disabled){background:#eaf6f0}\
+.ovd-boot-btn.off{border:1.5px solid #c94848;color:#c94848}\
+.ovd-boot-btn.off:hover:not(:disabled){background:#fdf0f0}\
+.ovd-boot-btn:disabled{cursor:not-allowed;opacity:.38;filter:grayscale(1)}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -166,7 +176,7 @@ return view.extend({
 		CPD.style();
 
 		var state = {
-			running: false, enabled: false, engaged: 1, busy: 0, scope: 'default',
+			running: false, enabled: false, bootEnabled: false, engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			/* 本地身份覆盖（key=小写 MAC）：行内操作只写 uci 暂存，后端
@@ -273,6 +283,7 @@ return view.extend({
 		function applyStatus(st) {
 			if (!st || !st.ok) return;
 			state.enabled = st.enabled === 1;
+			state.bootEnabled = (st.boot === 1 || st.boot === true);
 			state.engaged = st.engaged;
 			state.busy = st.busy;
 			state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
@@ -310,7 +321,7 @@ return view.extend({
 
 		function renderAllSafe() {
 			/* 任何一段渲染抛异常都不能连累后面的区块 */
-			[renderStatus, renderWarnbar, renderStats, renderIface, renderAps, renderList]
+			[renderStatus, renderBoot, renderWarnbar, renderStats, renderIface, renderAps, renderList]
 				.forEach(function (fn) {
 					try { fn(); } catch (e) {
 						if (window.console && console.error) console.error('[opennds-manager] render', e);
@@ -357,6 +368,22 @@ return view.extend({
 			}),
 			restartLabel
 		]);
+
+		/* 开机自启服务按钮：与「此刻跑不跑」的开关完全独立，只看开机自启
+		 * 状态 bootEnabled（后端 /etc/init.d/opennds enabled 的返回码）。 */
+		var bootOnBtn = E('button', {
+			'class': 'ovd-boot-btn on', 'type': 'button', 'click': handleBootEnable
+		}, _('开启'));
+		var bootOffBtn = E('button', {
+			'class': 'ovd-boot-btn off', 'type': 'button', 'click': handleBootDisable
+		}, _('关闭'));
+
+		function renderBoot() {
+			/* 已启用自启 →「开启」灰掉不可点、「关闭」可点；未启用反之。
+			 * 与当前运行/过渡态无关，所以这里只读 bootEnabled。 */
+			bootOnBtn.disabled = !!state.bootEnabled;
+			bootOffBtn.disabled = !state.bootEnabled;
+		}
 
 		function renderStatus() {
 			/* 过渡态优先：已点开关、后端还没确认到位 → 整块黄灯，标题写
@@ -444,10 +471,37 @@ return view.extend({
 						.then(function () {
 							return CPD.applyStaged();
 						})
-						.catch(function (e) {
-							CPD.toast(CPD.errText(e, _('操作失败')), 'err');
-						});
+					.catch(function (e) {
+						CPD.toast(CPD.errText(e, _('操作失败')), 'err');
+					});
 				});
+		}
+
+		/* 开机自启：二次确认 → 后端即时执行 enable/disable（改的是开机自启
+		 * 链接，不影响当前运行，也不走保存并应用）→ 用回读的真实状态更新按钮。 */
+		function setBoot(want, warnText, okText) {
+			if (locked) return;
+			CPD.confirm(null, warnText, okText, want === '0', function () {
+				CPD.api('overview', 'boot_set', [want]).then(function (j) {
+					if (!j || !j.ok) {
+						CPD.notify((j && j.error) || _('操作失败'), 'err');
+						return;
+					}
+					state.bootEnabled = (j.boot === 1);
+					renderBoot();
+					CPD.toast(want === '1' ? _('已开启开机自启') : _('已关闭开机自启'));
+				}, function (e) {
+					CPD.notify(CPD.errText(e, _('操作失败')), 'err');
+				});
+			});
+		}
+
+		function handleBootEnable() {
+			setBoot('1', _('确认开启开机自启？'), _('确定开启'));
+		}
+
+		function handleBootDisable() {
+			setBoot('0', _('确认关闭开机自启？'), _('确定关闭'));
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
@@ -1420,9 +1474,19 @@ return view.extend({
 		body.appendChild(confBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [
-			E('h3', {}, _('状态')),
-			E('div', { 'class': 'ovd-status-line' }, [
-				statusDot, statusText, runSwitch, restartBtn
+			E('div', { 'class': 'ovd-status-wrap' }, [
+				E('div', { 'class': 'ovd-status-main' }, [
+					E('h3', {}, _('状态')),
+					E('div', { 'class': 'ovd-status-line' }, [
+						statusDot, statusText, runSwitch, restartBtn
+					])
+				]),
+				E('div', { 'class': 'ovd-status-boot' }, [
+					E('h3', {}, _('服务')),
+					E('div', { 'class': 'ovd-boot-btns' }, [
+						bootOnBtn, bootOffBtn
+					])
+				])
 			])
 		]));
 		body.appendChild(E('hr', { 'class': 'ovd-divider' }));

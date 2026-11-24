@@ -1803,11 +1803,12 @@ EOF2
 }
 
 ov_status_fields() { # 输出 status 的 JSON 片段（不含外层花括号）
-	local mif mip=''
+	local mif mip='' boot=0
 	mif=$(managed_iface)
 	[ -n "$mif" ] && mip=$(iface_ip "$mif")
-	printf '"running":%s,"enabled":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"defaultSession":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
-		"$CPD_RUNNING" "$CPD_ENABLED" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
+	nds_boot_enabled && boot=1
+	printf '"running":%s,"enabled":%s,"boot":%s,"engaged":%s,"busy":%s,"fupEnabled":%s,"defaultSession":%s,"session_scope":"%s","confErr":"%s","counts":{"online":%s,"wired":%s,"authenticated":%s,"preauth":%s,"trusted":%s,"unauthenticated":%s,"blacklist":%s,"maxclients":%s},"managed":{"iface":"%s","ip":"%s"},"aps":%s' \
+		"$CPD_RUNNING" "$CPD_ENABLED" "$boot" "$CPD_ENGAGED" "$CPD_BUSY" "$(fup_enabled_val)" \
 		"${CPD_DEFSESSION:-1440}" \
 		"$(json_escape "$CPD_SCOPE")" "$(json_escape "$CPD_CONFERR")" \
 		"$N_ONLINE" "$N_WIRED" "$N_AUTH" "$N_PRE" "$N_TR" "$N_UN" "$N_BL" \
@@ -1885,6 +1886,40 @@ ov_run_state() {
 	running=0
 	nds_running && running=1
 	printf '{"ok":1,"running":%s,"enabled":%s}\n' "$running" "$enabled"
+}
+
+# openNDS 开机自启状态：与上面「此刻跑不跑 / 配置 enabled」是两套独立机制。
+# 走 OpenWrt 标准的 /etc/init.d/opennds enabled（返回 0=已设为开机自启，
+# 非 0=未设为开机自启）。任何 procd/rc.common 脚本都支持这两个子命令。
+nds_boot_enabled() {
+	[ -x "$NDS_INIT" ] || return 1
+	"$NDS_INIT" enabled >/dev/null 2>&1
+}
+
+# 查询自启状态：{"ok":1,"boot":1|0}
+ov_boot_state() {
+	local b=0
+	nds_boot_enabled && b=1
+	printf '{"ok":1,"boot":%s}\n' "$b"
+}
+
+# 切换自启：boot_set 1=enable / 0=disable。即时生效（改的是开机自启链接，
+# 不影响当前运行，也不走 openwrt 保存并应用）。执行后回读真实状态。
+ov_boot_set() {
+	local want="$1"
+	case "$want" in
+		1|0) ;;
+		*) out_err '自启动参数只能是 1 或 0' ;;
+	esac
+	[ -x "$NDS_INIT" ] || out_err '未找到 openNDS 启动脚本'
+	if [ "$want" = '1' ]; then
+		"$NDS_INIT" enable >/dev/null 2>&1 || out_err '启用开机自启失败'
+	else
+		"$NDS_INIT" disable >/dev/null 2>&1 || out_err '关闭开机自启失败'
+	fi
+	local b=0
+	nds_boot_enabled && b=1
+	printf '{"ok":1,"boot":%s}\n' "$b"
 }
 
 # 客户端行操作（免认证 / 信任 / 拉黑 / 断开…）一律只写 uci 增量：
@@ -6014,6 +6049,8 @@ case "$PAGE" in
 			dashboard) ov_dashboard ;;
 			selfcheck) ov_selfcheck ;;
 			run_state) ov_run_state ;;
+			boot_state) ov_boot_state ;;
+			boot_set) ov_boot_set "$1" ;;
 			clients) ov_clients ;;
 			client_action) ov_client_action "$1" "$2" ;;
 			client_edit) ov_client_edit apply "$@" ;;
