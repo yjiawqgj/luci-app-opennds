@@ -142,12 +142,13 @@ nds_enabled() { # 空/缺键按 1（官方默认启用）
 
 # openNDS 11.2.0 新增 auto_run（休眠开关）：
 # 默认 0 = 进程在跑但不设防火墙/不出门户；必须 1 且网关接口可用才真正工作。
-# 老版本(10.3.1)没有这个键，缺键按 1 处理，避免升级后误判成休眠。
+# 官方 conf.c:196 的 DEFAULT_AUTO_RUN 就是 0，缺键必须按 0 显示「已休眠」，
+# 否则页面声称已唤醒、实际流量直通（未认证客户端能直接上网）。
 nds_autorun() {
 	local v
 	v=$(uci -q get 'opennds.@opennds[0].auto_run' 2>/dev/null)
 	case "$v" in
-		'') printf '1' ;;
+		'') printf '0' ;;
 		*) printf '%s' "$v" ;;
 	esac
 }
@@ -1957,10 +1958,8 @@ ov_autorun_state() {
 # 切换 auto_run：autorun_set 1=脱离休眠 / 0=休眠。
 # 与开机自启、运行开关都独立——只改配置里的 auto_run 键。
 # 11.2.0 源码 conf.c 会每 2 秒重读 auto_run / gatewayinterface，
-# 无需重启 openNDS 即可进出休眠；但走 openwrt 原生保存应用流程落地，
-# 保证 uci 暂存与其它配置一致、用户能看到「未保存的配置」提示。
-# 前端按 doToggle 的同款节奏（stageUci + applyStaged）调用，故这里只需
-# 提供只读回读；真正写入走前端 stageUci('opennds','@opennds[0]','auto_run',...)。
+# 无需重启 openNDS 即可进出休眠。前端休眠开关直接调这个子命令：
+# 只改 auto_run 一个键、立即生效，不刷新页面、不动进程和 enabled。
 ov_autorun_set() {
 	local want="$1" sid a=0
 	case "$want" in
@@ -1972,6 +1971,23 @@ ov_autorun_set() {
 	uci commit opennds 2>/dev/null
 	[ "$(nds_autorun)" = '1' ] && a=1
 	printf '{"ok":1,"autorun":%s}\n' "$a"
+}
+
+# 启用开关：只写 opennds.@opennds[0].enabled，立即落盘回读。
+# 与运行状态彻底分开 —— 这里不调 init、不写 pending_run、不重启进程，
+# 所以点「启用/未启用」不会顺手把正在跑的 openNDS 停掉；新值在下次
+# 启动/重启时被 conf.c 读到才体现在进程上。只动这一个键，原有配置不变。
+ov_enabled_set() {
+	local want="$1" sid en=0
+	case "$want" in
+		1|0) ;;
+		*) out_err 'enabled 参数只能是 1 或 0' ;;
+	esac
+	sid=$(ensure_opennds_conf) || out_err '未找到 openNDS 配置节'
+	uci set "opennds.$sid.enabled"="$want" || out_err '写 enabled 失败'
+	uci commit opennds 2>/dev/null
+	[ "$(nds_enabled)" = '1' ] && en=1
+	printf '{"ok":1,"enabled":%s}\n' "$en"
 }
 
 # 客户端行操作（免认证 / 信任 / 拉黑 / 断开…）一律只写 uci 增量：
@@ -5823,15 +5839,11 @@ pending_restart_take() { # 读出并立即清掉 pending_restart（先清再执�
 }
 
 restart_exec() { # 概览页「重启」：跑着的走完整 stop→等退出→start；停着的只拉起
+	# 运行状态/重启都只动进程，不改 opennds 的 enabled（那是「启用」开关的事）。
+	# 配置里 enabled=0 时主程序可能起不来，这属于"未启用"，由启用开关处理。
 	if nds_running; then
 		service_restart
 	else
-		# 停着多半是用户用开关停的（enabled=0 已提交）。不把 enabled 改回来，
-		# init 拉起后主程序读到 0 立刻退出，worker 却报成功——看着像重启失效。
-		if [ "$(nds_enabled)" = '0' ]; then
-			uci set 'opennds.@opennds[0].enabled'='1' 2>/dev/null
-			uci commit opennds 2>/dev/null
-		fi
 		toggle_exec 1
 	fi
 }
@@ -6148,6 +6160,7 @@ case "$PAGE" in
 			boot_set) ov_boot_set "$1" ;;
 			autorun_state) ov_autorun_state ;;
 			autorun_set) ov_autorun_set "$1" ;;
+			enabled_set) ov_enabled_set "$1" ;;
 			clients) ov_clients ;;
 			client_action) ov_client_action "$1" "$2" ;;
 			client_edit) ov_client_edit apply "$@" ;;

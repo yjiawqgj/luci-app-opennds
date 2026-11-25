@@ -22,10 +22,6 @@ var CSS = '\
 .ovd-dot{width:10px;height:10px;border-radius:50%;background:#2e9468;box-shadow:0 0 0 3px #e4f4ec;flex:none}\
 .ovd-dot.off{background:#c94848;box-shadow:0 0 0 3px #fbe8e8}\
 .ovd-dot.busy{background:#d98c13;box-shadow:0 0 0 3px #fbeed6}\
-.ovd-status-text{font-size:20px;font-weight:650;color:#2e9468;letter-spacing:.5px}\
-.ovd-status-text.off{color:#c94848}\
-.ovd-status-text.busy{color:#c07a0c}\
-.ovd-status-text.pending{color:#9aa6b2}\
 .ovd-switch{position:relative;width:42px;height:24px;flex:none;padding:0;border:1px solid #c9d2da;border-radius:999px;background:#e3e8ec;cursor:pointer;transition:background .15s,border-color .15s}\
 .ovd-switch .knob{position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(20,30,40,.22);transition:transform .15s}\
 .ovd-switch[aria-checked="true"]{background:#2e9468;border-color:#2e9468}\
@@ -34,22 +30,22 @@ var CSS = '\
 .ovd-switch.busy .knob{transform:translateX(18px)}\
 .ovd-switch.busy.off{background:#d98c13;border-color:#d98c13}\
 .ovd-switch.busy.off .knob{transform:translateX(0)}\
-.ovd-status-wrap{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}\
-.ovd-status-main{flex:0 1 auto;min-width:0}\
-.ovd-status-boot{flex:0 0 auto;min-width:0;text-align:left}\
-.ovd-boot-btns{display:flex;gap:8px;padding:10px 0 2px}\
-.ovd-boot-btn{display:inline-flex;align-items:center;justify-content:center;font-family:inherit;border:1px solid;background:#fff;border-radius:5px;padding:6px 12px;font-size:13px;line-height:1.2;white-space:nowrap}\
-.ovd-boot-btn.on{border-color:#2e9468;color:#2e9468;cursor:pointer}\
-.ovd-boot-btn.off{border-color:#c94848;color:#c94848;cursor:pointer}\
-.ovd-boot-btn.on.on-disabled{border-color:#c6e2d5;color:#8fbca6;cursor:not-allowed}\
-.ovd-boot-btn.off.off-disabled{border-color:#edcdcd;color:#da9898;cursor:not-allowed}\
-.ovd-status-autorun{flex:0 0 auto;min-width:0;text-align:left}\
-.ovd-autorun-btns{display:flex;gap:8px;padding:10px 0 2px}\
-.ovd-autorun-btn{display:inline-flex;align-items:center;justify-content:center;font-family:inherit;border:1px solid;background:#fff;border-radius:5px;padding:6px 12px;font-size:13px;line-height:1.2;white-space:nowrap}\
-.ovd-autorun-btn.on{border-color:#2e9468;color:#2e9468;cursor:pointer}\
-.ovd-autorun-btn.off{border-color:#d98c13;color:#d98c13;cursor:pointer}\
-.ovd-autorun-btn.on.on-disabled{border-color:#c6e2d5;color:#8fbca6;cursor:not-allowed}\
-.ovd-autorun-btn.off.off-disabled{border-color:#e8cfa3;color:#b8935a;cursor:not-allowed}\
+/* 四块控制卡片：运行状态 → 休眠 → 启用 → 服务，宽屏一行、窄屏折行 */\
+.ovd-ctrl-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:14px}\
+.ovd-ctrl{background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:15px 16px 14px;min-width:0}\
+.ovd-ctrl-name{font-size:12px;color:#657585;margin-bottom:10px}\
+.ovd-ctrl-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}\
+.ovd-ctrl-title{display:flex;align-items:center;gap:8px;min-width:0}\
+.ovd-ctrl-text{font-size:20px;font-weight:650;letter-spacing:.4px;white-space:nowrap;color:#657585}\
+.ovd-ctrl-text.on{color:#2e9468}\
+.ovd-ctrl-text.off{color:#657585}\
+.ovd-ctrl-text.run-off{color:#c94848}\
+.ovd-ctrl-text.busy{color:#c07a0c}\
+.ovd-ctrl-text.pending{color:#9aa6b2}\
+.ovd-ctrl-op{height:24px;margin-top:10px;display:flex;align-items:center}\
+.ovd-mini-btn{font-family:inherit;font-size:11px;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:4px;height:24px;padding:0 8px;cursor:pointer}\
+.ovd-mini-btn:disabled{opacity:.45;cursor:default;background:#f7f9fa}\
+.ovd-ctrl-hint{font-size:11.5px;color:#9aa6b2;margin-top:12px;line-height:1.6}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -136,8 +132,8 @@ var CSS = '\
 .ovd-dtl-v{text-align:right;color:#222a31;min-width:0;overflow-wrap:anywhere}\
 .ovd-dtl-v.mono{font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12px}\
 .ovd-lock-sub{font-size:12.5px;color:#657585;margin-top:6px}\
-@media (max-width:900px){.ovd-stat-grid{grid-template-columns:repeat(4,1fr)}}\
-@media (max-width:560px){.ovd-stat-grid{grid-template-columns:repeat(2,1fr)}.ovd-ap-grid{grid-template-columns:1fr}}\
+@media (max-width:900px){.ovd-stat-grid{grid-template-columns:repeat(4,1fr)}.ovd-ctrl-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}\
+@media (max-width:560px){.ovd-stat-grid{grid-template-columns:repeat(2,1fr)}.ovd-ap-grid{grid-template-columns:1fr}.ovd-ctrl-grid{grid-template-columns:1fr}}\
 ';
 
 function ensureOvdStyle() {
@@ -182,7 +178,7 @@ return view.extend({
 		CPD.style();
 
 		var state = {
-			running: false, enabled: false, bootEnabled: false, autorun: true, engaged: 1, busy: 0, scope: 'default',
+			running: false, enabled: false, bootEnabled: false, autorun: false, engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			/* 本地身份覆盖（key=小写 MAC）：行内操作只写 uci 暂存，后端
@@ -328,7 +324,7 @@ return view.extend({
 
 		function renderAllSafe() {
 			/* 任何一段渲染抛异常都不能连累后面的区块 */
-			[renderStatus, renderBoot, renderAutorun, renderWarnbar, renderStats, renderIface, renderAps, renderList]
+			[renderStatus, renderBoot, renderAutorun, renderEnabled, renderWarnbar, renderStats, renderIface, renderAps, renderList]
 				.forEach(function (fn) {
 					try { fn(); } catch (e) {
 						if (window.console && console.error) console.error('[opennds-manager] render', e);
@@ -359,60 +355,62 @@ return view.extend({
 
 		/* ---------- 运行状态 ---------- */
 		var statusDot = E('span', { 'class': 'ovd-dot', 'aria-hidden': 'true' });
-		var statusText = E('span', { 'class': 'ovd-status-text', 'role': 'status' }, '');
+		var statusText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
 		var runSwitch = E('button', {
 			'class': 'ovd-switch', 'type': 'button', 'role': 'switch',
 			'aria-checked': 'false', 'aria-label': _('openNDS 运行状态开关'),
 			'click': handleSwitch
 		}, E('span', { 'class': 'knob', 'aria-hidden': 'true' }));
-		var restartLabel = E('span', {}, _('重启'));
 		var restartBtn = E('button', {
-			'class': 'cbi-button', 'type': 'button', 'click': handleRestart
-		}, [
-			E('img', {
-				'src': 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22currentColor%22 stroke-width=%222%22 stroke-linecap=%22round%22%3E%3Cpath d=%22M21 12a9 9 0 1 1-2.64-6.36%22/%3E%3Cpath d=%22M21 3v6h-6%22/%3E%3C/svg%3E',
-				'style': 'width:13px;height:13px', 'alt': ''
-			}),
-			restartLabel
-		]);
+			'class': 'ovd-mini-btn', 'type': 'button', 'click': handleRestart
+		}, _('重启'));
 
-		/* 开机自启服务按钮：与「此刻跑不跑」的开关完全独立，只看开机自启
-		 * 状态 bootEnabled（后端 /etc/init.d/opennds enabled 的返回码）。 */
-		var bootOnBtn = E('button', {
-			'class': 'ovd-boot-btn on', 'type': 'button', 'click': handleBootEnable
-		}, _('开启'));
-		var bootOffBtn = E('button', {
-			'class': 'ovd-boot-btn off', 'type': 'button', 'click': handleBootDisable
-		}, _('关闭'));
+		/* 服务 = 开机自启：只读后端 /etc/init.d/opennds enabled 的返回码，
+		 * 与「此刻跑不跑」「配置 enabled」都独立。 */
+		var bootSwitch = E('button', {
+			'class': 'ovd-switch', 'type': 'button', 'role': 'switch',
+			'aria-checked': 'false', 'aria-label': _('开机自启服务开关'),
+			'click': handleBootSwitch
+		}, E('span', { 'class': 'knob', 'aria-hidden': 'true' }));
+		var bootText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
 
 		function renderBoot() {
-			/* 已启用自启 →「开启」不可点、「关闭」可点；未启用反之。
-			 * 与当前运行/过渡态无关，所以这里只读 bootEnabled。
-			 * 不可点不用灰：保留绿/红色相，只把文字和边框调淡。 */
 			var on = !!state.bootEnabled;
-			bootOnBtn.disabled = on;
-			bootOffBtn.disabled = !on;
-			bootOnBtn.className = 'ovd-boot-btn on' + (on ? ' on-disabled' : '');
-			bootOffBtn.className = 'ovd-boot-btn off' + (!on ? ' off-disabled' : '');
+			bootSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
+			bootText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'off');
+			bootText.textContent = on ? _('已开启') : _('已关闭');
 		}
 
-		/* openNDS 11.2.0 auto_run（休眠开关）：与运行/自启都独立。
-		 * auto_run=1 →「已唤醒」绿色、不可点；「进入休眠」可点。
-		 * auto_run=0 →「已唤醒」可点；「进入休眠」琥珀色、不可点。
-		 * 与当前运行/过渡态无关，只读 state.autorun。 */
-		var autorunOnBtn = E('button', {
-			'class': 'ovd-autorun-btn on', 'type': 'button', 'click': handleAutorunWake
-		}, _('已唤醒'));
-		var autorunOffBtn = E('button', {
-			'class': 'ovd-autorun-btn off', 'type': 'button', 'click': handleAutorunSleep
-		}, _('进入休眠'));
+		/* 休眠 = openNDS 11.2.0 的 auto_run：开=已唤醒，关=已休眠。
+		 * 配置缺键按官方默认 0（休眠），不再当成已唤醒。 */
+		var autorunSwitch = E('button', {
+			'class': 'ovd-switch', 'type': 'button', 'role': 'switch',
+			'aria-checked': 'false', 'aria-label': _('休眠开关'),
+			'click': handleAutorunSwitch
+		}, E('span', { 'class': 'knob', 'aria-hidden': 'true' }));
+		var autorunText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
 
 		function renderAutorun() {
 			var on = !!state.autorun;
-			autorunOnBtn.disabled = on;
-			autorunOffBtn.disabled = !on;
-			autorunOnBtn.className = 'ovd-autorun-btn on' + (on ? ' on-disabled' : '');
-			autorunOffBtn.className = 'ovd-autorun-btn off' + (!on ? ' off-disabled' : '');
+			autorunSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
+			autorunText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'off');
+			autorunText.textContent = on ? _('已唤醒') : _('已休眠');
+		}
+
+		/* 启用 = 配置里的 option enabled，不是运行状态：
+		 * 只写这个键，不停进程、不改 auto_run、不碰开机自启。 */
+		var enabledSwitch = E('button', {
+			'class': 'ovd-switch', 'type': 'button', 'role': 'switch',
+			'aria-checked': 'false', 'aria-label': _('启用开关'),
+			'click': handleEnabledSwitch
+		}, E('span', { 'class': 'knob', 'aria-hidden': 'true' }));
+		var enabledText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
+
+		function renderEnabled() {
+			var on = !!state.enabled;
+			enabledSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
+			enabledText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'off');
+			enabledText.textContent = on ? _('启用') : _('未启用');
 		}
 
 		function renderStatus() {
@@ -424,7 +422,7 @@ return view.extend({
 				restartBtn.disabled = true;
 				var closing = (transition === 'off');
 				statusDot.className = 'ovd-dot busy';
-				statusText.className = 'ovd-status-text busy';
+				statusText.className = 'ovd-ctrl-text busy';
 				statusText.textContent = closing ? _('正在关闭') : _('正在启动');
 				runSwitch.className = 'ovd-switch busy' + (closing ? ' off' : '');
 				runSwitch.setAttribute('aria-checked', closing ? 'false' : 'true');
@@ -435,7 +433,7 @@ return view.extend({
 				/* 首屏数据还没回来：不要先亮一下「未运行」再变绿 */
 				restartBtn.disabled = true;
 				statusDot.className = 'ovd-dot';
-				statusText.className = 'ovd-status-text pending';
+				statusText.className = 'ovd-ctrl-text pending';
 				statusText.textContent = _('读取中…');
 				runSwitch.setAttribute('aria-checked', 'false');
 				return;
@@ -445,17 +443,17 @@ return view.extend({
 			 * 想启动请用左边的运行开关，两条链子不混。 */
 			restartBtn.disabled = !on;
 			statusDot.className = 'ovd-dot' + (on ? '' : ' off');
-			statusText.className = 'ovd-status-text' + (on ? '' : ' off');
+			statusText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'run-off');
 			statusText.textContent = on ? _('运行') : _('未运行');
 			runSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
 		}
 
 		function doToggle(want) {
-			/* 开关走 openwrt 原生暂存流程（和底部「保存并应用」同一节奏）：
-			 * 倒计时、「配置更改已应用。」、刷新页面全由原生管理。
-			 * opennds 的 enabled 与 zone_detect.main.pending_run 一起 commit，
-			 * 后台 worker 读到 pending_run 才真正执行启停 —— 普通页面的应用
-			 * 不带这个键，永远不会替用户改 openNDS 的运行状态。
+			/* 运行状态只管进程在不在跑：只暂存 zone_detect.main.pending_run，
+			 * 不写 opennds 的 enabled（那是「启用」开关的事，两者不再打架）。
+			 * 开关仍走 openwrt 原生暂存流程（和「保存并应用」同一节奏）：
+			 * 倒计时、「配置更改已应用。」、刷新页面全由原生管理；后台
+			 * worker 读到 pending_run 才真正执行启停。
 			 *
 			 * pending_run 带一次性令牌：worker 执行完会把这个键删掉，但
 			 * 若上一轮 worker 抢锁失败 / post_apply 被页面刷新掐断，键会
@@ -471,10 +469,7 @@ return view.extend({
 			 * 连点叠加暂存；失败/空操作要显式解锁，成功则随刷新自然结束。 */
 			locked = true;
 			var token = want + '-' + Date.now().toString(36);
-			CPD.stageUci('opennds', '@opennds[0]', 'enabled', 'opt', want)
-				.then(function () {
-					return CPD.stageUci('zone_detect', 'main', 'pending_run', 'opt', token);
-				})
+			CPD.stageUci('zone_detect', 'main', 'pending_run', 'opt', token)
 				.then(function () {
 					return CPD.applyStaged();
 				})
@@ -527,63 +522,93 @@ return view.extend({
 				});
 		}
 
-		/* 开机自启：二次确认 → 后端即时执行 enable/disable（改的是开机自启
-		 * 链接，不影响当前运行，也不走保存并应用）→ 用回读的真实状态更新按钮。 */
-		function setBoot(want, warnText, okText) {
+		/* 服务开关：二次确认 → 后端即时 enable/disable → 回读真实状态 */
+		function setBoot(want, warnText, okText, toastText) {
 			if (locked) return;
 			CPD.confirm(null, warnText, okText, want === '0', function () {
+				locked = true;
 				CPD.api('overview', 'boot_set', [want]).then(function (j) {
+					locked = false;
 					if (!j || !j.ok) {
 						CPD.notify((j && j.error) || _('操作失败'), 'err');
 						return;
 					}
 					state.bootEnabled = (j.boot === 1);
 					renderBoot();
-					CPD.toast(want === '1' ? _('已开启开机自启') : _('已关闭开机自启'));
+					CPD.toast(toastText);
 				}, function (e) {
+					locked = false;
 					CPD.notify(CPD.errText(e, _('操作失败')), 'err');
 				});
 			});
 		}
 
-		function handleBootEnable() {
-			setBoot('1', _('确认开启开机自启？'), _('确定开启'));
+		function handleBootSwitch() {
+			if (state.bootEnabled) {
+				setBoot('0', _('确认关闭开机自启？'), _('确定关闭'), _('已关闭开机自启'));
+			} else {
+				setBoot('1', _('确认开启开机自启？'), _('确定开启'), _('已开启开机自启'));
+			}
 		}
 
-		function handleBootDisable() {
-			setBoot('0', _('确认关闭开机自启？'), _('确定关闭'));
-		}
-
-		/* openNDS 11.2.0 auto_run（休眠开关）：走原生暂存 + 保存应用流程，
-		 * 与运行开关 doToggle 同节奏（倒计时 /「配置更改已应用。」/ 刷新页面）。
-		 * 11.2.0 源码 conf.c 每 2 秒重读 auto_run，commit 后无需重启即生效。
-		 * 与 pending_run 不同，auto_run 本身就是最终状态（commit 后落地、不被
-		 * worker 消费删除），且当前态的按钮已禁用、点不到同值，故直接写 0/1，
-		 * 不需要一次性令牌。 */
-		function setAutorun(want, warnText, okText) {
+		/* 休眠开关：只写 auto_run，立即生效（conf.c 每 2 秒重读），
+		 * 不重启进程、不动 enabled、不动开机自启。 */
+		function setAutorun(want, warnText, okText, toastText) {
 			if (locked) return;
 			CPD.confirm(null, warnText, okText, want === '0', function () {
 				locked = true;
-				CPD.stageUci('opennds', '@opennds[0]', 'auto_run', 'opt', want)
-					.then(function () {
-						return CPD.applyStaged();
-					})
-					.then(function (j) {
-						if (j && j.nochange) locked = false;
-					})
-					.catch(function (e) {
-						locked = false;
-						CPD.toast(CPD.errText(e, _('操作失败')), 'err');
-					});
+				CPD.api('overview', 'autorun_set', [want]).then(function (j) {
+					locked = false;
+					if (!j || !j.ok) {
+						CPD.notify((j && j.error) || _('操作失败'), 'err');
+						return;
+					}
+					state.autorun = (j.autorun === 1);
+					renderAutorun();
+					CPD.toast(toastText);
+				}, function (e) {
+					locked = false;
+					CPD.notify(CPD.errText(e, _('操作失败')), 'err');
+				});
 			});
 		}
 
-		function handleAutorunWake() {
-			setAutorun('1', _('确认唤醒 openNDS（脱离休眠、开始管理网络）？'), _('确定唤醒'));
+		function handleAutorunSwitch() {
+			if (state.autorun) {
+				setAutorun('0', _('确认让 openNDS 进入休眠（停止管理网络）？'), _('确定休眠'), _('已进入休眠'));
+			} else {
+				setAutorun('1', _('确认唤醒 openNDS（脱离休眠、开始管理网络）？'), _('确定唤醒'), _('已唤醒'));
+			}
 		}
 
-		function handleAutorunSleep() {
-			setAutorun('0', _('确认让 openNDS 进入休眠（停止管理网络）？'), _('确定休眠'));
+		/* 启用开关：只写配置里的 option enabled。进程此刻在不在跑由运行状态
+		 * 开关管；后端只落盘不重启，所以点这边不会顺手停掉正在跑的进程。 */
+		function setEnabled(want, warnText, okText, toastText) {
+			if (locked) return;
+			CPD.confirm(null, warnText, okText, want === '0', function () {
+				locked = true;
+				CPD.api('overview', 'enabled_set', [want]).then(function (j) {
+					locked = false;
+					if (!j || !j.ok) {
+						CPD.notify((j && j.error) || _('操作失败'), 'err');
+						return;
+					}
+					state.enabled = (j.enabled === 1);
+					renderEnabled();
+					CPD.toast(toastText);
+				}, function (e) {
+					locked = false;
+					CPD.notify(CPD.errText(e, _('操作失败')), 'err');
+				});
+			});
+		}
+
+		function handleEnabledSwitch() {
+			if (state.enabled) {
+				setEnabled('0', _('确认把配置里的 enabled 设为 0？'), _('确定停用'), _('已写入未启用'));
+			} else {
+				setEnabled('1', _('确认把配置里的 enabled 设为 1？'), _('确定启用'), _('已写入启用'));
+			}
 		}
 
 		/* ---------- 分类与筛选（黑名单 > 可信任 > 免认证 > 已认证 > 未认证） ----------
@@ -1616,24 +1641,50 @@ return view.extend({
 		body.appendChild(confBar);
 
 		body.appendChild(E('div', { 'class': 'ovd-sec' }, [
-			E('div', { 'class': 'ovd-status-wrap' }, [
-				E('div', { 'class': 'ovd-status-main' }, [
-					E('h3', {}, _('状态')),
-					E('div', { 'class': 'ovd-status-line' }, [
-						statusDot, statusText, runSwitch, restartBtn
-					])
+			E('div', { 'class': 'ovd-ctrl-grid' }, [
+				/* 1 运行状态：看进程在不在跑，不写 enabled */
+				E('div', { 'class': 'ovd-ctrl' }, [
+					E('div', { 'class': 'ovd-ctrl-name' }, _('运行状态')),
+					E('div', { 'class': 'ovd-ctrl-head' }, [
+						E('div', { 'class': 'ovd-ctrl-title' }, [statusDot, statusText]),
+						runSwitch
+					]),
+					E('div', { 'class': 'ovd-ctrl-op' }, restartBtn),
+					E('div', { 'class': 'ovd-ctrl-hint' },
+						_('看进程当前是否在跑，不写 enabled'))
 				]),
-				E('div', { 'class': 'ovd-status-boot' }, [
-					E('h3', {}, _('服务')),
-					E('div', { 'class': 'ovd-boot-btns' }, [
-						bootOnBtn, bootOffBtn
-					])
+				/* 2 休眠：auto_run */
+				E('div', { 'class': 'ovd-ctrl' }, [
+					E('div', { 'class': 'ovd-ctrl-name' }, _('休眠')),
+					E('div', { 'class': 'ovd-ctrl-head' }, [
+						E('div', { 'class': 'ovd-ctrl-title' }, autorunText),
+						autorunSwitch
+					]),
+					E('div', { 'class': 'ovd-ctrl-op' }),
+					E('div', { 'class': 'ovd-ctrl-hint' },
+						_('开 = 已唤醒，关 = 已休眠；写 auto_run'))
 				]),
-				E('div', { 'class': 'ovd-status-autorun' }, [
-					E('h3', {}, _('休眠')),
-					E('div', { 'class': 'ovd-autorun-btns' }, [
-						autorunOnBtn, autorunOffBtn
-					])
+				/* 3 启用：option enabled */
+				E('div', { 'class': 'ovd-ctrl' }, [
+					E('div', { 'class': 'ovd-ctrl-name' }, _('启用')),
+					E('div', { 'class': 'ovd-ctrl-head' }, [
+						E('div', { 'class': 'ovd-ctrl-title' }, enabledText),
+						enabledSwitch
+					]),
+					E('div', { 'class': 'ovd-ctrl-op' }),
+					E('div', { 'class': 'ovd-ctrl-hint' },
+						_('开 = 启用，关 = 未启用；写 option enabled'))
+				]),
+				/* 4 服务：开机自启 */
+				E('div', { 'class': 'ovd-ctrl' }, [
+					E('div', { 'class': 'ovd-ctrl-name' }, _('服务')),
+					E('div', { 'class': 'ovd-ctrl-head' }, [
+						E('div', { 'class': 'ovd-ctrl-title' }, bootText),
+						bootSwitch
+					]),
+					E('div', { 'class': 'ovd-ctrl-op' }),
+					E('div', { 'class': 'ovd-ctrl-hint' },
+						_('开 = 已开启，关 = 已关闭；开机自启'))
 				])
 			])
 		]));

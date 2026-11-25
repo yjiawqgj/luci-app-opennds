@@ -1,6 +1,6 @@
 #!/bin/sh
 # t19：openNDS 11.2.0 适配专项
-#   A. auto_run（休眠开关）状态读取：缺键回退1、显式0/1
+#   A. auto_run（休眠开关）状态读取：缺键回退0（官方 11.2.0 默认）、显式0/1
 #   B. autorun_set 写 auto_run 并回读
 #   C. dashboard 带 autorun 字段，且与 running/boot 独立
 #   D. 具名段自愈：ensure_opennds_conf / sys_ensure_sec 建成 config opennds 'setup'
@@ -15,10 +15,10 @@ mkdir -p "$S/bin"
 uci_set() { env MOCK_UCI_ROOT="$MOCK_UCI_ROOT" MOCK_UCI_DELTA="$MOCK_UCI_DELTA" \
 	PATH="$HERE/mock/bin:$PATH" uci set "$1"="$2"; }
 
-echo "== A. auto_run 状态读取（nds_autorun 缺键回退1）=="
-# 初始配置只有 config opennds / enabled 0，无 auto_run → 缺键按1（老版本兼容）
+echo "== A. auto_run 状态读取（nds_autorun 缺键回退0）=="
+# 初始配置只有 config opennds / enabled 0，无 auto_run → 按官方默认休眠
 out=$(call overview autorun_state)
-ck "缺键→autorun:1（老版本不误判休眠）" '"ok":1,"autorun":1' "$out"
+ck "缺键→autorun:0（官方默认，页面显示已休眠）" '"ok":1,"autorun":0' "$out"
 
 uci_set opennds.@opennds[0].auto_run 0
 out=$(call overview autorun_state)

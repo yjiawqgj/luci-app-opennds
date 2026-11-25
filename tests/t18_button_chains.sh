@@ -98,7 +98,7 @@ assert_has "$V/overview.js" "'restart-' + Date.now().toString(36)" '重启写一
 assert_has "$V/overview.js" 'authorized: false' '本地覆盖同步访问权限位'
 assert_has "$V/overview.js" 'state.clients.map(decorated)' '列表筛选与显示同口径'
 assert_has "$V/overview.js" 'var n = previewCounts();' '卡片数字本地预览'
-assert_has "$V/overview.js" '.ovd-boot-btn.on.on-disabled' '禁用按钮保留色相'
+assert_has "$V/overview.js" 'ovd-ctrl-grid' '概览控制区改为四开关卡片'
 assert_has "$V/overview.js" "sessionStorage.getItem('cpd_deauth_failed')" '跨刷新显示踢下线失败'
 assert_has "$REPO/luci-app-opennds-manager/htdocs/luci-static/resources/opennds_manager/common.js" 'stageListSync: function' '公共差量写函数存在'
 for p in exempt blacklist session; do
