@@ -78,6 +78,19 @@ case "$restart_body" in
 	*) echo '  OK   restart_exec 不写配置' ;;
 esac
 
+echo "== C2. 运行开关直连 start/stop，不再走保存并应用 =="
+assert_fixed "$V/overview.js" "CPD.api('overview', 'run_set', [want])" '运行开关调 run_set'
+assert_fixed "$V/overview.js" "CPD.api('overview', 'run_state')" '前端轮询 run_state'
+toggle_body=$(sed -n '/function doToggle/,/^		}/p' "$V/overview.js")
+case "$toggle_body" in
+	*applyStaged*) echo '  FAIL doToggle 仍在走保存并应用'; fail=1 ;;
+	*) echo '  OK   doToggle 不再走保存并应用' ;;
+esac
+case "$toggle_body" in
+	*"CPD.stageUci('zone_detect', 'main', 'pending_run'"*) echo '  FAIL doToggle 仍在写 pending_run'; fail=1 ;;
+	*) echo '  OK   doToggle 不再写 pending_run' ;;
+esac
+
 echo "== D. 四张卡片的顺序与联动 =="
 labels=$(grep "ovd-ctrl-name" "$V/overview.js" |
 	sed -n "s/.*_('\([^']*\)').*/\1/p" | tr '\n' ' ')

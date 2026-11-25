@@ -91,9 +91,10 @@ echo '== C6 前端全链路静态断言 =='
 V="$REPO/luci-app-opennds-manager/htdocs/luci-static/resources/view/opennds_manager"
 assert_has "$REPO/luci-app-opennds-manager/htdocs/luci-static/resources/opennds_manager/common.js" 'deauthToken: function (mac)' '公共令牌函数存在'
 n=$(grep -c 'arr.concat(\[CPD.deauthToken(lm)\])' "$V/overview.js" 2>/dev/null)
-[ "$n" = '3' ] && echo '  OK   解除认证/取消信任/移除免认证三处都写令牌' || { echo "  FAIL 令牌写入处数=$n"; fail=1; }
-assert_has "$V/exempt.js" 'return stageDeauthFor(\[mac\])' '特权页移除身份时同时写踢下线待办'
-assert_has "$V/exempt.js" 'stageDeauthFor(removed)' '特权页整表编辑移除多客户端也写待办'
+[ "$n" = '3' ] && echo '  OK   解除认证/取消信任/解除自动认证三处都写令牌' || { echo "  FAIL 令牌写入处数=$n"; fail=1; }
+assert_has "$V/exempt.js" 'return stageDeauthFor(\[mac\])' '可信任页移除身份时同时写踢下线待办'
+assert_has "$V/exempt.js" 'stageDeauthFor(removed)' '可信任页整表编辑移除多客户端也写待办'
+assert_has "$V/autoauth.js" 'stageDeauthFor(removed)' '自动认证页整表编辑移除多客户端也写待办'
 assert_has "$V/overview.js" "'restart-' + Date.now().toString(36)" '重启写一次性令牌'
 assert_has "$V/overview.js" 'authorized: false' '本地覆盖同步访问权限位'
 assert_has "$V/overview.js" 'state.clients.map(decorated)' '列表筛选与显示同口径'
@@ -101,7 +102,7 @@ assert_has "$V/overview.js" 'var n = previewCounts();' '卡片数字本地预览
 assert_has "$V/overview.js" 'ovd-ctrl-grid' '概览控制区改为四开关卡片'
 assert_has "$V/overview.js" "sessionStorage.getItem('cpd_deauth_failed')" '跨刷新显示踢下线失败'
 assert_has "$REPO/luci-app-opennds-manager/htdocs/luci-static/resources/opennds_manager/common.js" 'stageListSync: function' '公共差量写函数存在'
-for p in exempt blacklist session; do
+for p in exempt blacklist autoauth; do
 	assert_has "$V/$p.js" 'stageListSync(' "$p 页改用差量写，不冲概览暂存"
 done
 

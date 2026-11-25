@@ -314,6 +314,11 @@ ndsctl_run() {
 # 等不到进程退出（极少见）才硬杀：此时实例已被 procd delete，不会触发 respawn。
 NDS_INIT="${NDS_INIT:-/etc/init.d/opennds}"
 LIBOPENNDS="${LIBOPENNDS:-/usr/lib/opennds/libopennds.sh}"
+# 概览页运行状态开关的直连通道：不再走 uci 暂存 + 保存并应用，
+# 只执行 start/stop 并把进度写进这个状态文件，前端 1 秒读一次。
+CPD_RUN_STATE="${CPD_RUN_STATE:-/tmp/opennds_manager_run.state}"
+CPD_RUN_LOCK="${CPD_RUN_LOCK:-/var/lock/opennds-manager-run.lock}"
+SELF_PATH="${SELF_PATH:-${0:-/usr/lib/opennds/opennds-manager-api.sh}}"
 service_restart() {
 	SR_RESTARTED=0
 	nds_running || return 0
@@ -1907,11 +1912,59 @@ ov_dashboard() {
 }
 
 ov_run_state() {
-	local running enabled
+	local running enabled busy=0 done=1 target='' ts now line
 	enabled=$(nds_enabled)
 	running=0
 	nds_running && running=1
-	printf '{"ok":1,"running":%s,"enabled":%s}\n' "$running" "$enabled"
+	if [ -s "$CPD_RUN_STATE" ]; then
+		line=$(cat "$CPD_RUN_STATE" 2>/dev/null)
+		ts=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9][0-9]*\).*/\1/p')
+		case "$ts" in '' | *[!0-9]*) ts=0 ;; esac
+		now=$(date +%s)
+		# 只认 5 分钟内的状态文件；更早的当残留，按当前进程状态回答
+		if [ "$ts" -gt 0 ] 2>/dev/null && [ $((now - ts)) -le 300 ]; then
+			case "$line" in
+				*'"done":0'*) busy=1; done=0 ;;
+				*'"done":1'*) busy=0; done=1 ;;
+			esac
+			target=$(printf '%s' "$line" | sed -n 's/.*"target":\([01]\).*/\1/p')
+		fi
+	fi
+	printf '{"ok":1,"running":%s,"enabled":%s,"busy":%s,"done":%s,"target":"%s"}\n' \
+		"$running" "$enabled" "$busy" "$done" "$target"
+}
+
+# 运行状态开关：直接执行 start/stop，不再经过「保存并应用」。
+# 先写状态文件（busy=1）再派后台 worker，RPC 立即返回；
+# 前端每秒读 run_state，worker 收尾后拿到 done=1 和真实进程状态。
+ov_run_set() {
+	local want="$1" ts now=0 line oldts oldt cur
+	case "$want" in
+		0 | 1) ;;
+		*) out_err '运行状态参数只能是 1 或 0' ;;
+	esac
+	# 上一轮还在跑：直接回报现有目标，别把它的状态覆盖成新目标。
+	if [ -s "$CPD_RUN_STATE" ]; then
+		line=$(cat "$CPD_RUN_STATE" 2>/dev/null)
+		case "$line" in
+			*'"done":0'*)
+				oldts=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9][0-9]*\).*/\1/p')
+				case "$oldts" in '' | *[!0-9]*) oldts=0 ;; esac
+				cur=$(date +%s)
+				if [ "$oldts" -gt 0 ] 2>/dev/null && [ $((cur - oldts)) -le 300 ]; then
+					oldt=$(printf '%s' "$line" | sed -n 's/.*"target":\([01]\).*/\1/p')
+					printf '{"ok":1,"busy":1,"target":"%s"}\n' "$oldt"
+					return 0
+				fi
+				;;
+		esac
+	fi
+	nds_running && now=1
+	ts=$(date +%s)
+	printf '{"ok":1,"busy":1,"done":0,"target":%s,"running":%s,"phase":"starting","ts":%s}\n' \
+		"$want" "$now" "$ts" >"$CPD_RUN_STATE" 2>/dev/null
+	( sh "$SELF_PATH" run_worker "$want" </dev/null >/dev/null 2>&1 & ) 2>/dev/null
+	printf '{"ok":1,"busy":1,"target":%s}\n' "$want"
 }
 
 # openNDS 开机自启状态：与上面「此刻跑不跑 / 配置 enabled」是两套独立机制。
@@ -5200,6 +5253,53 @@ fup_enabled_val() {
 	printf '0'
 }
 
+# 读「磁盘上已提交」的 option，刻意绕开 /tmp/.uci 暂存。
+# 设置页的流量配额解锁必须用它：用户在高级 tab 点开公平策略只是暂存，
+# 没点「保存并应用」之前基础 tab 的配额字段必须继续锁着。
+# 测试桩：落盘树在 $MOCK_UCI_ROOT/<conf>/<sec>/<opt>；真机：解析 /etc/config/<conf>。
+committed_opt() { # $1=配置文件名 $2=节名(类型或具名) $3=option $4=默认值
+	local c="$1" s="$2" o="$3" d="$4" v='' f
+	if [ -n "${MOCK_UCI_ROOT:-}" ] && [ -d "$MOCK_UCI_ROOT/$c" ]; then
+		v=$(cat "$MOCK_UCI_ROOT/$c/$s/$o" 2>/dev/null)
+	else
+		case "$c" in
+			opennds) f="${OPENNDS_CONF:-/etc/config/opennds}" ;;
+			zone_detect) f="${ZONE_DETECT_CONFIG:-/etc/config/zone_detect}" ;;
+			*) f="/etc/config/$c" ;;
+		esac
+		v=$(awk -v sec="$s" -v opt="$o" '
+			/^[[:space:]]*config[[:space:]]/ { insec = (index($0, sec) > 0); next }
+			insec && /^[[:space:]]*option[[:space:]]/ {
+				line = $0
+				sub(/^[[:space:]]+/, "", line)
+				n = split(line, a, /[[:space:]]+/)
+				if (a[1] == "option" && a[2] == opt && n >= 3) {
+					v = a[3]; gsub(/[\047\"]/, "", v); print v; exit
+				}
+			}
+		' "$f" 2>/dev/null)
+	fi
+	[ -n "$v" ] && printf '%s' "$v" || printf '%s' "$d"
+}
+
+# 已落盘的公平使用策略状态；判定优先级与 fup_enabled_val 完全一致，只是数据源换成磁盘。
+fup_committed_val() {
+	local u d v
+	u=$(committed_opt opennds opennds fup_upload_throttle_rate 0)
+	d=$(committed_opt opennds opennds fup_download_throttle_rate 0)
+	int_valid "$u" || u=0
+	int_valid "$d" || d=0
+	if [ "$u" -gt 0 ] 2>/dev/null || [ "$d" -gt 0 ] 2>/dev/null; then
+		printf '1'
+		return 0
+	fi
+	v=$(committed_opt zone_detect main fup_enabled '')
+	case "$v" in
+		1) printf '1' ;;
+		*) printf '0' ;;
+	esac
+}
+
 st_fup_split() { # $1=原始值 → stdout "动作|数值"（0/未设/空/脏值 → reject|0）
 	local v
 	case "$1" in
@@ -5332,11 +5432,25 @@ EOF2
 	done <<EOF2
 $ordered
 EOF2
-	local fup_en
+	local fup_en fup_com
 	fup_en=$(fup_enabled_val)
-	printf '{"ok":1,"enabled":%s,"portals":{%s},"fupEnabled":%s,"fup":{"upAction":"%s","upRate":%s,"downAction":"%s","downRate":%s},"iface":"%s","device":"%s","ifaces":[%s]}\n' \
-		"$(nds_enabled)" "$pj" "$fup_en" "$upa" "$upr" "$dwa" "$dwr" \
-		"$(json_escape "$ifc")" "$(json_escape "$dev")" "$ij"
+	# 供基础页流量配额解锁判定：只读磁盘，暂存里的开关不算数
+	fup_com=$(fup_committed_val)
+	# 客户端全局配置（新设置页基础 tab）：真实键名来自 11.2.0 conf.c
+	local clj='' clsep='' ck cv
+	for ck in sessiontimeout preauthidletimeout authidletimeout reauth_interval \
+		maxclients uploadrate downloadrate uploadquota downloadquota checkinterval; do
+		cv=$(uci_val "opennds.@opennds[0].$ck" '')
+		clj="$clj$clsep\"$ck\":\"$(json_escape "$cv")\""
+		clsep=','
+	done
+	# 流量卸载：11.2.0 官方键 flow_offloading_enable，默认 0
+	local flow_en
+	flow_en=$(uci_val 'opennds.@opennds[0].flow_offloading_enable' '0')
+	case "$flow_en" in 1) ;; *) flow_en=0 ;; esac
+	printf '{"ok":1,"enabled":%s,"portals":{%s},"fupEnabled":%s,"fupCommitted":%s,"fup":{"upAction":"%s","upRate":%s,"downAction":"%s","downRate":%s},"client":{%s},"flowEnabled":%s,"iface":"%s","device":"%s","ifaces":[%s]}\n' \
+		"$(nds_enabled)" "$pj" "$fup_en" "$fup_com" "$upa" "$upr" "$dwa" "$dwr" \
+		"$clj" "$flow_en" "$(json_escape "$ifc")" "$(json_escape "$dev")" "$ij"
 }
 
 st_upload_mkdir() { # $1=tab $2=id $3=文件夹原名 [$4=相对子路径（建嵌套目录用）]
@@ -5907,6 +6021,38 @@ toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 work
 	return 0
 }
 
+run_state_write() { # $1=目标 0|1 $2=done 0|1 $3=running 0|1 $4=phase
+	printf '{"ok":1,"busy":%s,"done":%s,"target":%s,"running":%s,"phase":"%s","ts":%s}\n' \
+		"$([ "$2" = '1' ] && printf 0 || printf 1)" "$2" "$1" "$3" "$4" \
+		"$(date +%s)" >"$CPD_RUN_STATE" 2>/dev/null
+}
+
+# 概览页运行状态开关的后台执行体：只做启停，不碰 uci，不部署区域。
+# 停止用短等待（2 轮 × 2 秒稳定确认），典型 2~4 秒收尾；
+# 真停不下来才强杀，不会像原来那样按 45 秒一轮慢慢等。
+run_worker() {
+	local want="$1" was=0 now=0
+	case "$want" in
+		0 | 1) ;;
+		*) return 1 ;;
+	esac
+	if command -v flock >/dev/null 2>&1; then
+		mkdir -p "$(dirname "$CPD_RUN_LOCK")" 2>/dev/null
+		eval "exec 8>\"\$CPD_RUN_LOCK\"" 2>/dev/null || return 1
+		flock -n 8 2>/dev/null || return 1
+	fi
+	nds_running && was=1
+	run_state_write "$want" 0 "$was" 'working'
+	if [ "$want" = '1' ]; then
+		toggle_exec 1
+	else
+		CPD_STOP_ROUNDS=2 CPD_STOP_STABLE=2 CPD_STOP_WAIT=12 stop_fully
+	fi
+	nds_running && now=1
+	run_state_write "$want" 1 "$now" 'done'
+	return 0
+}
+
 apply_worker() {
 	if ! worker_lock; then
 		# 已有 worker 在跑：状态文件归它管。这里绝不能写 busy/done，
@@ -6156,6 +6302,7 @@ case "$PAGE" in
 			dashboard) ov_dashboard ;;
 			selfcheck) ov_selfcheck ;;
 			run_state) ov_run_state ;;
+			run_set) ov_run_set "$1" ;;
 			boot_state) ov_boot_state ;;
 			boot_set) ov_boot_set "$1" ;;
 			autorun_state) ov_autorun_state ;;
@@ -6293,6 +6440,9 @@ case "$PAGE" in
 		;;
 	apply_worker)
 		apply_worker
+		;;
+	run_worker)
+		run_worker "$2"
 		;;
 	'')
 		out_err '缺少页面名'

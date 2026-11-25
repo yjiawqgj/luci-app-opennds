@@ -45,7 +45,6 @@ var CSS = '\
 .ovd-ctrl-op{height:24px;margin-top:10px;display:flex;align-items:center}\
 .ovd-mini-btn{font-family:inherit;font-size:11px;color:#222a31;background:#fff;border:1px solid #d7dde3;border-radius:4px;height:24px;padding:0 8px;cursor:pointer}\
 .ovd-mini-btn:disabled{opacity:.45;cursor:default;background:#f7f9fa}\
-.ovd-ctrl-hint{font-size:11.5px;color:#9aa6b2;margin-top:12px;line-height:1.6}\
 .ovd-stat-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:10px;margin-top:14px}\
 .ovd-stat{font-family:inherit;text-align:left;background:#fff;border:1px solid #d7dde3;border-radius:8px;padding:14px 15px;cursor:pointer;min-width:0;color:#222a31}\
 .ovd-stat:hover{border-color:#b9c6d1;background:#fafbfc}\
@@ -155,7 +154,7 @@ var TITLES = {
 	wired: _('有线客户端'),
 	auth: _('已认证客户端'),
 	unauth: _('未认证客户端'),
-	preauth: _('免认证客户端'),
+	preauth: _('自动认证'),
 	trusted: _('可信任客户端'),
 	blacklist: _('黑名单')
 };
@@ -178,7 +177,11 @@ return view.extend({
 		CPD.style();
 
 		var state = {
-			running: false, enabled: false, bootEnabled: false, autorun: false, engaged: 1, busy: 0, scope: 'default',
+			running: false,
+			enabled: ctlCached ? ctlCached.enabled : false,
+			bootEnabled: ctlCached ? ctlCached.boot : false,
+			autorun: ctlCached ? ctlCached.autorun : false,
+			engaged: 1, busy: 0, scope: 'default',
 			counts: {}, managed: { iface: '', ip: '' }, aps: [],
 			clients: [],
 			/* 本地身份覆盖（key=小写 MAC）：行内操作只写 uci 暂存，后端
@@ -193,7 +196,7 @@ return view.extend({
 			confErr: '',
 			sortKey: null, sortDir: 1
 		};
-		var locked = false, pollTimer = null, modalOpen = 0;
+		var locked = false, pollTimer = null, runPollTimer = null, modalOpen = 0;
 		var savedBodyOverflow = '';
 		var editRow = null, editIsPreEntry = false;
 		/* 弹窗打开时锁住页面滚动：滚轮只作用于遮罩内的弹窗，
@@ -228,13 +231,56 @@ return view.extend({
 				return p[0];
 			} catch (e) { return null; }
 		}
+		var TRANS_TTL = 45000; // 黄灯最多挂 45 秒；后端停/起慢也不能一直挂
+		var transitionTs = 0;
 		function transitionSet(want) {
-			try { sessionStorage.setItem(TRANS_KEY, want + '|' + Date.now()); } catch (e) {}
+			transitionTs = Date.now();
+			try { sessionStorage.setItem(TRANS_KEY, want + '|' + transitionTs); } catch (e) {}
 		}
 		function transitionClear() {
+			transition = null;
+			transitionTs = 0;
 			try { sessionStorage.removeItem(TRANS_KEY); } catch (e) {}
 		}
 		var transition = transitionRead(); // 'off' | 'on' | null
+		/* 刷新回来时把时间戳也读出来，页面存活期间同样能判超时 */
+		try {
+			if (transition) {
+				var rawTs = Number((sessionStorage.getItem(TRANS_KEY) || '').split('|')[1]);
+				if (rawTs) transitionTs = rawTs;
+			}
+		} catch (e) {}
+		/* 超时兜底：超过 TRANS_TTL 仍未确认到位，直接撤黄灯按真实状态显示。
+		 * 运行开关已改成直连 start/stop，正常几秒内收尾；这里只防异常卡死。 */
+		function transitionExpired() {
+			return !!(transition && transitionTs && (Date.now() - transitionTs > TRANS_TTL));
+		}
+
+		/* 三张「配置类」卡片（休眠/启用/服务）的状态缓存。
+		 * 重启按钮和页面刷新都会重绘整页；刷新后首屏若按默认 false 渲染，
+		 * 那三张卡会先闪成「已休眠/未启用/已关闭」，约两秒后数据回来才恢复。
+		 * 用户口径是「点哪个开关，其余三个都要保持自己的状态」，所以这里
+		 * 把三卡状态写进 sessionStorage，刷新后立即用缓存值画，等真实数据
+		 * 回来再校正；首次打开没有缓存时才显示「读取中…」。 */
+		var CTL_CACHE_KEY = 'cpd.ctlCache';
+		function ctlCacheLoad() {
+			try {
+				var v = sessionStorage.getItem(CTL_CACHE_KEY);
+				if (!v) return null;
+				var p = v.split('|');
+				if (p.length < 3) return null;
+				return { enabled: p[0] === '1', autorun: p[1] === '1', boot: p[2] === '1' };
+			} catch (e) { return null; }
+		}
+		function ctlCacheSave() {
+			try {
+				sessionStorage.setItem(CTL_CACHE_KEY,
+					(state.enabled ? '1' : '0') + '|' +
+					(state.autorun ? '1' : '0') + '|' +
+					(state.bootEnabled ? '1' : '0'));
+			} catch (e) {}
+		}
+		var ctlCached = ctlCacheLoad();
 
 		var body = E('div', { 'class': 'ovd-page' });
 
@@ -290,6 +336,7 @@ return view.extend({
 			state.engaged = st.engaged;
 			state.busy = st.busy;
 			state.fupEnabled = (st.fupEnabled === 1 || st.fupEnabled === true);
+			ctlCacheSave();
 			state.scope = st.session_scope || 'default';
 			state.counts = st.counts || {};
 			state.defaultSession = st.defaultSession || 1440;
@@ -375,6 +422,13 @@ return view.extend({
 		var bootText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
 
 		function renderBoot() {
+			/* 首屏且无缓存：别把默认 false 画成「已关闭」再跳变 */
+			if (!loaded && !ctlCached) {
+				bootSwitch.setAttribute('aria-checked', 'false');
+				bootText.className = 'ovd-ctrl-text pending';
+				bootText.textContent = _('读取中…');
+				return;
+			}
 			var on = !!state.bootEnabled;
 			bootSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
 			bootText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'off');
@@ -391,6 +445,12 @@ return view.extend({
 		var autorunText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
 
 		function renderAutorun() {
+			if (!loaded && !ctlCached) {
+				autorunSwitch.setAttribute('aria-checked', 'false');
+				autorunText.className = 'ovd-ctrl-text pending';
+				autorunText.textContent = _('读取中…');
+				return;
+			}
 			var on = !!state.autorun;
 			autorunSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
 			autorunText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'off');
@@ -407,6 +467,12 @@ return view.extend({
 		var enabledText = E('span', { 'class': 'ovd-ctrl-text', 'role': 'status' }, '');
 
 		function renderEnabled() {
+			if (!loaded && !ctlCached) {
+				enabledSwitch.setAttribute('aria-checked', 'false');
+				enabledText.className = 'ovd-ctrl-text pending';
+				enabledText.textContent = _('读取中…');
+				return;
+			}
 			var on = !!state.enabled;
 			enabledSwitch.setAttribute('aria-checked', on ? 'true' : 'false');
 			enabledText.className = 'ovd-ctrl-text ' + (on ? 'on' : 'off');
@@ -414,6 +480,9 @@ return view.extend({
 		}
 
 		function renderStatus() {
+			/* 存活期间的超时兜底：后端慢/轮询撞上 LuCI 的 99 秒 XHR 超时而迟迟
+			 * 没回来确认时，不能一直挂黄灯——按当前真实状态恢复常规显示。 */
+			if (transitionExpired()) transitionClear();
 			/* 过渡态优先：已点开关、后端还没确认到位 → 整块黄灯，标题写
 			 * 「正在关闭 / 正在启动」，旋钮拨向目标位置。等 settleTransition
 			 * 确认到位后清除，才回到下面的常规配色。
@@ -449,40 +518,69 @@ return view.extend({
 		}
 
 		function doToggle(want) {
-			/* 运行状态只管进程在不在跑：只暂存 zone_detect.main.pending_run，
-			 * 不写 opennds 的 enabled（那是「启用」开关的事，两者不再打架）。
-			 * 开关仍走 openwrt 原生暂存流程（和「保存并应用」同一节奏）：
-			 * 倒计时、「配置更改已应用。」、刷新页面全由原生管理；后台
-			 * worker 读到 pending_run 才真正执行启停。
-			 *
-			 * pending_run 带一次性令牌：worker 执行完会把这个键删掉，但
-			 * 若上一轮 worker 抢锁失败 / post_apply 被页面刷新掐断，键会
-			 * 留在配置里。此时若再写同样的 0/1，uci 增量里两条都没变化，
-			 * 点开关只会得到「没有需要应用的更改」，开关永远切不动。
-			 * 令牌保证每次点击都产生真实增量，worker 只看首位 0/1。 */
-			/* 先亮黄灯：原生 apply 会刷新页面，过渡态写进 sessionStorage，
-			 * 刷新后由 transitionRead() 读回继续显示，直到轮询确认到位。 */
+			/* 运行状态只管进程在不在跑，不写 opennds 的 enabled（那是
+			 * 「启用」开关的事）。这里直接调后端执行 start/stop，不再
+			 * 暂存 pending_run、不再走保存并应用——那套流程会弹原生遮罩、
+			 * 刷新整页，慢的时候还会撞 99 秒 XHR 超时。 */
+			/* 先亮黄灯：过渡态写进 sessionStorage，刷新回来还能接着显示。 */
 			transition = (want === '0') ? 'off' : 'on';
 			transitionSet(transition);
 			renderStatus();
-			/* 原生应用会刷新页面：从这一刻起锁住其它按钮，避免倒计时窗口里
-			 * 连点叠加暂存；失败/空操作要显式解锁，成功则随刷新自然结束。 */
+			/* 不再走保存并应用：直接调后端执行 start/stop，RPC 立即返回，
+			 * 进度由 run_state 轮询。这样没有原生遮罩、没有 99 秒超时，
+			 * 也不会刷新页面把其余三张卡重画一遍。 */
 			locked = true;
-			var token = want + '-' + Date.now().toString(36);
-			CPD.stageUci('zone_detect', 'main', 'pending_run', 'opt', token)
-				.then(function () {
-					return CPD.applyStaged();
-				})
-				.then(function (j) {
-					if (j && j.nochange) locked = false;
-				})
-				.catch(function (e) {
-					locked = false;
-					transition = null;
-					transitionClear();
-					renderStatus();
-					CPD.toast(CPD.errText(e, _('操作失败')), 'err');
-				});
+			CPD.api('overview', 'run_set', [want]).then(function (j) {
+				if (!j || !j.ok) {
+					finishRun(want, state.running);
+					CPD.notify((j && j.error) || _('操作失败'), 'err');
+					return;
+				}
+				pollRunState(want, Date.now());
+			}, function (e) {
+				finishRun(want, state.running);
+				CPD.toast(CPD.errText(e, _('操作失败')), 'err');
+			});
+		}
+
+		/* 运行开关的收尾：撤黄灯、把真实进程状态写回、解锁其它开关。
+		 * 全程只重画运行状态这一张卡，另外三张不受影响。 */
+		function finishRun(want, running) {
+			if (runPollTimer) {
+				window.clearTimeout(runPollTimer);
+				runPollTimer = null;
+			}
+			transitionClear();
+			state.running = !!running;
+			loaded = true;
+			locked = false;
+			renderStatus();
+			if (state.running !== (want === '1'))
+				CPD.notify(want === '1' ? _('openNDS 未能启动') : _('openNDS 未能完全停止'), 'err');
+		}
+
+		/* 每秒问一次后端：worker 还在做就继续等，done=1 就按真实进程状态收尾。
+		 * 最多等 60 秒；超过就按当下读到的状态显示，避免永远转圈。 */
+		function pollRunState(want, startedAt) {
+			CPD.api('overview', 'run_state').then(function (j) {
+				if (!j || !j.ok)
+					return; /* 单次读失败不致命，下一拍再试 */
+				if (j.busy === 1 && Date.now() - startedAt < 60000) {
+					runPollTimer = window.setTimeout(function () {
+						pollRunState(want, startedAt);
+					}, 800);
+					return;
+				}
+				finishRun(want, j.running === 1);
+			}, function () {
+				if (Date.now() - startedAt < 60000) {
+					runPollTimer = window.setTimeout(function () {
+						pollRunState(want, startedAt);
+					}, 1200);
+				} else {
+					finishRun(want, state.running);
+				}
+			});
 		}
 
 		function handleSwitch() {
@@ -534,6 +632,7 @@ return view.extend({
 						return;
 					}
 					state.bootEnabled = (j.boot === 1);
+					ctlCacheSave();
 					renderBoot();
 					CPD.toast(toastText);
 				}, function (e) {
@@ -564,6 +663,7 @@ return view.extend({
 						return;
 					}
 					state.autorun = (j.autorun === 1);
+					ctlCacheSave();
 					renderAutorun();
 					CPD.toast(toastText);
 				}, function (e) {
@@ -594,6 +694,7 @@ return view.extend({
 						return;
 					}
 					state.enabled = (j.enabled === 1);
+					ctlCacheSave();
 					renderEnabled();
 					CPD.toast(toastText);
 				}, function (e) {
@@ -794,7 +895,7 @@ return view.extend({
 				{ k: 'online', label: _('在线客户端'), num: n.online },
 				{ k: 'auth', label: _('已认证客户端'), num: n.authenticated },
 				{ k: 'wired', label: _('有线'), num: n.wired },
-				{ k: 'preauth', label: _('免认证客户端'), num: n.preauth },
+				{ k: 'preauth', label: _('自动认证'), num: n.preauth },
 				{ k: 'trusted', label: _('可信任客户端'), num: n.trusted },
 				{ k: 'unauth', label: _('未认证客户端'), num: n.unauthenticated },
 				{ k: 'blacklist', label: _('黑名单'), num: n.blacklist }
@@ -963,7 +1064,7 @@ return view.extend({
 			 * 筛选、后端 N_PRE 计数同一口径）。不再附加 authenticated：加入
 			 * 名单后设备往往还没重新认证（authenticated=false），若要求两者
 			 * 都为真，已加入免认证的设备会被错标成「未认证」。 */
-			if (c.preauth) return ['t-pre', _('免认证')];
+			if (c.preauth) return ['t-pre', _('自动认证')];
 			if (c.authenticated) return ['t-auth', _('已认证')];
 			return ['t-unauth', _('未认证')];
 		}
@@ -1034,7 +1135,7 @@ return view.extend({
 				var blocked = !!c.blocked, trusted = !!c.trusted;
 				var authed = !!c.authenticated, pre = !!c.preauth;
 				var preAct = pre ? 'unpreauth' : 'preauth';
-				var preLabel = pre ? _('移除免认证') : _('免认证');
+				var preLabel = pre ? _('解除自动认证') : _('自动认证');
 				var trustAct = trusted ? 'untrust' : 'trust';
 				var trustLabel = trusted ? _('移除可信任') : _('可信任客户端');
 				var tg = tagOf(c);
@@ -1095,12 +1196,12 @@ return view.extend({
 		/* ---------- 行内操作（二次确认只显示一句确认语，无标题） ---------- */
 		var CONFIRM_TEXT = {
 			preauth: {
-				msg: function () { return _('确认加入免认证？'); },
-				ok: _('免认证'), danger: false
+				msg: function () { return _('确认加入自动认证？'); },
+				ok: _('自动认证'), danger: false
 			},
 			unpreauth: {
-				msg: function () { return _('确认取消免认证？'); },
-				ok: _('移除免认证'), danger: false
+				msg: function () { return _('确认解除自动认证？'); },
+				ok: _('解除自动认证'), danger: false
 			},
 			trust: {
 				msg: function () { return _('确认设为可信任？'); },
@@ -1127,8 +1228,8 @@ return view.extend({
 		/* 断言文案照演示页。所有动作（含断开 / 拉黑）都只写 uci 暂存，
 		 * 等 openwrt 底部「保存并应用」一起生效——它是本页所有变更的总开关。 */
 		var ACTION_TOAST = {
-			preauth: _('让「%s」免认证'),
-			unpreauth: _('取消「%s」的免认证'),
+			preauth: _('让「%s」自动认证'),
+			unpreauth: _('解除「%s」的自动认证'),
 			trust: _('把「%s」设为可信任客户端'),
 			untrust: _('取消「%s」的可信任状态'),
 			deauth: _('待应用：断开「%s」'),
@@ -1354,7 +1455,7 @@ return view.extend({
 			editIsPreEntry = !!isPreEntry;
 			/* 从「免认证」按钮进来的标题叫「免认证」，其余「编辑」入口叫「客户端编辑」。 */
 			var titleEl = document.getElementById('ovd-ed-title');
-			if (titleEl) titleEl.textContent = isPreEntry ? _('免认证') : _('客户端编辑');
+			if (titleEl) titleEl.textContent = isPreEntry ? _('自动认证') : _('客户端编辑');
 			var sub = document.getElementById('ovd-ed-sub');
 			if (sub) sub.textContent = (row.host || '—') + ' · ' + (row.ip || '—') + ' · ' + row.mac;
 			var edBody = document.getElementById('ovd-ed-body');
@@ -1413,7 +1514,7 @@ return view.extend({
 				mi.disabled = true;
 				mi.value = '';
 				timeSec.appendChild(E('p', { 'class': 'ovd-note' }, _(
-					'当前为「覆盖」模式：所有客户端的会话时长统一跟随「客户端会话管理」页的全局设置')));
+					'当前为「覆盖」模式：所有客户端的会话时长统一跟随全局设置')));
 			}
 
 			editMask.classList.add('on');
@@ -1561,7 +1662,7 @@ return view.extend({
 			if (sub) sub.textContent = (row.host || '—') + ' · ' + (row.ip || '—');
 			var dtlBody = document.getElementById('ovd-dtl-body');
 			var tr = !!row.trusted;
-			var auth = row.preauth ? _('免认证') :
+			var auth = row.preauth ? _('自动认证') :
 				(row.authenticated ? _('已认证') : _('未认证'));
 			if (tr) auth += ' · ' + _('可信任');
 			var expires;
@@ -1649,9 +1750,7 @@ return view.extend({
 						E('div', { 'class': 'ovd-ctrl-title' }, [statusDot, statusText]),
 						runSwitch
 					]),
-					E('div', { 'class': 'ovd-ctrl-op' }, restartBtn),
-					E('div', { 'class': 'ovd-ctrl-hint' },
-						_('看进程当前是否在跑，不写 enabled'))
+					E('div', { 'class': 'ovd-ctrl-op' }, restartBtn)
 				]),
 				/* 2 休眠：auto_run */
 				E('div', { 'class': 'ovd-ctrl' }, [
@@ -1660,9 +1759,7 @@ return view.extend({
 						E('div', { 'class': 'ovd-ctrl-title' }, autorunText),
 						autorunSwitch
 					]),
-					E('div', { 'class': 'ovd-ctrl-op' }),
-					E('div', { 'class': 'ovd-ctrl-hint' },
-						_('开 = 已唤醒，关 = 已休眠；写 auto_run'))
+					E('div', { 'class': 'ovd-ctrl-op' })
 				]),
 				/* 3 启用：option enabled */
 				E('div', { 'class': 'ovd-ctrl' }, [
@@ -1671,9 +1768,7 @@ return view.extend({
 						E('div', { 'class': 'ovd-ctrl-title' }, enabledText),
 						enabledSwitch
 					]),
-					E('div', { 'class': 'ovd-ctrl-op' }),
-					E('div', { 'class': 'ovd-ctrl-hint' },
-						_('开 = 启用，关 = 未启用；写 option enabled'))
+					E('div', { 'class': 'ovd-ctrl-op' })
 				]),
 				/* 4 服务：开机自启 */
 				E('div', { 'class': 'ovd-ctrl' }, [
@@ -1682,9 +1777,7 @@ return view.extend({
 						E('div', { 'class': 'ovd-ctrl-title' }, bootText),
 						bootSwitch
 					]),
-					E('div', { 'class': 'ovd-ctrl-op' }),
-					E('div', { 'class': 'ovd-ctrl-hint' },
-						_('开 = 已开启，关 = 已关闭；开机自启'))
+					E('div', { 'class': 'ovd-ctrl-op' })
 				])
 			])
 		]));
@@ -1743,6 +1836,10 @@ return view.extend({
 			}
 		} catch (e) {}
 		refresh();
+		/* 刷新前点过运行开关、后台还在收尾：接着读 run_state，别把黄灯丢掉，
+		 * 也别按 pidof 提前画成「运行」。 */
+		if (transition)
+			pollRunState(transition === 'on' ? '1' : '0', transitionTs || Date.now());
 
 		/* ---------- LuCI 框架底部按钮：本页只有运行控制，配置写入只走暂存 ---------- */
 		/* 本页没有需要「保存」的常驻配置项：保存 = 保持现状（增量已在编辑时写好） */

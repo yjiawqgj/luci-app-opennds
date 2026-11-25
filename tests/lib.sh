@@ -37,6 +37,8 @@ tmp_setup() { # $1=用例名
 	# 保存并应用的后台 worker：状态文件 / 锁都搬进沙箱，等待预算压短
 	export CPD_APPLY_STATE="$S/apply.state"
 	export CPD_APPLY_LOCK="$S/lock/apply.lock"
+	export CPD_RUN_STATE="$S/run.state"
+	export CPD_RUN_LOCK="$S/lock/run.lock"
 	export CPD_SESSION_CACHE="$S/sessions"
 	export CPD_NDSLOG_DIR="$S/ndslog"   # openNDS 原生认证落盘日志，沙箱隔离
 	export CPD_STOP_WAIT="${CPD_STOP_WAIT:-2}"
