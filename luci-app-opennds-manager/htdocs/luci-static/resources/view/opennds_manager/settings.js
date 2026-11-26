@@ -186,7 +186,7 @@ return view.extend({
 			});
 
 			/* 速率：上传 / 下载（两行） */
-			var rateSec = E('div', { 'class': 'cpd-field' }, [E('h4', {}, _('速率'))]);
+			var rateSec = E('div', { 'class': 'cpd-field' }, [E('h4', {}, _('速率（只支持IPV4流量）'))]);
 			RATE_FIELDS.forEach(function (f) {
 				rateSec.appendChild(E('div', { 'class': 'cpd-ctlrow' }, [
 					E('span', { 'class': 'lab' }, f.label),
@@ -197,7 +197,7 @@ return view.extend({
 			sec.appendChild(rateSec);
 
 			/* 流量配额：默认禁用，红字说明；解锁只看 fupCommitted */
-			var qSec = E('div', { 'class': 'cpd-field' }, [E('h4', {}, _('流量配额'))]);
+			var qSec = E('div', { 'class': 'cpd-field' }, [E('h4', {}, _('流量配额（只支持IPV4流量）'))]);
 			quotaHint = E('p', { 'class': 'cpd-warnline' },
 				_('请先在高级设置里配置“公平使用策略”，开启后才可设置流量配额。'));
 			qSec.appendChild(quotaHint);
@@ -570,18 +570,23 @@ return view.extend({
 				rateInput,
 				E('span', { 'class': 'cpd-note' }, 'Kb/s')
 			]);
+			var ipv4Note = E('p', { 'class': 'cpd-note',
+				'style': 'margin:6px 0 0' }, _('（只支持IPV4流量）'));
 			function sync() {
 				rateLine.style.display = (sel.value === 'reject') ? 'none' : 'flex';
+				ipv4Note.style.display = (sel.value === 'limit') ? '' : 'none';
 				if (isUp) { state.upAction = sel.value; state.upRate = rateInput.value; }
 				else { state.downAction = sel.value; state.downRate = rateInput.value; }
 			}
 			sel.addEventListener('change', sync);
 			rateInput.addEventListener('input', sync);
 			rateLine.style.display = (action === 'reject') ? 'none' : 'flex';
+			ipv4Note.style.display = (action === 'limit') ? '' : 'none';
 			return E('div', {}, [
 				E('label', { 'class': 'cpd-note',
 					'style': 'display:block;margin-bottom:10px;font-weight:600;color:var(--text,#222a31)' }, label),
 				sel,
+				ipv4Note,
 				rateLine
 			]);
 		}
@@ -733,12 +738,70 @@ return view.extend({
 				CPD.notify(CPD.errText(e, _('保存失败')), 'err');
 			});
 		}
-		function handleApply() {
-			return stageAll().then(function () {
-				return CPD.applyStaged();
-			}).catch(function (e) {
-				CPD.notify(CPD.errText(e, _('应用失败')), 'err');
+		/* 会话时长是"到期才生效"的设置：只要本次动过它，保存并应用就先问用户
+		 * 要不要立刻踢已认证客户端。其余设置照常走原生应用，不打扰。 */
+		function sessionChanged() {
+			var base = (state.snapshot && state.snapshot.client)
+				? state.snapshot.client.sessiontimeout : '';
+			var cur = String(state.client.sessiontimeout == null ? '' : state.client.sessiontimeout).trim();
+			return String(base == null ? '' : base).trim() !== cur;
+		}
+
+		function askSessionApply() {
+			return new Promise(function (resolve) {
+				var done = false;
+				function pick(mode) {
+					if (done) return;
+					done = true;
+					ui.hideModal();
+					resolve(mode);
+				}
+				var lines = [
+					_('更改会话时长不会即时影响已经通过认证并且在认证有效期的客户端。'),
+					_('更改：等待已认证客户端认证到期后再次触发认证时应用。'),
+					_('立即应用：将会把已通过认证并且在有效期内的客户端解除认证，并让客户端重新触发认证。'),
+					_('全局立即应用：将会把已通过认证并且在有效期内的客户端解除认证，包括单独设置会话时长的客户端。')
+				];
+				var nodes = lines.map(function (t) { return E('p', {}, t); });
+				nodes.push(E('div', {
+					'style': 'margin-top:18px;display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap'
+				}, [
+					E('button', { 'class': 'btn cbi-button',
+						'click': function () { pick('cancel'); } }, _('取消')),
+					E('button', { 'class': 'btn cbi-button',
+						'click': function () { pick('change'); } }, _('更改')),
+					E('button', { 'class': 'btn cbi-button cbi-button-positive',
+						'click': function () { pick('apply'); } }, _('直接应用')),
+					E('button', { 'class': 'btn cbi-button cbi-button-positive',
+						'click': function () { pick('global'); } }, _('全局直接应用'))
+				]));
+				CPD.modal(null, nodes);
 			});
+		}
+
+		/* 把用户选择写进一次性待办，后端 apply 后据此解除认证；
+		 * 'change' 写空串 = 删掉可能残留的旧待办。 */
+		function stageSessionMode(mode) {
+			var on = (mode === 'apply' || mode === 'global');
+			return Promise.all([
+				CPD.stageUci('zone_detect', 'main', 'session_apply_mode', 'opt', on ? mode : ''),
+				CPD.stageUci('zone_detect', 'main', 'session_apply_token', 'opt',
+					on ? 'session-' + Date.now().toString(36) : '')
+			]);
+		}
+
+		function handleApply() {
+			return (sessionChanged() ? askSessionApply() : Promise.resolve('change'))
+				.then(function (mode) {
+					if (!mode || mode === 'cancel') return;
+					return stageAll().then(function () {
+						return stageSessionMode(mode);
+					}).then(function () {
+						return CPD.applyStaged();
+					});
+				}).catch(function (e) {
+					CPD.notify(CPD.errText(e, _('应用失败')), 'err');
+				});
 		}
 
 		/* ---------- 读状态 ---------- */

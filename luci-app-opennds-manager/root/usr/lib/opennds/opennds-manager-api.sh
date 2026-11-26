@@ -5993,41 +5993,79 @@ restart_exec() { # 概览页「重启」：跑着的走完整 stop→等退出�
 	fi
 }
 
-# 彻底停止 openNDS（用户口径 2026-11-22：点关闭后按钮在开/关之间来回横跳，
-# 真机上再手动执行一次 service opennds stop 才显示 inactive、页面才稳定）。
-# 根因：opennds 由 procd 托管且带 respawn（官方 init：respawn 360 20 15），
-# 主程序 conf.c 读到 enabled!=1 就 exit(0)。点关闭时 enabled=0 已随这批应用
-# commit，旧进程自退后 procd 把它当意外退出反复拉起；stop 又只等 pidof 空
-# 一次就返回，没确认实例真的关掉，于是进程一会儿有一会儿没，页面 5 秒轮询
-# 撞上就"开/关"横跳。
-# 修法：stop 后做"稳定确认"——连续 CPD_STOP_STABLE 秒看不到进程才算停透；
-# 观察期进程又冒出来（被 respawn/残留）就再补一次 stop（等价于用户真机上
-# 补敲的那次 service opennds stop）；多轮仍不退才强杀 + 清链收尾。
+# 关停辅助：必须先确认 procd 实例已删，否则杀进程只会被 respawn 拉起。
+# procd 里是否还挂着 opennds 实例。
+# 官方 init.d/opennds：USE_PROCD=1、respawn 360 20 15、term_timeout 90。
+# 2026-11-26 真机日志：点 stop 后旧进程 26592 正常 Exiting...，39 秒后
+# 冒出新进程 12175 —— 这就是实例没删干净时 procd 的 20 秒重启间隔在起作用。
+# 只要实例还在，杀进程只会换来一次 respawn，必须先删实例再谈停透。
+PROCD_QUERY_OK=0
+procd_has_instance() {
+	PROCD_QUERY_OK=0
+	command -v ubus >/dev/null 2>&1 || return 1
+	local out
+	# 查询失败（沙箱里只有 ubus 命令、没有 ubusd）不能当成"实例还在"，
+	# 否则会一直补删；用 PROCD_QUERY_OK 记录这次判定是否可信。
+	out=$(ubus call service list '{"name":"opennds"}' 2>/dev/null) || return 1
+	PROCD_QUERY_OK=1
+	case "$out" in
+		*'"opennds"'*)
+			printf '%s' "$out" | grep -q '"pid"' && return 0
+			;;
+	esac
+	return 1
+}
+
+procd_del_instance() {
+	command -v ubus >/dev/null 2>&1 || return 0
+	# rc.common 的 stop() 已经调过 procd_kill（即 ubus service delete）；
+	# 再补一次是幂等的，用来覆盖异步 delete 还没落地的情况。
+	ubus call service delete '{"name":"opennds"}' >/dev/null 2>&1
+	return 0
+}
+
+# 彻底停止 openNDS：
+# 1) 官方 stop（stop_service + procd_kill + service_stopped）；
+# 2) 确认 procd 实例真的删掉，没删掉就补 ubus delete；
+# 3) 等进程自己退出（官方 term_timeout 90，期间不强杀，避免触发 respawn）；
+# 4) 只有「实例已删但进程赖着不走」才当孤儿强杀；
+# 5) 实例不在且连续 stable 秒无进程才算停透。
 stop_fully() {
-	local i quiet round=0
+	local i quiet round=0 has=0
 	local max_round="${CPD_STOP_ROUNDS:-3}"
 	local stable="${CPD_STOP_STABLE:-5}"
+	local lim="${CPD_STOP_WAIT:-45}"
 	while [ "$round" -lt "$max_round" ]; do
 		"$NDS_INIT" stop 9>&- >/dev/null 2>&1
 		i=0
-		while nds_running && [ "$i" -lt "${CPD_STOP_WAIT:-45}" ]; do
+		while procd_has_instance && [ "$i" -lt 10 ]; do
+			procd_del_instance
 			sleep 1 2>/dev/null || sleep 1
 			i=$((i + 1))
 		done
-		# 等不到退出（残留/卡住）才强杀：此刻实例已被 procd delete，不会 respawn
-		if nds_running; then
-			log "openNDS stop 后仍在运行，强制结束进程"
+		i=0
+		while nds_running && [ "$i" -lt "$lim" ]; do
+			sleep 1 2>/dev/null || sleep 1
+			i=$((i + 1))
+		done
+		# 实例已删还活着 = 孤儿进程；实例没删就杀，等于给 respawn 送新目标。
+		# 查询不可信时也别杀：沙箱只有 ubus 命令没有 ubusd。
+		procd_has_instance
+		has=$?
+		if nds_running && [ "$PROCD_QUERY_OK" = '1' ] && [ "$has" != '0' ]; then
+			log "openNDS 实例已删但进程仍在，强制结束进程"
 			kill $(pidof opennds) 2>/dev/null
 			sleep 1 2>/dev/null || sleep 1
 		fi
-		# 稳定确认：连续 stable 秒无进程 = 停透；期间又出现 = 被拉起，下一轮补 stop
 		quiet=0
 		while [ "$quiet" -lt "$stable" ]; do
+			procd_has_instance && break
 			nds_running && break
 			sleep 1 2>/dev/null || sleep 1
 			quiet=$((quiet + 1))
 		done
 		[ "$quiet" -ge "$stable" ] && break
+		procd_del_instance
 		round=$((round + 1))
 	done
 	"$LIBOPENNDS" delete_chains 9>&- >/dev/null 2>&1
@@ -6073,8 +6111,8 @@ run_state_write() { # $1=目标 0|1 $2=done 0|1 $3=running 0|1 $4=phase
 }
 
 # 概览页运行状态开关的后台执行体：只做启停，不碰 uci，不部署区域。
-# 停止用短等待（2 轮 × 2 秒稳定确认），典型 2~4 秒收尾；
-# 真停不下来才强杀，不会像原来那样按 45 秒一轮慢慢等。
+# 停止先删 procd 实例再等进程自己退（官方 term_timeout 90），
+# 实例已删仍不退的孤儿进程才强杀；稳定确认 3 秒。
 run_worker() {
 	local want="$1" was=0 now=0
 	case "$want" in
@@ -6091,7 +6129,7 @@ run_worker() {
 	if [ "$want" = '1' ]; then
 		toggle_exec 1
 	else
-		CPD_STOP_ROUNDS=2 CPD_STOP_STABLE=2 CPD_STOP_WAIT=12 stop_fully
+		CPD_STOP_ROUNDS=2 CPD_STOP_STABLE=3 CPD_STOP_WAIT=30 stop_fully
 	fi
 	nds_running && now=1
 	run_state_write "$want" 1 "$now" 'done'
@@ -6200,9 +6238,63 @@ sys_apply_state() {
 	return 0
 }
 
+# 会话时长改动后的"直接应用/全局直接应用"：
+# - apply：解除所有认证中 / 自动认证客户端，跳过单独设了会话时长的；
+# - global：连单独设了会话时长的自动认证客户端也恢复全局（sessiontimeout=0）再解除。
+# 待办是设置页在保存并应用前写的一次性 uci 键，处理完就删掉。
+session_apply_deauth() {
+	local mode="$1" lm e st new macs='' m
+	case "$mode" in apply | global) ;; *) return 0 ;; esac
+	auth_cache_load
+	for lm in $(printf '%s\n' "$AUTH_CACHE" | awk -F'\t' 'NF {print tolower($1)}' | sort -u); do
+		case " $macs " in *" $lm "*) ;; *) macs="$macs $lm" ;; esac
+	done
+	# 自动认证名单：即使此刻没在线，条目也要按用户选择处理
+	for e in $(list_of 'opennds.@opennds[0].preemptivemac'); do
+		lm=$(mac_lower "${e#mac=}")
+		lm=${lm%%;*}
+		[ -n "$lm" ] || continue
+		case " $macs " in *" $lm "*) ;; *) macs="$macs $lm" ;; esac
+	done
+	for lm in $macs; do
+		[ -n "$lm" ] || continue
+		mac_in_bl "$lm" && continue
+		mac_in_tr "$lm" && continue
+		st=0
+		e=$(entry_for_mac "$(list_of 'opennds.@opennds[0].preemptivemac')" "$lm" 2>/dev/null) || e=''
+		if [ -n "$e" ]; then
+			st=$(printf '%s\n' "$e" | sed -n 's/.*sessiontimeout=\([0-9][0-9]*\).*/\1/p')
+			case "$st" in '' | *[!0-9]*) st=0 ;; esac
+		fi
+		if [ "$mode" = 'apply' ] && [ "$st" -gt 0 ] 2>/dev/null; then
+			continue
+		fi
+		if [ "$mode" = 'global' ] && [ "$st" -gt 0 ] 2>/dev/null; then
+			new=$(printf '%s\n' "$e" | sed 's/sessiontimeout=[0-9][0-9]*/sessiontimeout=0/')
+			uci del_list "opennds.@opennds[0].preemptivemac=$e" 2>/dev/null
+			uci add_list "opennds.@opennds[0].preemptivemac=$new" 2>/dev/null
+		fi
+		remove_preauth_queue "$lm"
+		if nds_running; then
+			NDSCTL_TIMEOUT=2 ndsctl_run deauth "$lm" >/dev/null 2>&1 ||
+				NDSCTL_TIMEOUT=2 ndsctl_run deauth "$(mac_upper "$lm")" >/dev/null 2>&1
+		fi
+		# 清掉落盘认证记录，避免 NDS 重启后 auth_restore 又把它恢复成已认证
+		purge_client_logs "$lm"
+	done
+	uci -q delete 'zone_detect.main.session_apply_mode' 2>/dev/null
+	uci -q delete 'zone_detect.main.session_apply_token' 2>/dev/null
+	uci commit zone_detect 2>/dev/null
+	uci commit opennds 2>/dev/null
+	return 0
+}
+
 sys_post_apply() {
-	local m lm was=0 now=0 ts fail='' nf=0 need=1
+	local m lm was=0 now=0 ts fail='' nf=0 need=1 samode=''
 	nds_running && was=1
+	# 会话时长的立即应用要先处理（global 会改单独条目），再做配置摘要比较
+	samode=$(uci_get 'zone_detect.main.session_apply_mode')
+	session_apply_deauth "$samode"
 	# 配置没变（只是解除认证这类运行时待办）就不重启 NDS，运行卡不该闪红
 	conf_changed_since_last_apply || need=0
 	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：

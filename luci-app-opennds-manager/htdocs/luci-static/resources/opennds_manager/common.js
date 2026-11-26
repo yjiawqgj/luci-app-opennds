@@ -150,7 +150,12 @@ var CPD = L.Class.extend({
 			}
 			return j;
 		}, function (e) {
-			return Promise.reject({ error: (e && e.message) ? e.message : '调用后端失败' });
+			/* 保留 LuCI 的错误名：会话过期时 luci.js 抛的是 SessionError，
+			 * 页面必须和"网络抖动"分开处理，否则会拿旧状态弹假失败横幅。 */
+			return Promise.reject({
+				error: (e && e.message) ? e.message : '调用后端失败',
+				name: (e && e.name) ? e.name : ''
+			});
 		});
 	},
 

@@ -270,6 +270,24 @@ return view.extend({
 			if (state.running === (lastRunWant === '1')) clearRunNotice();
 		}
 
+		/* LuCI 官方会话过期：luci.js 的 notifySessionExpiry 抛 SessionError
+		 * （modules/luci-base/root/etc/config/luci: sessiontime 3600 秒）。
+		 * 这类失败不是"NDS 没停成"：停止轮询、撤黄灯、不弹横幅，
+		 * 等 LuCI 自带的登录弹窗完成登录后整页重建，再按真实状态显示。 */
+		function isSessionError(e) {
+			return !!(e && (e.name === 'SessionError' ||
+				/session.*expired|login session is expired/i.test(String(e.error || ''))));
+		}
+		function sessionInterrupted() {
+			if (runPollTimer) {
+				window.clearTimeout(runPollTimer);
+				runPollTimer = null;
+			}
+			transitionClear();
+			locked = false;
+			renderStatus();
+		}
+
 		/* 三张「配置类」卡片（休眠/启用/服务）的状态缓存。
 		 * 重启按钮和页面刷新都会重绘整页；刷新后首屏若按默认 false 渲染，
 		 * 那三张卡会先闪成「已休眠/未启用/已关闭」，约两秒后数据回来才恢复。
@@ -407,6 +425,8 @@ return view.extend({
 				maybeClearRunNotice();
 			}, function (e) {
 				refreshing = false;
+				/* 会话过期由 LuCI 自己的登录弹窗处理，不要再叠一条红色横幅 */
+				if (isSessionError(e)) return;
 				/* 同一原因只占一条通知栏，恢复后自动清掉 */
 				CPD.notifyOnce(CPD.errText(e, _('获取概览数据失败')), 'err');
 			});
@@ -557,6 +577,7 @@ return view.extend({
 				}
 				pollRunState(want, Date.now());
 			}, function (e) {
+				if (isSessionError(e)) { sessionInterrupted(); return; }
 				finishRun(want, state.running);
 				CPD.toast(CPD.errText(e, _('操作失败')), 'err');
 			});
@@ -611,7 +632,8 @@ return view.extend({
 					return;
 				}
 				next(800, 0);
-			}, function () {
+			}, function (e) {
+				if (isSessionError(e)) { sessionInterrupted(); return; }
 				if (Date.now() - startedAt < 60000) next(1200, stable);
 				else finishRun(want, state.running);
 			});
@@ -1677,6 +1699,9 @@ return view.extend({
 		 * 公平使用策略是全局的，不支持给单个客户端单独设「未单独设置」。 */
 		function fupText(lim, trusted) {
 			if (trusted) return _('不受限制');
+			/* 公平策略没开：配置里没限速值不等于"选了取消认证"，
+			 * 这里是根本没配置，按用户口径直接说没配置。 */
+			if (!state.fupEnabled) return _('未配置公平使用策略');
 			if (!lim || !lim.enabled || !lim.value || Number(lim.value) <= 0)
 				return _('取消认证');
 			return String(lim.value);
@@ -1745,7 +1770,7 @@ return view.extend({
 				dtlRow(_('上传速度限制（Kb/s）'), limText(lim.uploadRate, tr)),
 				dtlRow(_('下载速度限制（Kb/s）'), limText(lim.downloadRate, tr))
 			]));
-			dtlBody.appendChild(dtlSec(_('流量总量'), [
+			dtlBody.appendChild(dtlSec(_('流量配额（只支持IPV4流量）'), [
 				dtlRow(_('上传总量'), tr ? _('不受限制') : fmtTraffic(row.trafficUp)),
 				dtlRow(_('下载总量'), tr ? _('不受限制') : fmtTraffic(row.trafficDown))
 			]));

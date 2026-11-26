@@ -31,11 +31,15 @@ function harness(replies) {
     locked: true,
     _: (s) => s,
     CPD: {
-      api: () => Promise.resolve(replies.shift()),
+      api: () => {
+        const r = replies.shift();
+        return r && r.__reject ? Promise.reject(r.value) : Promise.resolve(r);
+      },
       notify: () => ({ removed: false }),
       dismissNotice: (n) => { if (n) n.removed = true; }
     },
-    transitionClear: () => {},
+    transitionCleared: false,
+    transitionClear: () => { env.transitionCleared = true; },
     renderStatus: () => {},
     clearRunNotice: () => {
       if (env.runNotice) { env.CPD.dismissNotice(env.runNotice); env.runNotice = null; }
@@ -48,7 +52,8 @@ function harness(replies) {
     queue: [],
     Date: Date
   };
-  const body = [grab('finishRun'), grab('pollRunState'),
+  const body = [grab('isSessionError'), grab('sessionInterrupted'),
+    grab('finishRun'), grab('pollRunState'),
     'return { finishRun: finishRun, pollRunState: pollRunState };'].join('\n');
   const api = new Function('env', 'with (env) { ' + body + ' }')(env);
   const queue = env.queue;
@@ -84,4 +89,12 @@ function harness(replies) {
   h.env.state.running = false;
   h.env.maybeClearRunNotice();
   console.log('B 失败可见且可撤:', shown && h.env.runNotice === null ? 'PASS' : 'FAIL');
+
+  // C: 一小时会话过期，LuCI 抛 SessionError → 不弹横幅、撤黄灯、解锁
+  h = harness([{ __reject: true,
+    value: { name: 'SessionError', error: 'Login session is expired' } }]);
+  h.api.pollRunState('0', Date.now(), 0);
+  await h.tick();
+  console.log('C 会话过期不误报:',
+    h.env.runNotice === null && h.env.transitionCleared && h.env.locked === false ? 'PASS' : 'FAIL');
 })();
