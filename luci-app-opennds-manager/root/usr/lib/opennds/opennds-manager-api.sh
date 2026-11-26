@@ -1911,57 +1911,69 @@ ov_dashboard() {
 		"$(ov_status_fields)" "$ROWS_JSON" "$N_ROWS"
 }
 
+# 运行状态文件是否"真忙"：done:0 之外还必须确认执行者还在。
+# 只写 done:0 是不够的——浏览器会话过期、rpcd 重启等原因会让 worker 中途
+# 消失，残留文件会被当成"还在执行"：run_set 不再派新 worker，前端黄灯
+# 一直挂到超时。这里用 worker 自己写进状态文件的 pid 判活；刚派发还没
+# 来得及写 pid 的 10 秒内按忙处理。
+RB_BUSY=0
+RB_DONE=1
+RB_TARGET=''
+run_state_read() {
+	RB_BUSY=0; RB_DONE=1; RB_TARGET=''
+	local line ts pid d now age
+	[ -s "$CPD_RUN_STATE" ] || return 0
+	line=$(cat "$CPD_RUN_STATE" 2>/dev/null) || return 0
+	ts=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9][0-9]*\).*/\1/p')
+	case "$ts" in '' | *[!0-9]*) ts=0 ;; esac
+	pid=$(printf '%s' "$line" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
+	case "$pid" in '' | *[!0-9]*) pid=0 ;; esac
+	RB_TARGET=$(printf '%s' "$line" | sed -n 's/.*"target":\([01]\).*/\1/p')
+	d=$(printf '%s' "$line" | sed -n 's/.*"done":\([01]\).*/\1/p')
+	[ "$d" = '0' ] || return 0
+	[ "$ts" -gt 0 ] 2>/dev/null || return 0
+	now=$(date +%s)
+	age=$((now - ts))
+	[ "$age" -ge 0 ] 2>/dev/null || age=0
+	[ "$age" -le 300 ] || return 0
+	if [ "$pid" = '0' ]; then
+		[ "$age" -le 10 ] || return 0
+	else
+		kill -0 "$pid" 2>/dev/null || return 0
+	fi
+	RB_BUSY=1; RB_DONE=0
+	return 0
+}
+
 ov_run_state() {
-	local running enabled busy=0 done=1 target='' ts now line
+	local running enabled
 	enabled=$(nds_enabled)
 	running=0
 	nds_running && running=1
-	if [ -s "$CPD_RUN_STATE" ]; then
-		line=$(cat "$CPD_RUN_STATE" 2>/dev/null)
-		ts=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9][0-9]*\).*/\1/p')
-		case "$ts" in '' | *[!0-9]*) ts=0 ;; esac
-		now=$(date +%s)
-		# 只认 5 分钟内的状态文件；更早的当残留，按当前进程状态回答
-		if [ "$ts" -gt 0 ] 2>/dev/null && [ $((now - ts)) -le 300 ]; then
-			case "$line" in
-				*'"done":0'*) busy=1; done=0 ;;
-				*'"done":1'*) busy=0; done=1 ;;
-			esac
-			target=$(printf '%s' "$line" | sed -n 's/.*"target":\([01]\).*/\1/p')
-		fi
-	fi
+	run_state_read
 	printf '{"ok":1,"running":%s,"enabled":%s,"busy":%s,"done":%s,"target":"%s"}\n' \
-		"$running" "$enabled" "$busy" "$done" "$target"
+		"$running" "$enabled" "$RB_BUSY" "$RB_DONE" "$RB_TARGET"
 }
 
 # 运行状态开关：直接执行 start/stop，不再经过「保存并应用」。
 # 先写状态文件（busy=1）再派后台 worker，RPC 立即返回；
 # 前端每秒读 run_state，worker 收尾后拿到 done=1 和真实进程状态。
 ov_run_set() {
-	local want="$1" ts now=0 line oldts oldt cur
+	local want="$1" ts now=0
 	case "$want" in
 		0 | 1) ;;
 		*) out_err '运行状态参数只能是 1 或 0' ;;
 	esac
-	# 上一轮还在跑：直接回报现有目标，别把它的状态覆盖成新目标。
-	if [ -s "$CPD_RUN_STATE" ]; then
-		line=$(cat "$CPD_RUN_STATE" 2>/dev/null)
-		case "$line" in
-			*'"done":0'*)
-				oldts=$(printf '%s' "$line" | sed -n 's/.*"ts":\([0-9][0-9]*\).*/\1/p')
-				case "$oldts" in '' | *[!0-9]*) oldts=0 ;; esac
-				cur=$(date +%s)
-				if [ "$oldts" -gt 0 ] 2>/dev/null && [ $((cur - oldts)) -le 300 ]; then
-					oldt=$(printf '%s' "$line" | sed -n 's/.*"target":\([01]\).*/\1/p')
-					printf '{"ok":1,"busy":1,"target":"%s"}\n' "$oldt"
-					return 0
-				fi
-				;;
-		esac
+	# 只有上一轮的执行者还活着才算真忙。残留的 done:0（worker 已被会话
+	# 过期等中断）必须重新派发，否则点关闭会一直卡在旧目标上。
+	run_state_read
+	if [ "$RB_BUSY" = '1' ]; then
+		printf '{"ok":1,"busy":1,"target":"%s"}\n' "$RB_TARGET"
+		return 0
 	fi
 	nds_running && now=1
 	ts=$(date +%s)
-	printf '{"ok":1,"busy":1,"done":0,"target":%s,"running":%s,"phase":"starting","ts":%s}\n' \
+	printf '{"ok":1,"busy":1,"done":0,"target":%s,"running":%s,"phase":"starting","pid":0,"ts":%s}\n' \
 		"$want" "$now" "$ts" >"$CPD_RUN_STATE" 2>/dev/null
 	( sh "$SELF_PATH" run_worker "$want" </dev/null >/dev/null 2>&1 & ) 2>/dev/null
 	printf '{"ok":1,"busy":1,"target":%s}\n' "$want"
@@ -5886,6 +5898,25 @@ sys_selftest() {
 
 CPD_APPLY_STATE="${CPD_APPLY_STATE:-/tmp/opennds_manager_apply.state}"
 CPD_APPLY_LOCK="${CPD_APPLY_LOCK:-/var/lock/opennds-manager-apply.lock}"
+# 上次应用后 opennds 配置的摘要。只改 zone_detect 待办（例如解除认证）
+# 时 opennds 配置没变，就不该为它重启 NDS，否则运行卡会先绿后红再绿。
+CPD_CONF_HASH="${CPD_CONF_HASH:-/tmp/opennds_manager_conf.hash}"
+
+# 比较已提交的 opennds 配置摘要：变了才需要重启。cksum 是 busybox 标配。
+conf_hash_now() {
+	[ -f "$OPENNDS_CONF" ] || return 0
+	cksum "$OPENNDS_CONF" 2>/dev/null | awk '{print $1}'
+}
+
+conf_changed_since_last_apply() {
+	local now old
+	now=$(conf_hash_now)
+	[ -n "$now" ] || return 0          # 拿不到摘要就保守当变了
+	old=$(cat "$CPD_CONF_HASH" 2>/dev/null)
+	printf '%s\n' "$now" >"$CPD_CONF_HASH" 2>/dev/null
+	[ "$now" = "$old" ] && return 1    # 和上次一样 = 没变
+	return 0
+}
 
 apply_state_write() { # $1=JSON 整行覆盖
 	printf '%s\n' "$1" >"$CPD_APPLY_STATE" 2>/dev/null
@@ -6003,16 +6034,29 @@ stop_fully() {
 	return 0
 }
 
+# 首次由插件启动 openNDS 时，把登录模式固定成 3 并补上本插件的主题脚本。
+# 这是用户明确要求的一次性动作，不属于「插件自带预设值」：只做一次，
+# 之后用户自己在设置里选的模式不会被插件再改。
+# 标记放 zone_detect.main.login_mode_init，避免 /tmp 文件重启后丢失。
+login_mode_once() {
+	local done
+	done=$(uci_get 'zone_detect.main.login_mode_init')
+	[ "$done" = '1' ] && return 0
+	ensure_opennds_conf >/dev/null 2>&1 || return 0
+	uci set 'opennds.@opennds[0].login_option_enabled'='3' 2>/dev/null || return 0
+	uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh' 2>/dev/null
+	uci commit opennds 2>/dev/null
+	sys_ensure_sec zone_detect main >/dev/null 2>&1 || return 0
+	uci set 'zone_detect.main.login_mode_init'='1' 2>/dev/null
+	uci commit zone_detect 2>/dev/null
+	log '首次启动：登录模式已设为 3，主题脚本路径已补'
+	return 0
+}
+
 toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 worker）
-	local want="$1" lo tp
+	local want="$1"
 	if [ "$want" = '1' ]; then
-		# 用户点「启动」才补：登录模式 3 且脚本路径为空（缺失），不覆盖用户自己设的值
-		lo=$(uci_val 'opennds.@opennds[0].login_option_enabled' '')
-		tp=$(uci_val 'opennds.@opennds[0].themespec_path' '')
-		if [ "$lo" = '3' ] && [ -z "$tp" ]; then
-			uci set 'opennds.@opennds[0].themespec_path'='/usr/lib/opennds/theme_zone_detect.sh'
-			uci commit opennds 2>/dev/null
-		fi
+		login_mode_once
 		"$NDS_INIT" start 9>&- >/dev/null 2>&1
 		wait_ready_n "${CPD_READY_WAIT:-24}"
 	else
@@ -6022,8 +6066,9 @@ toggle_exec() { # $1=0|1（口径与原 ov_set_run 一致，只是搬进了 work
 }
 
 run_state_write() { # $1=目标 0|1 $2=done 0|1 $3=running 0|1 $4=phase
-	printf '{"ok":1,"busy":%s,"done":%s,"target":%s,"running":%s,"phase":"%s","ts":%s}\n' \
-		"$([ "$2" = '1' ] && printf 0 || printf 1)" "$2" "$1" "$3" "$4" \
+	# pid 必须是执行者自己的：run_state_read 靠它判断这条"忙"记录是否还有效。
+	printf '{"ok":1,"busy":%s,"done":%s,"target":%s,"running":%s,"phase":"%s","pid":%s,"ts":%s}\n' \
+		"$([ "$2" = '1' ] && printf 0 || printf 1)" "$2" "$1" "$3" "$4" "$$" \
 		"$(date +%s)" >"$CPD_RUN_STATE" 2>/dev/null
 }
 
@@ -6060,12 +6105,15 @@ apply_worker() {
 		# 晚到的开关请求由正在跑的 worker 在收尾检查里捞起（见下方循环）。
 		return 0
 	fi
-	local was=0 now=0 deployed=0 zr ok=1 err='' scope pr rounds=0
-	# was 从状态文件取（post_apply 在应用后第一时间记录的口径）；
-	# 文件缺失（手工调试）就按当前状态推
+	local was=0 now=0 deployed=0 zr ok=1 err='' scope pr rounds=0 need=1
+	# was / need_restart 从状态文件取（post_apply 在应用后第一时间记录的口径）；
+	# 文件缺失（手工调试）就按当前状态推，need 保守取 1（照旧重启）。
 	[ -f "$CPD_APPLY_STATE" ] &&
 		was=$(sed -n 's/.*"was_running":\([01]\).*/\1/p' "$CPD_APPLY_STATE" 2>/dev/null)
 	[ "$was" = '1' ] || was=0
+	[ -f "$CPD_APPLY_STATE" ] &&
+		need=$(sed -n 's/.*"need_restart":\([01]\).*/\1/p' "$CPD_APPLY_STATE" 2>/dev/null)
+	case "$need" in 0 | 1) ;; *) need=1 ;; esac
 	log "apply_worker 开始（was_running=$was）"
 	apply_state_write '{"ok":1,"done":0,"phase":"working","was_running":'"$was"'}'
 	# ① 这次应用带了开关请求 → 它说了算：只启/停，不部署不重启
@@ -6107,8 +6155,9 @@ apply_worker() {
 			fi
 		fi
 		kick_preemptive
-		# z_apply 内部已经重启过，别再来一次；本来停着的不主动拉起
-		if [ "$deployed" = '0' ] && [ "$was" = '1' ]; then
+		# z_apply 内部已经重启过，别再来一次；本来停着的不主动拉起。
+		# 本次只改了运行时待办（解除认证）时 need_restart=0，不重启、不闪红。
+		if [ "$deployed" = '0' ] && [ "$was" = '1' ] && [ "$need" = '1' ]; then
 			if ! service_restart; then
 				ok=0
 				err='配置已提交，但 openNDS 未能启动，请检查 openNDS 日志'
@@ -6137,7 +6186,7 @@ apply_worker() {
 		rounds=$((rounds + 1))
 	done
 	nds_running && now=1
-	apply_state_write '{"ok":'"$ok"',"done":1,"zone":'"$deployed"',"was_running":'"$was"',"running":'"$now"',"error":"'$(json_escape "$err")'"}'
+	apply_state_write '{"ok":'"$ok"',"done":1,"zone":'"$deployed"',"was_running":'"$was"',"need_restart":'"$need"',"running":'"$now"',"error":"'$(json_escape "$err")'"}'
 	log "apply_worker 完成（ok=$ok was_running=$was running=$now zone=$deployed）"
 	return 0
 }
@@ -6152,8 +6201,10 @@ sys_apply_state() {
 }
 
 sys_post_apply() {
-	local m lm was=0 now=0 ts fail='' nf=0
+	local m lm was=0 now=0 ts fail='' nf=0 need=1
 	nds_running && was=1
+	# 配置没变（只是解除认证这类运行时待办）就不重启 NDS，运行卡不该闪红
+	conf_changed_since_last_apply || need=0
 	# 应用后先清掉名单里的重复条目（同一 MAC 只能有一个身份）：
 	# 用户设备上历史遗留的"既在可信任又在黑名单"会在这里被修正
 	sys_dedup_lists
@@ -6212,12 +6263,15 @@ sys_post_apply() {
 		fi
 	fi
 	ts=$(date +%s)
-	apply_state_write '{"ok":1,"done":0,"phase":"starting","was_running":'"$was"',"ts":'"$ts"'}'
+	apply_state_write '{"ok":1,"done":0,"phase":"starting","was_running":'"$was"',"need_restart":'"$need"',"ts":'"$ts"'}'
 	# 派生 worker：双重 fork 成孤儿 + 全部 fd 关闭（stdout 管道不关，
 	# rpcd 的应答会一直等到 EOF）。rpcd 超时只 kill 直接子进程，孤儿不受影响。
 	SELF_PATH="${0:-/usr/lib/opennds/opennds-manager-api.sh}"
 	# 经 sh 启动：不依赖执行位（SFTP/某些安装方式可能把权限弄丢）
 	( sh "$SELF_PATH" apply_worker </dev/null >/dev/null 2>&1 & ) 2>/dev/null
+	# 上面去重等收尾可能改了 opennds 配置；把它记成新基线，
+	# 免得下一次「只解除认证」的应用被误判成配置变化而白重启一次。
+	conf_hash_now >"$CPD_CONF_HASH" 2>/dev/null
 	printf '{"ok":1,"bg":1,"was_running":%s,"running":%s,"deauth_failed":%s}\n' "$was" "$now" "$nf"
 	return 0
 }

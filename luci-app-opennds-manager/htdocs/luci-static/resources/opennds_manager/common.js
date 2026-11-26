@@ -218,10 +218,20 @@ var CPD = L.Class.extend({
 		var self = this;
 		var k = self.notifyKinds[kind === undefined ? '' : kind] || 'info';
 		if (typeof ui.addNotification === 'function') {
-			ui.addNotification(null, E('p', {}, msg), k);
-			return true;
+			/* 返回横幅节点：启停这类操作后续状态改正时要能主动撤掉它 */
+			return ui.addNotification(null, E('p', {}, msg), k);
 		}
-		return self.statusBar(msg, kind);
+		self.statusBar(msg, kind);
+		return document.getElementById('cpd-statusbar');
+	},
+
+	/* 撤掉一条已发出的通知（传 notify 的返回值）。横幅常驻不自动消失，
+	 * 状态后来对了必须主动清，否则用户会看到"未运行 + 未能完全停止"并存。 */
+	dismissNotice: function (node) {
+		if (!node) return false;
+		if (node.parentNode) node.parentNode.removeChild(node);
+		else if (typeof node.remove === 'function') node.remove();
+		return true;
 	},
 
 	/* 兼容老调用点：toast / toastCenter 现在都等于 notify */

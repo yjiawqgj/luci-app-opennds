@@ -64,20 +64,22 @@ ck "pending_run 已清掉" '' "$(uci -q get zone_detect.main.pending_run 2>/dev/
 grep -q '"running":1' "$CPD_APPLY_STATE" &&
 	echo "  OK   终态 running:1" || { echo "  FAIL 终态不是 running:1: $(cat "$CPD_APPLY_STATE")"; fail=1; }
 
-echo "== C2 pending_run=1 + 登录模式 3 但 themespec 缺失 → worker 补齐 =="
+echo "== C2 首次启动强制登录模式 3 并补脚本路径（只做一次）=="
 mkdir -p "$MOCK_UCI_ROOT/opennds/opennds"
 printf 'opennds' >"$MOCK_UCI_ROOT/opennds/opennds/.type"
 printf '1' >"$MOCK_UCI_ROOT/opennds/opennds/enabled"
-printf '3' >"$MOCK_UCI_ROOT/opennds/opennds/login_option_enabled"
+printf '1' >"$MOCK_UCI_ROOT/opennds/opennds/login_option_enabled"
 rm -f "$MOCK_UCI_ROOT/opennds/opennds/themespec_path"
+# C1 已经消耗过首次标记；这里重置，重新构造首次启动
+rm -f "$MOCK_UCI_ROOT/zone_detect/main/login_mode_init"
 clear_delta
 mk_pr 1
 : >"$NDS_INIT_LOG"
 call apply_worker
 wait_term || { echo "  FAIL worker 没写终态"; fail=1; }
+ck "首次启动把模式改成 3" '3' \
+	"$(uci -q get opennds.@opennds[0].login_option_enabled 2>/dev/null)"
 ck "补齐 themespec_path" '/usr/lib/opennds/theme_zone_detect.sh' \
-	"$(uci -q get opennds.@opennds[0].themespec_path 2>/dev/null)"
-ck "已设的不覆盖" '/usr/lib/opennds/theme_zone_detect.sh' \
 	"$(uci -q get opennds.@opennds[0].themespec_path 2>/dev/null)"
 
 echo "== C3 pending_run=1 + 用户自己设过 themespec → 不覆盖 =="
@@ -180,7 +182,13 @@ printf '{"ok":1,"done":0,"phase":"starting","was_running":1,"ts":%s}\n' "$(date 
 	>"$CPD_APPLY_STATE"
 ( call apply_worker ) &
 wkpid=$!
-sleep 1
+# 必须等 worker 真的进入 service_restart（init.log 出现 stop）再塞请求；
+# 固定 sleep 1 在机器慢时会让请求被 worker 开头的 take 消费掉，导致偶发失败。
+_i=0
+while [ "$_i" -lt 40 ] && [ ! -s "$NDS_INIT_LOG" ]; do
+	sleep 0.25 2>/dev/null || sleep 1
+	_i=$((_i + 1))
+done
 mk_prestart 1
 wait "$wkpid" 2>/dev/null
 wait_term || { echo "  FAIL worker 没写终态"; fail=1; }

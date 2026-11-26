@@ -27,30 +27,37 @@ var TAB_NAMES = {
 	blacklist: _('黑名单'), global: _('全局门户')
 };
 
-/* 客户端全局配置：id / 显示名 / 说明 / uci 键 / 最小值 / 单位 / 默认 */
+/* 客户端全局配置：id / 显示名 / 说明 / uci 键 / 最小值 / 单位 / 官方默认提示。
+ *
+ * 插件不自带任何预设值：输入框留空 = 配置里没有这一项 = openNDS 用自己的默认。
+ * hint 只作输入框的灰色提示文字，不参与显示值、不写进配置。数字取自 openNDS
+ * v11.2.0 src/conf.h：CHECKINTERVAL=15 / SESSIONTIMEOUT=1440 /
+ * PREAUTH_IDLE_TIMEOUT=30 / AUTH_IDLE_TIMEOUT=120 / MAXCLIENTS=250 /
+ * UPLOAD_RATE=DOWNLOAD_RATE=UPLOAD_QUOTA=DOWNLOAD_QUOTA=0（0=不限制）。
+ * reauth_interval 官方 UCI 模板可选项，不设置即 0（立即允许重新认证）。 */
 var CLIENT_FIELDS = [
 	{ id: 'sessionTimeout', key: 'sessiontimeout', label: _('会话时长'),
-		desc: _('客户端通过认证后默认允许联网时长，超时将取消认证。'), min: 1, unit: _('分钟'), def: '120' },
+		desc: _('客户端通过认证后默认允许联网时长，超时将取消认证。'), min: 1, unit: _('分钟'), hint: '默认1440' },
 	{ id: 'preauthTimeout', key: 'preauthidletimeout', label: _('未认证超时'),
-		desc: _('用户连接网络后在指定时间内没有进行验证或者没有通过认证将会被禁止。'), min: 1, unit: _('分钟'), def: '30' },
+		desc: _('用户连接网络后在指定时间内没有进行验证或者没有通过认证将会被禁止。'), min: 1, unit: _('分钟'), hint: '默认30' },
 	{ id: 'idleTimeout', key: 'authidletimeout', label: _('空闲超时'),
-		desc: _('用户通过认证后，断开时长超过指定时间后将会被取消认证。'), min: 1, unit: _('分钟'), def: '5' },
+		desc: _('用户通过认证后，断开时长超过指定时间后将会被取消认证。'), min: 1, unit: _('分钟'), hint: '默认120' },
 	{ id: 'reauthInterval', key: 'reauth_interval', label: _('重新认证间隔'),
 		desc: _('客户端被取消认证后在指定时间内将不会进行验证。0 或留空表示可立即重新认证。'),
-		min: 0, unit: _('秒'), def: '0' },
+		min: 0, unit: _('秒'), hint: '默认0' },
 	{ id: 'maxClients', key: 'maxclients', label: _('最大客户端数量'),
-		desc: _('最多允许有多少客户端可以被认证，数量不要超过 DHCP 允许最大客户端数量。'), min: 1, unit: _('人'), def: '250' },
+		desc: _('最多允许有多少客户端可以被认证，数量不要超过 DHCP 允许最大客户端数量。'), min: 1, unit: _('人'), hint: '默认250' },
 	{ id: 'checkInterval', key: 'checkinterval', label: _('检查间隔'),
-		desc: _('检查客户端超时、流量配额等检测间隔。'), min: 1, unit: _('秒'), def: '15' }
+		desc: _('检查客户端超时、流量配额等检测间隔。'), min: 1, unit: _('秒'), hint: '默认15' }
 ];
 /* 速率 / 配额两栏：同一 field 内两行，0 = 不限制 */
 var RATE_FIELDS = [
-	{ id: 'cfgUpRate', key: 'uploadrate', label: _('上传速率'), unit: 'kb/s', min: 0, def: '0' },
-	{ id: 'cfgDownRate', key: 'downloadrate', label: _('下载速率'), unit: 'kb/s', min: 0, def: '0' }
+	{ id: 'cfgUpRate', key: 'uploadrate', label: _('上传速率'), unit: 'kb/s', min: 0, hint: '默认0' },
+	{ id: 'cfgDownRate', key: 'downloadrate', label: _('下载速率'), unit: 'kb/s', min: 0, hint: '默认0' }
 ];
 var QUOTA_FIELDS = [
-	{ id: 'cfgUpQuota', key: 'uploadquota', label: _('上传量'), unit: 'KB', min: 0, def: '0' },
-	{ id: 'cfgDownQuota', key: 'downloadquota', label: _('下载量'), unit: 'KB', min: 0, def: '0' }
+	{ id: 'cfgUpQuota', key: 'uploadquota', label: _('上传量'), unit: 'KB', min: 0, hint: '默认0' },
+	{ id: 'cfgDownQuota', key: 'downloadquota', label: _('下载量'), unit: 'KB', min: 0, hint: '默认0' }
 ];
 var ALL_NUM_FIELDS = CLIENT_FIELDS.concat(RATE_FIELDS, QUOTA_FIELDS);
 
@@ -150,10 +157,13 @@ return view.extend({
 			var inp = E('input', {
 				'type': 'number', 'class': 'cpd-num',
 				'min': String(field.min), 'step': '1', 'inputmode': 'numeric',
-				'title': field.min === 0 ? _('填 0 表示不限制') : null,
+				'title': field.min === 0 ? _('填 0 表示不限制；留空表示使用 openNDS 默认') : _('留空表示使用 openNDS 默认'),
+				'placeholder': field.hint,
 				'id': 'cpd-f-' + field.id
 			});
-			inp.value = state.client[field.key] || field.def;
+			/* 只显示配置里真实存在的值；没有这个键就留空，靠 placeholder
+			 * 告诉用户 openNDS 会用哪个默认值，绝不用插件自带的值顶上。 */
+			inp.value = state.client[field.key] == null ? '' : String(state.client[field.key]);
 			inp.addEventListener('input', function () {
 				state.client[field.key] = inp.value;
 			});
@@ -650,9 +660,10 @@ return view.extend({
 				var f = ALL_NUM_FIELDS[i];
 				/* 流量配额未解锁时不校验（禁用态的值不参与保存） */
 				if (QUOTA_FIELDS.indexOf(f) >= 0 && !state.fupCommitted) continue;
-				var v = String(state.client[f.key] == null ? '' : state.client[f.key]).trim();
-				if (v === '') return _('请填写%1（%2）').format(f.label, f.unit);
-				if (!/^\d+$/.test(v)) return _('%1必须是%2的整数（%3）')
+			var v = String(state.client[f.key] == null ? '' : state.client[f.key]).trim();
+			/* 空值 = 恢复 openNDS 默认：不报错、不校验、保存时删掉这个uci键 */
+			if (v === '') continue;
+			if (!/^\d+$/.test(v)) return _('%1必须是%2的整数（%3）')
 					.format(f.label, f.min > 0 ? _('大于 0') : _('非负'), f.unit);
 				if (parseInt(v, 10) < f.min) return _('%1必须%2（%3）')
 					.format(f.label, f.min > 0 ? _('大于 0') : _('非负'), f.unit);
@@ -680,8 +691,9 @@ return view.extend({
 				var fe = checkFup();
 				if (fe) return Promise.reject({ error: fe });
 			}
-			var uv = state.fupEnabled && state.upAction === 'limit' ? String(state.upRate).trim() : '0';
-			var dv = state.fupEnabled && state.downAction === 'limit' ? String(state.downRate).trim() : '0';
+			/* 没选限速就删掉这两个键（openNDS 默认 0 = 不限制），不写插件预设的 0 */
+			var uv = state.fupEnabled && state.upAction === 'limit' ? String(state.upRate).trim() : '';
+			var dv = state.fupEnabled && state.downAction === 'limit' ? String(state.downRate).trim() : '';
 			var jobs = [
 				CPD.stageUci('opennds', '@opennds[0]', 'gatewayinterface', 'opt', state.device),
 				CPD.stageUci('opennds', '@opennds[0]', 'flow_offloading_enable',
@@ -689,10 +701,11 @@ return view.extend({
 				CPD.stageUci('zone_detect', 'main', 'fup_enabled', 'opt', state.fupEnabled ? '1' : '0')
 			];
 			ALL_NUM_FIELDS.forEach(function (f) {
-				/* 流量配额锁定：写 0，不把禁用态的输入带进配置 */
+				/* 流量配额锁定：删掉键，不把禁用态的输入带进配置。
+				 * 空值一律写 ''（stageUci 会删这个 option）= 恢复 openNDS 默认。 */
 				var v = (QUOTA_FIELDS.indexOf(f) >= 0 && !state.fupCommitted)
-					? '0' : String(state.client[f.key] == null ? '' : state.client[f.key]).trim();
-				jobs.push(CPD.stageUci('opennds', '@opennds[0]', f.key, 'opt', v || f.def));
+					? '' : String(state.client[f.key] == null ? '' : state.client[f.key]).trim();
+				jobs.push(CPD.stageUci('opennds', '@opennds[0]', f.key, 'opt', v));
 			});
 			/* 公平策略关闭时清掉限速键 */
 			jobs.push(CPD.stageUci('opennds', '@opennds[0]', 'fup_upload_throttle_rate', 'opt', uv));
@@ -747,8 +760,9 @@ return view.extend({
 				state.flowEnabled = (j.flowEnabled === 1 || j.flowEnabled === true);
 				var c = j.client || {};
 				ALL_NUM_FIELDS.forEach(function (fd) {
+					/* 配置没有这个键或是空的：留空，由 openNDS 用官方默认。 */
 					state.client[fd.key] = (c[fd.key] !== undefined && c[fd.key] !== '')
-						? String(c[fd.key]) : fd.def;
+						? String(c[fd.key]) : '';
 				});
 				state.snapshot = snapshot();
 				if (!basicPanel) buildSkeleton();

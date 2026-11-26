@@ -82,6 +82,13 @@ export NDS_INIT_LOG="$S/init.log"
 export CPD_PIDOF_CLEAR="$S/pidof.clear"
 : >"$NDS_INIT_LOG"
 rm -f "$CPD_PIDOF_CLEAR"
+# 新口径：只有 opennds 配置真变了才重启（只解除认证这类待办不重启）。
+# 这里改一个 opennds 键来构造「配置已变」的应用，验证 stop → start 顺序。
+uci set "opennds.@opennds[0].checkinterval=15" >/dev/null 2>&1
+uci commit opennds >/dev/null 2>&1
+# 沙箱的 mock uci 不回写 etc/opennds，真机 commit 会写盘；这里补上，
+# 让后端的「配置摘要变了」判定能看见这次改动。
+printf '\n\toption checkinterval 15\n' >>"$OPENNDS_CONF"
 uci set zone_detect.main.scope=global >/dev/null 2>&1
 uci commit zone_detect >/dev/null 2>&1
 call sys post_apply >/dev/null

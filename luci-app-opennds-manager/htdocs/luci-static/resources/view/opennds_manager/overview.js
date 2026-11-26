@@ -197,6 +197,8 @@ return view.extend({
 			sortKey: null, sortDir: 1
 		};
 		var locked = false, pollTimer = null, runPollTimer = null, modalOpen = 0;
+		/* 启停失败横幅：必须在状态后来改正时撤掉，不能常驻到下次刷新。 */
+		var runNotice = null, lastRunWant = '';
 		var savedBodyOverflow = '';
 		var editRow = null, editIsPreEntry = false;
 		/* 弹窗打开时锁住页面滚动：滚轮只作用于遮罩内的弹窗，
@@ -227,7 +229,7 @@ return view.extend({
 				var p = v.split('|');
 				if (p[0] !== 'off' && p[0] !== 'on') { sessionStorage.removeItem(TRANS_KEY); return null; }
 				var ts = Number(p[1]);
-				if (!ts || Date.now() - ts > 90000) { sessionStorage.removeItem(TRANS_KEY); return null; }
+				if (!ts || Date.now() - ts > 45000) { sessionStorage.removeItem(TRANS_KEY); return null; }
 				return p[0];
 			} catch (e) { return null; }
 		}
@@ -254,6 +256,18 @@ return view.extend({
 		 * 运行开关已改成直连 start/stop，正常几秒内收尾；这里只防异常卡死。 */
 		function transitionExpired() {
 			return !!(transition && transitionTs && (Date.now() - transitionTs > TRANS_TTL));
+		}
+
+		function clearRunNotice() {
+			if (!runNotice) return;
+			CPD.dismissNotice(runNotice);
+			runNotice = null;
+		}
+		/* 失败横幅是常驻的：后端后来真的到了目标状态（比如 worker 慢了一拍、
+		 * 会话过期重登后又生效），必须把横幅撤掉，不能留下"未运行 + 未能完全停止"。 */
+		function maybeClearRunNotice() {
+			if (!runNotice || !lastRunWant) return;
+			if (state.running === (lastRunWant === '1')) clearRunNotice();
 		}
 
 		/* 三张「配置类」卡片（休眠/启用/服务）的状态缓存。
@@ -339,7 +353,7 @@ return view.extend({
 			ctlCacheSave();
 			state.scope = st.session_scope || 'default';
 			state.counts = st.counts || {};
-			state.defaultSession = st.defaultSession || 1440;
+			state.defaultSession = st.defaultSession || '';
 			state.managed = st.managed || { iface: '', ip: '' };
 			state.aps = st.aps || [];
 			state.confErr = st.confErr || '';
@@ -360,6 +374,7 @@ return view.extend({
 							state.running = (j.running === 1);
 							settleTransition();
 							renderStatus();
+							maybeClearRunNotice();
 						}
 					}).catch(function () {});
 				}, 1200);
@@ -389,6 +404,7 @@ return view.extend({
 				state.clients = (st && st.clients) || [];
 				loaded = true;
 				renderAllSafe();
+				maybeClearRunNotice();
 			}, function (e) {
 				refreshing = false;
 				/* 同一原因只占一条通知栏，恢复后自动清掉 */
@@ -518,6 +534,9 @@ return view.extend({
 		}
 
 		function doToggle(want) {
+			/* 新一轮操作：旧失败横幅先撤掉，状态重新判定 */
+			lastRunWant = want;
+			clearRunNotice();
 			/* 运行状态只管进程在不在跑，不写 opennds 的 enabled（那是
 			 * 「启用」开关的事）。这里直接调后端执行 start/stop，不再
 			 * 暂存 pending_run、不再走保存并应用——那套流程会弹原生遮罩、
@@ -556,30 +575,45 @@ return view.extend({
 			locked = false;
 			renderStatus();
 			if (state.running !== (want === '1'))
-				CPD.notify(want === '1' ? _('openNDS 未能启动') : _('openNDS 未能完全停止'), 'err');
+				runNotice = CPD.notify(want === '1' ? _('openNDS 未能启动') : _('openNDS 未能完全停止'), 'err');
+			else
+				clearRunNotice();
 		}
 
-		/* 每秒问一次后端：worker 还在做就继续等，done=1 就按真实进程状态收尾。
-		 * 最多等 60 秒；超过就按当下读到的状态显示，避免永远转圈。 */
-		function pollRunState(want, startedAt) {
+		/* 轮询以"进程实际在不在跑"为准，不把后端的 busy 当成必须等满的东西。
+		 * 连续两次读到目标状态才收尾，避免 procd 瞬间消失造成误判。worker
+		 * 明确 done=1 但进程没到位、或超过 60 秒，才按真实进程状态报失败。
+		 * 这样 worker 被会话过期打断、只留下残留 busy 时，黄灯不会挂到超时。 */
+		function pollRunState(want, startedAt, stable) {
+			stable = stable || 0;
+			function next(delay, n) {
+				runPollTimer = window.setTimeout(function () {
+					pollRunState(want, startedAt, n);
+				}, delay);
+			}
 			CPD.api('overview', 'run_state').then(function (j) {
-				if (!j || !j.ok)
-					return; /* 单次读失败不致命，下一拍再试 */
-				if (j.busy === 1 && Date.now() - startedAt < 60000) {
-					runPollTimer = window.setTimeout(function () {
-						pollRunState(want, startedAt);
-					}, 800);
+				if (!j || !j.ok) {
+					if (Date.now() - startedAt < 60000) next(1200, stable);
+					else finishRun(want, state.running);
 					return;
 				}
-				finishRun(want, j.running === 1);
-			}, function () {
-				if (Date.now() - startedAt < 60000) {
-					runPollTimer = window.setTimeout(function () {
-						pollRunState(want, startedAt);
-					}, 1200);
-				} else {
-					finishRun(want, state.running);
+				var running = (j.running === 1);
+				if (running === (want === '1')) {
+					if (stable + 1 >= 2 || j.done === 1) {
+						finishRun(want, running);
+						return;
+					}
+					next(800, stable + 1);
+					return;
 				}
+				if (j.done === 1 || Date.now() - startedAt >= 60000) {
+					finishRun(want, running);
+					return;
+				}
+				next(800, 0);
+			}, function () {
+				if (Date.now() - startedAt < 60000) next(1200, stable);
+				else finishRun(want, state.running);
 			});
 		}
 
@@ -1121,9 +1155,10 @@ return view.extend({
 			/* 操作按钮的可用性只由客户端身份决定（黑名单 > 可信任 > 免认证 >
 			 * 已认证 > 未认证），与当前在哪个卡片/接入点视图无关（照演示页）：
 			 *   详情   —— 黑名单客户端置灰（其余身份都可见）
-			 *   编辑   —— 可信任不显示（演示页：不受超时与流量限制，无需编辑），
-			 *             其余身份都可点（黑名单置灰）；给普通客户端设限额 = 写入
-			 *             preemptivemac 条目，下次接入自动登录，真实状态是「免认证」
+			 *   编辑   —— 可信任不显示（演示页：不受超时与流量限制，无需编辑）；
+			 *             已认证（手动认证）也不显示，用全局默认设置；未认证在
+			 *             自动认证那个位置出现，不重复占「编辑」；其余身份可点
+			 *             （黑名单置灰）
 			 *   免认证/可信任 —— 黑名单客户端也可点（2026-11-21 用户口径）：
 			 *             操作 = 从黑名单移除 + 加入对应名单（应用后重启 NDS 生效）
 			 *   解除认证 —— 已认证/免认证/可信任都可点；未认证没有会话可解除，
@@ -1149,12 +1184,14 @@ return view.extend({
 				var preBtnAct = pre ? 'unpreauth' : 'edit';
 				var preBtnPre = pre ? '' : ' data-pre="1"';
 				var preBtnLabel = preLabel;
-				/* 「编辑」按钮：可信任不显示（不受超时/流量限制）；未认证也不显示——
-				 * 它已经在免认证那个位置出现，不能重复占一个「编辑」。 */
-				var unauth = (tg[0] === 't-unauth');
-				var editHTML = (trusted || unauth) ? '' :
-					'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
-					(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
+			/* 「编辑」按钮：可信任不显示（不受超时/流量限制）；未认证也不显示——
+			 * 它已经在自动认证那个位置出现，不能重复占一个「编辑」。
+			 * 已认证（手动认证）也不显示：它用全局默认设置，不给单独编辑入口。 */
+			var unauth = (tg[0] === 't-unauth');
+			var hideEdit = trusted || unauth || tg[0] === 't-auth';
+			var editHTML = hideEdit ? '' :
+				'<button type="button" class="ovd-rowbtn" data-act="edit" data-mac="' + esc(c.mac) + '"' +
+				(blocked ? ' disabled' : '') + '>' + _('编辑') + '</button>';
 				var deauthDis = ((!authed && !pre && !trusted) || blocked) ? ' disabled' : '';
 				return '<tr>' +
 					'<td><div class="ovd-host"><span class="ovd-host-name">' +
@@ -1636,12 +1673,21 @@ return view.extend({
 			return String(lim.value);
 		}
 
-		/* 最大会话时间：没单独设置时显示全局默认值（openNDS 实际按它执行），
-		 * 而不是含糊的「未单独设置」。单独设置了就显示设置值。 */
+		/* 超额限速只有两种结果：设置了速率就按速率限速，没设置就是取消认证。
+		 * 公平使用策略是全局的，不支持给单个客户端单独设「未单独设置」。 */
+		function fupText(lim, trusted) {
+			if (trusted) return _('不受限制');
+			if (!lim || !lim.enabled || !lim.value || Number(lim.value) <= 0)
+				return _('取消认证');
+			return String(lim.value);
+		}
+
+		/* 最大会话时间：没单独设置时显示后端带来的全局默认值（openNDS 实际
+		 * 按它执行），而不是含糊的「未单独设置」。前端不自带任何数值。 */
 		function sessionText(lim, trusted) {
 			if (trusted) return _('不受限制');
 			if (lim && lim.enabled) return String(lim.value);
-			return String(state.defaultSession || 1440);
+			return state.defaultSession ? String(state.defaultSession) : _('使用全局设置');
 		}
 
 		function dtlRow(k, v, mono) {
@@ -1704,8 +1750,8 @@ return view.extend({
 				dtlRow(_('下载总量'), tr ? _('不受限制') : fmtTraffic(row.trafficDown))
 			]));
 			dtlBody.appendChild(dtlSec(_('超额限速'), [
-				dtlRow(_('上传超额限速（Kb/s）'), limText(lim.overQuotaUploadRate, tr)),
-				dtlRow(_('下载超额限速（Kb/s）'), limText(lim.overQuotaDownloadRate, tr))
+				dtlRow(_('上传超额限速（Kb/s）'), fupText(lim.overQuotaUploadRate, tr)),
+				dtlRow(_('下载超额限速（Kb/s）'), fupText(lim.overQuotaDownloadRate, tr))
 			]));
 			detailMask.classList.add('on');
 			modalEnter();
