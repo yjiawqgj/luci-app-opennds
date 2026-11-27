@@ -24,6 +24,9 @@ return view.extend({
 			trusted: [],      /* 可信任名单（小写 MAC）：只用于交集拦截，本页不渲染 */
 			info: {},         /* MAC → {host,ip,zone,online} */
 			blocked: [],      /* 黑名单 MAC（小写）：一个客户端只能属于一个名单 */
+			/* 用户是否已在本页改过开关：进入页时的异步 refresh 不能再覆盖用户的点击。
+			 * 没有这个标记时，首次点击落在 refresh 返回前，会被后端旧值重建回打开态。 */
+			userTouched: false,
 			editing: false,
 			open: false,
 			perPage: '10',
@@ -52,15 +55,14 @@ return view.extend({
 		}
 
 		function renderBlock() {
-			var sec = CPD.section(_('自动认证客户端'), 'Auto Authentication');
-			sec.appendChild(E('p', { 'class': 'cpd-note' },
-				_('可以为无法进行强制门户认证的设备自动放行，比如摄像头、传感器等。但与信任客户端不同，自动认证的客户端同样受到强制门户的管理。')));
+			var sec = CPD.section(_('启用状态'), 'Auto Authentication');
 
 			var statusLabel = E('span', {}, state.preemptEnabled ? _('已启用') : _('已关闭'));
 			var hint = E('p', { 'class': 'cpd-note', 'style': 'margin-top:6px' },
 				_('当前未启用自动预授权：尚未出现在客户端列表里的设备不会被自动放行'));
 			hint.style.display = state.preemptEnabled ? 'none' : '';
 			var tgl = CPD.switchBtn(!!state.preemptEnabled, _('自动认证开关'), function (on) {
+				state.userTouched = true;
 				state.preemptEnabled = on ? 1 : 0;
 				statusLabel.textContent = on ? _('已启用') : _('已关闭');
 				hint.style.display = on ? 'none' : '';
@@ -245,7 +247,9 @@ return view.extend({
 				state.preempt = j.preempt || [];
 				state.info = j.clients || {};
 				state.blocked = (j.blocked || []).map(function (m) { return String(m).toLowerCase(); });
-				state.preemptEnabled = (j.preempt_enabled === 0) ? 0 : 1;
+				/* 用户已点过开关就保留本地值，绝不被这次异步回包的旧状态覆盖 */
+				if (!state.userTouched)
+					state.preemptEnabled = (j.preempt_enabled === 0) ? 0 : 1;
 				state.preempt0 = state.preempt.slice();
 				state.pe0 = state.preemptEnabled;
 				state.editing = false;
@@ -368,6 +372,7 @@ return view.extend({
 		this.handleSaveApply = function () { return handleApply(); };
 		this.handleReset = function () {
 			return CPD.revertStaged().then(function () {
+				state.userTouched = false;
 				refresh();
 			}, function (e) {
 				CPD.notify(CPD.errText(e, _('复位失败')), 'err');

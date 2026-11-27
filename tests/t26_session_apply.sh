@@ -81,7 +81,7 @@ for txt in \
 	'全局立即应用：将会把已通过认证并且在有效期内的客户端解除认证，包括单独设置会话时长的客户端。'; do
 	has "$V/settings.js" "$txt" "确认文案：$txt"
 done
-for btn in '更改' '直接应用' '全局直接应用' '取消'; do
+for btn in '更改' '立即应用' '全局立即应用' '取消'; do
 	has "$V/settings.js" "_('$btn')" "按钮：$btn"
 done
 has "$V/settings.js" 'session_apply_mode' '应用方式写入一次性待办'

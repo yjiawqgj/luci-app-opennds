@@ -771,9 +771,9 @@ return view.extend({
 					E('button', { 'class': 'btn cbi-button',
 						'click': function () { pick('change'); } }, _('更改')),
 					E('button', { 'class': 'btn cbi-button cbi-button-positive',
-						'click': function () { pick('apply'); } }, _('直接应用')),
+						'click': function () { pick('apply'); } }, _('立即应用')),
 					E('button', { 'class': 'btn cbi-button cbi-button-positive',
-						'click': function () { pick('global'); } }, _('全局直接应用'))
+						'click': function () { pick('global'); } }, _('全局立即应用'))
 				]));
 				CPD.modal(null, nodes);
 			});
