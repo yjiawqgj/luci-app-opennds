@@ -1,7 +1,7 @@
 #!/bin/sh
 # Network Zone Detection - ThemeSpec dispatcher for openNDS (login mode 3)
 # Installed at: /usr/lib/opennds/theme_zone_detect.sh
-# CPD-VERSION: r9 (2026-11-20) —— 在路由器上执行
+# CPD-VERSION: r10 (2026-11-28) —— 在路由器上执行
 #   grep CPD-VERSION /usr/lib/opennds/theme_zone_detect.sh
 # 可核对装的是不是本版本（排查"脚本没更新"用）。
 #
@@ -79,6 +79,90 @@ zone_debug() {
 # Uppercase a MAC address without forks where possible (tr is cheap enough here).
 mac_upper() {
 	echo "$1" | tr 'a-z' 'A-Z'
+}
+
+# ---- 有效期内漏恢复的客户端，重连时静默放行（不弹门户） ----
+# 场景：关 NDS 时客户端离线（如手机切到别的 WiFi），开机那一次恢复没赶上；
+#       等它重新连回来时，openNDS 会把它当新设备弹门户。这里在门户脚本阶段
+#       认出这类客户端，用官方 ndsctl auth 按剩余时长静默放行。
+# 判据（三者同时满足才放行，避免误放）：
+#   1. 账本 authlog 里该 MAC 仍在有效期内（未到期）
+#   2. binauthlog 末条是该 MAC 的 shutdown_deauth / preemptive_auth
+#      —— 即"因关机下线/曾恢复"，而非主动登出、超时、空闲踢、ndsctl 解绑
+#   3. 当前请求确实是未认证客户端（能走到门户脚本就说明未认证）
+# 命中后 ndsctl auth "$mac,$剩余分钟"，显式时长保住原到期时间。
+# 本函数在 libopennds.sh source 后的 header 阶段运行，clientmac 已就绪，
+# 处在同一 shell，可直接用 libopennds 的 do_ndsctl（无死锁）。
+cpd_auto_restore() {
+	# clientmac 由 libopennds 的 get_arguments 解码后填充，进入门户阶段时应已就绪
+	[ -z "$clientmac" ] && return 0
+
+	# 黑名单客户端绝不自动放行：必须先排除，否则会绕过黑名单门户直接上网
+	for _blm in $(uci -q get 'opennds.@opennds[0].blockedmac' 2>/dev/null); do
+		[ -z "$_blm" ] && continue
+		[ "$(mac_upper "$_blm")" = "$(mac_upper "$clientmac")" ] && return 0
+	done
+
+	local cdir authlog bl now kb lm exp left mins lastm
+	cdir=$(zone_logdir)
+	authlog="$cdir/authlog.log"
+	bl="$cdir/binauthlog.log"
+	[ -f "$authlog" ] || return 0
+	now=$(date +%s)
+
+	# ① 账本 authlog 每行是 base64(mac)=session_end，逐行解码 MAC 找未到期的那条
+	exp=""
+	while IFS='=' read -r kb ev; do
+		case "$kb" in ''|*[!A-Za-z0-9+/]*) continue;; esac
+		case "$ev" in ''|*[!0-9]*) continue;; esac
+		lm=$(ndsctl b64decode "${kb}==" 2>/dev/null | tr 'A-Z' 'a-z')
+		[ "$lm" = "$(printf '%s' "$clientmac" | tr 'A-Z' 'a-z')" ] || continue
+		[ "$ev" -gt "$now" ] || continue
+		exp="$ev"
+	done <"$authlog"
+	[ -n "$exp" ] || return 0
+
+	# ② binauthlog 里该 MAC 的最后一条必须是"关机下线/恢复记录"
+	#    主动登出(client_deauth)、超时(timeout_deauth)、空闲(idle_deauth)、
+	#    ndsctl 解绑(ndsctl_deauth) 一律不放行。
+	lastm=''
+	[ -f "$bl" ] && lastm=$(grep -iF "$clientmac" "$bl" 2>/dev/null | tail -1 |
+		awk -F'method=' '{print $2}' | awk -F', ' '{printf "%s", $1}' | tr -d '"')
+	case "$lastm" in
+		shutdown_deauth|preemptive_auth) ;;
+		*) return 0;;
+	esac
+
+	# ③ 剩余分钟（向上取整、至少 1），ndsctl auth 显式时长保住原到期时间
+	left=$(( exp - now ))
+	mins=$(( (left + 59) / 60 ))
+	[ "$mins" -lt 1 ] && mins=1
+
+	do_ndsctl auth "$clientmac" "$mins"
+	[ "$ndsstatus" = "authenticated" ] || return 0
+	zone_debug "auto-restored $clientmac (${mins} min left), skip portal"
+	# 输出一个极简成功页，CPD 检测到已联网会自动关闭浏览器，用户无感
+	echo '<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>OK</body></html>'
+	exit 0
+}
+
+# 算 openNDS 落盘日志目录（与 api.sh 的 authlog_dir 同口径）
+zone_logdir() {
+	# 沙箱覆盖优先（测试用）
+	[ -n "${CPD_NDSLOG_DIR:-}" ] && { printf '%s' "$CPD_NDSLOG_DIR"; return 0; }
+	# 真机上 libopennds.sh 的 configure_log_location 已算好 $logdir 并 source 进来，
+	# 直接用它最稳（与 openNDS 实际写入目录百分百一致），省去重复探测。
+	[ -n "${logdir:-}" ] && { printf '%s' "${logdir%/}"; return 0; }
+	# 兜底：自行探测（旧版或非 libopennds 调用场景）
+	local mp d
+	mp=$(uci -q get 'opennds.@opennds[0].log_mountpoint' 2>/dev/null)
+	if [ -n "$mp" ]; then printf '%s/ndslog' "$mp"; return 0; fi
+	for d in /tmp /run /var; do
+		if df 2>/dev/null | awk -v x="$d" '$1 == "tmpfs" && $6 == x {f=1} END {exit !f}'; then
+			printf '%s/ndslog' "$d"; return 0
+		fi
+	done
+	printf '/tmp/ndslog'
 }
 
 # iw 把非 ASCII 字节转义成 \xNN（中文 SSID 真机上就是
@@ -430,6 +514,8 @@ cpd_no_portal_page() {
 # exactly once, with no recursion.
 
 header() {
+	# 先判断是否漏恢复的客户端：是则静默放行并退出，不弹门户
+	cpd_auto_restore
 	if [ -z "$CPD_DISPATCHED" ]; then
 		CPD_DISPATCHED=1
 		cpd_pick_portal
